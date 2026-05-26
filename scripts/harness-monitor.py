@@ -242,9 +242,30 @@ def build_docstring_codemap(existing_descs):
     return "\n".join(lines) + "\n"
 
 
+STALE_TRACK_FILE = Path(".harness-stale-pending")
+
 def handle_codemap_update():
     """Update CODE_MAP.md — called on Bash triggers."""
+    # Fallback check: if previous stale markers were not resolved, escalate to user
     codemap_file = Path("CODE_MAP.md")
+    if STALE_TRACK_FILE.exists() and codemap_file.exists():
+        pending = json.loads(STALE_TRACK_FILE.read_text())
+        still_stale = [d for d in pending.get("dirs", [])
+                       if f"⚠️ 描述可能过期" in
+                       next((l for l in codemap_file.read_text().split("\n") if d in l), "")]
+        if still_stale:
+            print(json.dumps({
+                "decision": "warn",
+                "reason": (
+                    f"⚠️ 以下目录的描述在上次标记后仍未更新：{', '.join(still_stale)}。"
+                    f"请手动运行 /harness-init 更新这些目录的 CODE_MAP.md 描述"
+                    + (f"和子目录 CLAUDE.md/AGENTS.md" if any(
+                        Path(d, "CLAUDE.md").exists() for d in still_stale) else "")
+                    + "。"
+                )
+            }, ensure_ascii=False))
+            STALE_TRACK_FILE.unlink()
+
     existing_descs, old_counts = parse_existing_codemap(codemap_file)
 
     communities = get_gitnexus_communities()
@@ -286,6 +307,12 @@ def handle_codemap_update():
                     f"请一并读取核心源文件，更新模块约束（测试命令/编码约束/危险操作）。两个文件内容保持一致。"
                 )
             result["action"] = " ".join(actions)
+            # Track stale dirs for fallback reminder
+            STALE_TRACK_FILE.write_text(json.dumps({"dirs": stale_dirs}))
+        else:
+            # No stale dirs — clean up tracking file if exists
+            if STALE_TRACK_FILE.exists():
+                STALE_TRACK_FILE.unlink()
         print(json.dumps(result, ensure_ascii=False))
 
 
