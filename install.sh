@@ -24,6 +24,7 @@ install_file() {
 }
 install_dir() {
     local src="$1" dst="$2"
+    mkdir -p "$(dirname "$dst")"
     rm -rf "$dst"
     if $USE_LINK; then ln -sf "$src" "$dst"; else cp -r "$src" "$dst"; fi
 }
