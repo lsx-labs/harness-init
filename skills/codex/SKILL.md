@@ -18,6 +18,7 @@ Codex entry point for the harness-init skill. Core logic is shared with Claude C
 - Generate/update **both** AGENTS.md and CLAUDE.md (identical content, `@CODE_MAP.md` reference)
 - Generate CODE_MAP.md via `echo '{"tool_name":"Bash"}' | python3 ~/.local/share/harness-hooks/harness-monitor.py`
 - AI fills in missing directory descriptions by reading core source files
+- **Sub-directory AGENTS.md + CLAUDE.md**: for modules with ≥ 100 symbols (from CODE_MAP.md), generate per-module constraint files (test commands, coding rules, danger zones). Both files identical per directory. ≤ 30 lines each.
 
 ### Layer 2: Hooks
 - Check `~/.codex/hooks.json` for: PreToolUse [gitnexus] + PostToolUse [harness-monitor]
