@@ -53,7 +53,7 @@ for root, dirs, files in os.walk('.'):
         filepath = os.path.join(root, f)
         try:
             content = open(filepath, encoding='utf-8', errors='ignore').read()
-        except:
+        except OSError:
             continue
         lang_stats[lang]['files'] += 1
         lang_stats[lang]['lines'] += content.count('\n') + 1
@@ -88,7 +88,7 @@ if import_counter:
             capture_output=True, text=True, timeout=10
         )
         count = len([l for l in r.stdout.strip().split('\n') if l])
-    except:
+    except (subprocess.TimeoutExpired, OSError):
         count = -1
     grep_noise = {
         "most_imported": most, "grep_noise_files": count,
@@ -107,7 +107,7 @@ if any(l['language'] == 'Python' for l in languages):
                 c = open(os.path.join(root, f), encoding='utf-8', errors='ignore').read()
                 total += len(re.findall(r'\bdef\s+', c))
                 typed += len(re.findall(r'\bdef\s+\w+\s*\([^)]*\)\s*->', c))
-            except: pass
+            except OSError: pass
     type_coverage = {"typed_funcs": typed, "total_funcs": total,
                      "coverage": round(typed/total*100, 1) if total else 0}
 
@@ -137,7 +137,7 @@ def check_hooks(path, keys):
         return {k: any(v in h.get('command','') for items in hooks.values()
                        for item in items for h in item.get('hooks',[]))
                 for k, v in keys.items()}
-    except:
+    except (json.JSONDecodeError, OSError, KeyError):
         return {k: False for k in keys}
 
 existing['hooks_claude'] = check_hooks(

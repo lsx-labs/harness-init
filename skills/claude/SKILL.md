@@ -260,7 +260,7 @@ fi
 
 两个平台共用同一套 Hook，内容相同：
 - PreToolUse [Grep|Glob|Bash] → `~/.claude/hooks/gitnexus/gitnexus-hook.cjs`（第三方）
-- PostToolUse [Bash|Write] → `~/.local/share/harness-hooks/harness-monitor.py`（自定义）
+- PostToolUse [Bash] → harness-monitor.py（自定义，成长检测 + CODE_MAP 更新）
 
 **Claude Code** (`~/.claude/settings.json`) + **Codex** (`~/.codex/hooks.json`)：逐项检查，缺失 → 给出修复命令。
 

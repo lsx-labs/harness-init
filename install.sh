@@ -129,7 +129,7 @@ hooks.append({
     "hooks": [{
         "type": "command",
         "command": f'python3 "{hook_path}"',
-        "timeout": 8000,
+        "timeout": 20000,
         "statusMessage": "Harness monitor..."
     }]
 })
