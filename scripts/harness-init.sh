@@ -118,7 +118,7 @@ for name, path in [('claude_md', 'CLAUDE.md'), ('agents_md', 'AGENTS.md')]:
     txt = p.read_text() if p.exists() else ''
     existing[name] = {
         'exists': p.exists(),
-        'has_codemap': '<!-- codemap:start -->' in txt,
+        'has_codemap': '@CODE_MAP.md' in txt or '<!-- codemap:start -->' in txt,
         'has_gitnexus': '<!-- gitnexus:start -->' in txt,
     }
 
