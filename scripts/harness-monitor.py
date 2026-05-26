@@ -458,6 +458,37 @@ def handle_growth_check(state, state_file):
 
 
 # ══════════════════════════════════════════════════════════
+# Git state detection
+# ══════════════════════════════════════════════════════════
+
+GIT_COMMANDS = re.compile(r'\bgit\s+(commit|merge|rebase|pull|checkout|switch|cherry-pick)\b')
+MAIN_BRANCHES = {"main", "master"}
+
+
+def is_git_operation(ctx: dict) -> bool:
+    """Check if the Bash command was a git operation."""
+    cmd = ctx.get("tool_input", {}).get("command", "")
+    return bool(GIT_COMMANDS.search(cmd))
+
+
+def is_on_main_branch() -> bool:
+    """Check if current HEAD is on main/master branch."""
+    try:
+        r = subprocess.run(["git", "branch", "--show-current"],
+                           capture_output=True, text=True, timeout=3)
+        return r.returncode == 0 and r.stdout.strip() in MAIN_BRANCHES
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+
+
+def is_merge_to_main(ctx: dict) -> bool:
+    """Check if this is a merge/checkout to main branch."""
+    if not is_git_operation(ctx):
+        return False
+    return is_on_main_branch()
+
+
+# ══════════════════════════════════════════════════════════
 # Main entry
 # ══════════════════════════════════════════════════════════
 
@@ -474,6 +505,10 @@ def main():
     if tool != "Bash":
         return
 
+    # Fast exit: not a git operation → skip entirely (zero overhead for pytest/profile/etc.)
+    if not is_git_operation(ctx):
+        return
+
     project_id = get_project_id()
     if not project_id:
         return
@@ -481,8 +516,13 @@ def main():
     state_file = COUNTER_DIR / f"{project_id}.json"
     state = load_state(state_file)
 
-    handle_codemap_update(project_id)
-    handle_growth_check(state, state_file)
+    if is_on_main_branch():
+        # On main: full processing — update CODE_MAP.md + growth check
+        handle_codemap_update(project_id)
+        handle_growth_check(state, state_file)
+    else:
+        # Feature branch: growth check only (notify, never write files)
+        handle_growth_check(state, state_file)
 
 
 main()
