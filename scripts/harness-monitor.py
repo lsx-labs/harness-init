@@ -368,6 +368,14 @@ def handle_codemap_update(project_id: str):
                     f"以下模块的 CLAUDE.md/AGENTS.md 也可能需要更新（同步过期）：{', '.join(stale_module_docs)}。"
                     f"请一并读取核心源文件，更新模块约束（测试命令/编码约束/危险操作）。两个文件内容保持一致。"
                 )
+            # Build commit hint with affected files
+            affected_files = ["CODE_MAP.md"]
+            for d in stale_module_docs:
+                affected_files.extend([f"{d}/CLAUDE.md", f"{d}/AGENTS.md"])
+            actions.append(
+                f"更新完成后请提交变更：git add {' '.join(affected_files)} && "
+                f'git commit -m "docs: update harness files after merge"'
+            )
             result["action"] = " ".join(actions)
             stale_track.parent.mkdir(parents=True, exist_ok=True)
             stale_track.write_text(json.dumps({"dirs": stale_dirs}))
