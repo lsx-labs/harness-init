@@ -8,6 +8,11 @@ disable-model-invocation: true
 
 Codex entry point for the harness-init skill. Core logic is shared with Claude Code.
 
+## Key policies
+- **Auto-update requires opt-in**: `.harness.json` with `{"auto_update": true}` in project root. Without it, hook only detects and notifies.
+- **Complement, don't replace**: harness files are subordinate to project's existing authoritative docs (ARCHITECTURE.md, contract docs, README).
+- **Root CLAUDE.md/AGENTS.md**: written once at init, never auto-modified afterward.
+
 ## How to execute
 
 1. Run diagnostic: `bash ~/.local/bin/harness-init.sh .`

@@ -25,6 +25,40 @@ disable-model-invocation: true
 - **多语言感知**：每种语言独立评估
 - **跨平台对等**：CLAUDE.md / AGENTS.md 同时维护，CODE_MAP.md 共享
 - **实测优于拍数字**：grep 噪声度、类型覆盖率
+- **自动写入需 opt-in**：Hook 默认只检测通知，自动修改文件需项目显式开启
+- **补充不替代**：harness 生成的文件是补充材料，项目已有的权威文档（ARCHITECTURE.md、合约文档等）是 source of truth
+
+## 自动更新 opt-in 机制
+
+Hook 自动修改 CODE_MAP.md 和子目录 CLAUDE.md/AGENTS.md 需要**项目级显式开启**。
+
+在项目根目录创建 `.harness.json`：
+```json
+{"auto_update": true}
+```
+
+| .harness.json | main 分支 git 操作后 |
+|---|---|
+| 不存在（默认） | 只检测通知，不写任何文件 |
+| `{"auto_update": true}` | 检测 + 写 CODE_MAP.md + 标记子目录过期 |
+
+`/harness-init` 首次执行时会提示是否创建此文件。
+
+## 文档权威层级
+
+```
+项目已有文档（ARCHITECTURE.md / 合约文档 / README）  ← 最高权威，不可覆盖
+  ↓
+根 CLAUDE.md / AGENTS.md                            ← 项目主人手动维护
+  ↓
+子目录 CLAUDE.md / AGENTS.md 手动区域                 ← 团队补充约束
+  ↓
+子目录 <!-- harness:start/end --> 自动区域             ← harness 自动生成
+  ↓
+CODE_MAP.md                                          ← 自动导航索引
+```
+
+harness 生成的内容**不能与上层文档矛盾**。如果 ARCHITECTURE.md 说"distributed 模块禁止直接调用 _lib"，harness 生成的约束不能推翻它。
 
 ## 执行流程
 
