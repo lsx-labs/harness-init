@@ -154,7 +154,7 @@ session = hooks.setdefault("SessionStart", [])
 session[:] = [item for item in session
               if not any("session-context" in h.get("command", "") for h in item.get("hooks", []))]
 session.append({
-    "matcher": "startup|resume|clear|compact",
+    "matcher": "startup|clear",
     "hooks": [{
         "type": "command",
         "command": f'bash "{context_path}"',
