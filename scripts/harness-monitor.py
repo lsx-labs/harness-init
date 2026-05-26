@@ -66,27 +66,44 @@ def save_state(state_file: Path, state: dict):
 # CODE_MAP.md update (triggered by Bash)
 # ══════════════════════════════════════════════════════════
 
+def _extract_desc_and_count(text: str) -> tuple[str, int | None]:
+    """Parse description and symbol count from a line fragment, tolerating both orders:
+    '— desc (N symbols)' or '(N symbols) — desc'
+    """
+    desc, count = "", None
+    # Extract symbol count from anywhere in the text
+    cm = re.search(r'\((\d+)\s*symbols?\)', text)
+    if cm:
+        count = int(cm.group(1))
+        text = text[:cm.start()] + text[cm.end():]  # remove count from text
+    # Extract description after —
+    dm = re.search(r'—\s*(.+)', text)
+    if dm:
+        desc = dm.group(1).strip()
+    return desc, count
+
+
 def parse_existing_codemap(codemap_path: Path) -> tuple[dict[str, str], dict[str, int]]:
     descs, counts = {}, {}
     if not codemap_path.exists():
         return descs, counts
     current_section = ""
     for line in codemap_path.read_text().split("\n"):
-        m = re.match(r'^###\s+(\S+?)/?(?:\s+\((\d+) symbols\))?\s*(?:—\s*(.+))?$', line)
+        # ### dir/ (N symbols) — desc  OR  ### dir/ — desc (N symbols)
+        m = re.match(r'^###\s+(\S+?)/?(.*)$', line)
         if m:
             current_section = m.group(1)
-            if m.group(3):
-                desc = m.group(3).strip()
-                if not desc.startswith("⚠️"): descs[current_section] = desc
-            if m.group(2): counts[current_section] = int(m.group(2))
+            desc, count = _extract_desc_and_count(m.group(2))
+            if desc and not desc.startswith("⚠️"): descs[current_section] = desc
+            if count is not None: counts[current_section] = count
             continue
-        m = re.match(r'^-\s+\*\*(\S+?)/?(?:\*\*)\s*(?:—\s*(.+?))?\s*(?:\((\d+) symbols\))?$', line)
+        # - **sub/** — desc (N symbols)  OR  - **sub/** (N symbols) — desc
+        m = re.match(r'^-\s+\*\*(\S+?)/?\*\*(.*)$', line)
         if m:
             sub = f"{current_section}/{m.group(1)}"
-            if m.group(2):
-                desc = m.group(2).strip()
-                if not desc.startswith("⚠️"): descs[sub] = desc
-            if m.group(3): counts[sub] = int(m.group(3))
+            desc, count = _extract_desc_and_count(m.group(2))
+            if desc and not desc.startswith("⚠️"): descs[sub] = desc
+            if count is not None: counts[sub] = count
     return descs, counts
 
 
