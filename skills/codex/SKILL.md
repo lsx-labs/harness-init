@@ -28,7 +28,9 @@ Codex entry point for the harness-init skill. Core logic is shared with Claude C
 - Follows Layer 4 (GitNexus analyze auto-generates skills)
 
 ### Layer 4: GitNexus MCP
-- Recommend if `grep_noise.grep_noise_files > 20`
+- First check: GitNexus installed? → No + grep_noise > 20 → prompt install
+- Then check: current project indexed (.gitnexus/ exists)? → No → `npx gitnexus analyze`
+- Then check: index stale? → `npx gitnexus status` → stale → `npx gitnexus analyze`
 - Check MCP registration in `~/.codex/config.toml`
 
 ### Layer 5: LSP

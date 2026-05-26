@@ -278,7 +278,23 @@ fi
 
 #### Layer 4: GitNexus MCP
 
-**判断**：`grep_noise.grep_noise_files`
+**前置：确保 GitNexus 可用且当前项目已索引**
+
+```
+GitNexus 已安装？
+  NO  → grep 噪声判断是否需要安装（见下方）
+        → 用户确认安装 → npm install -g gitnexus && npx gitnexus setup
+        → 安装完成后继续 ↓
+  YES ↓
+
+当前项目已索引？（.gitnexus/ 目录存在？）
+  NO  → npx gitnexus analyze（建索引，首次约 10-30s）
+  YES → npx gitnexus status 检查是否过期
+        → 过期 → npx gitnexus analyze（增量更新）
+        → 最新 → ✅ 跳过
+```
+
+**安装判断**：`grep_noise.grep_noise_files`
 
 | grep 噪声 | 判断 |
 |---|---|
@@ -287,8 +303,6 @@ fi
 | > 20 | 💡 建议安装 |
 
 **跨平台检查**：`existing.mcp_claude` + `existing.mcp_codex`，任一侧缺失给出注册命令。
-
-**行动**：建议安装 → `npx gitnexus analyze`（一次索引两边共享）。
 
 #### Layer 5: LSP / Code Intelligence
 
