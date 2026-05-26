@@ -89,6 +89,7 @@ install_file "$SCRIPT_DIR/scripts/harness-init.sh" "$HOME/.local/bin/harness-ini
 if ! $USE_LINK; then
     mkdir -p "$HOME/.local/share/harness-hooks"
     install_file "$SCRIPT_DIR/scripts/harness-monitor.py" "$HOME/.local/share/harness-hooks/harness-monitor.py"
+    install_file "$SCRIPT_DIR/scripts/session-context.sh" "$HOME/.local/share/harness-hooks/session-context.sh"
     cp "$SCRIPT_DIR/VERSION" "$HOME/.local/share/harness-hooks/VERSION"
 fi
 
@@ -111,48 +112,67 @@ fi
 
 # ── 3. Hook registration ──
 if $USE_LINK; then
-    HOOK_PATH="$SCRIPT_DIR/scripts/harness-monitor.py"
+    MONITOR_PATH="$SCRIPT_DIR/scripts/harness-monitor.py"
+    CONTEXT_PATH="$SCRIPT_DIR/scripts/session-context.sh"
 else
-    HOOK_PATH="$HOME/.local/share/harness-hooks/harness-monitor.py"
+    MONITOR_PATH="$HOME/.local/share/harness-hooks/harness-monitor.py"
+    CONTEXT_PATH="$HOME/.local/share/harness-hooks/session-context.sh"
 fi
 
-register_hook() {
-    local config_file="$1" platform="$2" hook_path="$3"
-    python3 - "$config_file" "$platform" "$hook_path" << 'PYEOF'
+register_hooks() {
+    local config_file="$1" platform="$2" monitor_path="$3" context_path="$4"
+    python3 - "$config_file" "$platform" "$monitor_path" "$context_path" << 'PYEOF'
 import json, sys
 from pathlib import Path
 
-config_file, platform, hook_path = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+config_file = Path(sys.argv[1])
+platform, monitor_path, context_path = sys.argv[2], sys.argv[3], sys.argv[4]
+
 if not config_file.exists():
     config_file.parent.mkdir(parents=True, exist_ok=True)
     config_file.write_text('{"hooks": {}}' if config_file.name == "hooks.json" else '{}')
 
 d = json.loads(config_file.read_text())
-hooks = d.setdefault("hooks", {}).setdefault("PostToolUse", [])
+hooks = d.setdefault("hooks", {})
 
-# Idempotent: remove old entries
-hooks[:] = [item for item in hooks
-            if not any("harness-monitor" in h.get("command", "") for h in item.get("hooks", []))]
-
-hooks.append({
+# PostToolUse: harness-monitor (idempotent)
+post = hooks.setdefault("PostToolUse", [])
+post[:] = [item for item in post
+           if not any("harness-monitor" in h.get("command", "") for h in item.get("hooks", []))]
+post.append({
     "matcher": "Bash",
     "hooks": [{
         "type": "command",
-        "command": f'python3 "{hook_path}"',
+        "command": f'python3 "{monitor_path}"',
         "timeout": 20000,
         "statusMessage": "Harness monitor..."
     }]
 })
+
+# SessionStart: session-context (idempotent)
+session = hooks.setdefault("SessionStart", [])
+session[:] = [item for item in session
+              if not any("session-context" in h.get("command", "") for h in item.get("hooks", []))]
+session.append({
+    "matcher": "",
+    "hooks": [{
+        "type": "command",
+        "command": f'bash "{context_path}"',
+        "timeout": 5000,
+        "statusMessage": "Loading project context..."
+    }]
+})
+
 config_file.write_text(json.dumps(d, indent=2, ensure_ascii=False))
-print(f"✅ {platform} hook registered")
+print(f"✅ {platform} hooks registered (PostToolUse + SessionStart)")
 PYEOF
 }
 
 if [ -d "$HOME/.claude" ]; then
-    register_hook "$HOME/.claude/settings.json" "Claude Code" "$HOOK_PATH"
+    register_hooks "$HOME/.claude/settings.json" "Claude Code" "$MONITOR_PATH" "$CONTEXT_PATH"
 fi
 if [ -d "$HOME/.codex" ]; then
-    register_hook "$HOME/.codex/hooks.json" "Codex" "$HOOK_PATH"
+    register_hooks "$HOME/.codex/hooks.json" "Codex" "$MONITOR_PATH" "$CONTEXT_PATH"
 fi
 
 # ── 4. GitNexus hook reachability (pure Codex environments) ──

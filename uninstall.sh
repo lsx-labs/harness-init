@@ -5,6 +5,7 @@ echo "Uninstalling harness-init..."
 
 rm -f ~/.local/bin/harness-init.sh
 rm -f ~/.local/share/harness-hooks/harness-monitor.py
+rm -f ~/.local/share/harness-hooks/session-context.sh
 rm -f ~/.local/share/harness-hooks/VERSION
 rm -rf ~/.local/share/harness-hooks/counters
 rm -rf ~/.local/share/harness-hooks/stale-pending
@@ -23,7 +24,8 @@ d = json.loads(p.read_text())
 hooks = d.get("hooks", {})
 for event in list(hooks.keys()):
     hooks[event] = [i for i in hooks[event]
-                    if not any("harness-monitor" in h.get("command", "") for h in i.get("hooks", []))]
+                    if not any("harness-monitor" in h.get("command", "") or "session-context" in h.get("command", "")
+                              for h in i.get("hooks", []))]
     if not hooks[event]:
         del hooks[event]
 if not hooks:
