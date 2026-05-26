@@ -306,14 +306,22 @@ GitNexus 已安装？
 
 #### Layer 5: LSP / Code Intelligence
 
-**判断**：`lsp_assessment` 数组，逐语言展示。
+**⚠️ 仅 Claude Code 支持。** Codex 目前无 LSP 插件体系（GitHub issue #8745 请求中）。在 Codex 上跳过此层。
 
-| 语言类别 | 判断依据 |
+**判断**：`lsp_assessment` 数组，逐语言展示。先检查是否已安装（全局，跨项目共享）。
+
+| 状态 | 行动 |
 |---|---|
-| 强类型（TS/Go/Rust/Java/Kotlin/C#/Swift） | 文件数 ≥ 30 |
-| Python | 类型覆盖率 ≥ 30% |
-| C/C++ | 文件数 ≥ 30 + compile_commands.json |
-| 弱类型（JS/Ruby/PHP） | 不推荐 |
+| 已安装 | ✅ 跳过 |
+| 未安装 + 达到门槛 | 💡 提示安装命令：`claude plugin add {plugin}` |
+| 未安装 + 未达门槛 | ⏭️ 跳过 |
+
+| 语言类别 | 门槛 | 插件名 |
+|---|---|---|
+| Python | 类型覆盖率 ≥ 30% | code-intelligence-python |
+| 强类型（TS/Go/Rust/Java/Kotlin/C#/Swift） | 文件数 ≥ 30 | code-intelligence-{lang} |
+| C/C++ | 文件数 ≥ 30 | code-intelligence-cpp |
+| 弱类型（JS/Ruby/PHP） | 不推荐 | — |
 
 **LSP 插件安装命令因平台而异**，分别给出。
 
