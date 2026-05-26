@@ -6,21 +6,36 @@ disable-model-invocation: true
 
 # Harness Init — Project Harness Lifecycle Manager (Codex)
 
-This is the Codex entry point. Core diagnostic logic lives in `~/.local/bin/harness-init.sh` (shared with Claude Code). This skill reads its JSON output and executes platform-specific actions for Codex.
+Codex entry point for the harness-init skill. Core logic is shared with Claude Code.
 
 ## How to execute
 
 1. Run diagnostic: `bash ~/.local/bin/harness-init.sh .`
-2. Parse the JSON output
-3. Follow the same 5-layer evaluation as the Claude Code version
-4. Key differences for Codex:
-   - Generate/update **AGENTS.md** (not just CLAUDE.md — both files must stay in sync)
-   - Check Codex hooks in `~/.codex/hooks.json`
-   - Check Codex MCP in `~/.codex/config.toml`
-   - LSP plugin installation uses Codex plugin system (not `claude plugin add`)
+2. Parse the JSON output (fields: `languages`, `grep_noise`, `type_coverage`, `lsp_assessment`, `existing`)
+3. Follow the 5-layer evaluation:
 
-## Cross-platform parity
+### Layer 1: AGENTS.md + CLAUDE.md + CODE_MAP.md
+- Generate/update **both** AGENTS.md and CLAUDE.md (identical content, `@CODE_MAP.md` reference)
+- Generate CODE_MAP.md via `echo '{"tool_name":"Bash"}' | python3 ~/.local/share/harness-hooks/harness-monitor.py`
+- AI fills in missing directory descriptions by reading core source files
 
-Both CLAUDE.md and AGENTS.md are generated with identical content. The diagnostic script and hook scripts are shared. Only the registration configs differ per platform.
+### Layer 2: Hooks
+- Check `~/.codex/hooks.json` for: PreToolUse [gitnexus] + PostToolUse [harness-monitor]
+- Check GitNexus hook reachability: `~/.claude/hooks/gitnexus/gitnexus-hook.cjs` must exist
 
-Refer to `~/.claude/skills/harness-init/SKILL.md` for the complete 5-layer evaluation logic, report format, and threshold definitions. The logic is identical — only the file paths and commands differ.
+### Layer 3: Skills
+- Follows Layer 4 (GitNexus analyze auto-generates skills)
+
+### Layer 4: GitNexus MCP
+- Recommend if `grep_noise.grep_noise_files > 20`
+- Check MCP registration in `~/.codex/config.toml`
+
+### Layer 5: LSP
+- Per-language assessment from `lsp_assessment` array
+- Strong-typed (TS/Go/Rust/Java): file_count ≥ 30
+- Python: type_coverage ≥ 30%
+- Weak-typed (JS/Ruby): skip
+
+## Output report format
+
+Same as Claude Code version — see the report template in the shared diagnostic script.

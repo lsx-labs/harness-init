@@ -10,10 +10,8 @@ disable-model-invocation: true
 
 ```
 共享层（平台无关）
-├── ~/.local/bin/harness-init.sh                       ← 核心诊断脚本（JSON 输出）
-├── ~/.local/share/harness-hooks/update-codemap.py     ← CODE_MAP.md 自动更新
-├── ~/.local/share/harness-hooks/check-docstring.py    ← Docstring 检查
-├── ~/.local/share/harness-hooks/harness-check.py      ← 项目成长自动检测
+├── ~/.local/bin/harness-init.sh                        ← 核心诊断脚本（JSON 输出）
+├── ~/.local/share/harness-hooks/harness-monitor.py     ← 统一 Hook（CODE_MAP 更新 + 项目成长检测）
 └── 项目/CODE_MAP.md                                    ← 独立文件，两边引用
 
 平台入口
@@ -55,7 +53,7 @@ bash ~/.local/bin/harness-init.sh .
 **Code Map 是独立文件**。CLAUDE.md 和 AGENTS.md 通过 `@CODE_MAP.md` 引用，单一数据源。
 
 **检查与行动**：
-- `CODE_MAP.md` 不存在 → `python3 ~/.local/share/harness-hooks/update-codemap.py` 生成骨架
+- `CODE_MAP.md` 不存在 → `python3 ~/.local/share/harness-hooks/harness-monitor.py` 生成骨架（通过模拟 Bash 触发）
 - `CODE_MAP.md` 存在但有空描述 → **AI 补全描述**（见下方）
 - `CLAUDE.md` / `AGENTS.md` 不存在 → 生成（模板见下方）
 - 已存在但缺少 `@CODE_MAP.md` → 追加引用行

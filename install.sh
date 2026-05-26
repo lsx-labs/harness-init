@@ -7,14 +7,12 @@ echo ""
 
 # ── 0. Prerequisites ──
 
-# Node.js (required by GitNexus)
 if ! command -v node &>/dev/null; then
     echo "❌ Node.js not found. Install Node.js 18+ first: https://nodejs.org"
     exit 1
 fi
 echo "✅ Node.js $(node --version)"
 
-# GitNexus
 if ! npx gitnexus --version &>/dev/null 2>&1; then
     echo ""
     echo "⚠️  GitNexus not found. It is required for:"
@@ -31,13 +29,12 @@ if ! npx gitnexus --version &>/dev/null 2>&1; then
         npx gitnexus setup
         echo "✅ GitNexus installed and configured"
     else
-        echo "⚠️  Continuing without GitNexus (degraded mode: docstring-only CODE_MAP, no search enrichment)"
+        echo "⚠️  Continuing without GitNexus (degraded mode)"
     fi
 else
     echo "✅ GitNexus $(npx gitnexus --version 2>/dev/null || echo 'installed')"
 fi
 
-# Python 3 (required by harness scripts)
 if ! command -v python3 &>/dev/null; then
     echo "❌ Python 3 not found."
     exit 1
@@ -47,71 +44,93 @@ echo "✅ Python $(python3 --version | awk '{print $2}')"
 echo ""
 
 # ── 1. Shared scripts ──
-mkdir -p ~/.local/bin
-mkdir -p ~/.local/share/harness-hooks
+mkdir -p "$HOME/.local/bin"
+mkdir -p "$HOME/.local/share/harness-hooks"
 
-cp "$SCRIPT_DIR/scripts/harness-init.sh" ~/.local/bin/harness-init.sh
-chmod +x ~/.local/bin/harness-init.sh
+cp "$SCRIPT_DIR/scripts/harness-init.sh" "$HOME/.local/bin/harness-init.sh"
+chmod +x "$HOME/.local/bin/harness-init.sh"
 
-cp "$SCRIPT_DIR/scripts/harness-monitor.py" ~/.local/share/harness-hooks/harness-monitor.py
-chmod +x ~/.local/share/harness-hooks/harness-monitor.py
+cp "$SCRIPT_DIR/scripts/harness-monitor.py" "$HOME/.local/share/harness-hooks/harness-monitor.py"
+chmod +x "$HOME/.local/share/harness-hooks/harness-monitor.py"
 
 echo "✅ Shared scripts installed"
 
 # ── 2. Claude Code skill ──
-if [ -d ~/.claude ]; then
-    mkdir -p ~/.claude/skills/harness-init
-    cp "$SCRIPT_DIR/skills/claude/SKILL.md" ~/.claude/skills/harness-init/SKILL.md
+if [ -d "$HOME/.claude" ]; then
+    mkdir -p "$HOME/.claude/skills/harness-init"
+    cp "$SCRIPT_DIR/skills/claude/SKILL.md" "$HOME/.claude/skills/harness-init/SKILL.md"
     echo "✅ Claude Code skill installed"
 else
     echo "⏭️  ~/.claude not found, skipping Claude Code skill"
 fi
 
 # ── 3. Codex skill ──
-if [ -d ~/.codex ]; then
-    mkdir -p ~/.codex/skills/harness-init
-    cp "$SCRIPT_DIR/skills/codex/SKILL.md" ~/.codex/skills/harness-init/SKILL.md
+if [ -d "$HOME/.codex" ]; then
+    mkdir -p "$HOME/.codex/skills/harness-init"
+    cp "$SCRIPT_DIR/skills/codex/SKILL.md" "$HOME/.codex/skills/harness-init/SKILL.md"
     echo "✅ Codex skill installed"
 else
     echo "⏭️  ~/.codex not found, skipping Codex skill"
 fi
 
 # ── 4. Hook registration ──
-HOOK_CMD='python3 "'$(echo ~/.local/share/harness-hooks/harness-monitor.py)'"'
-HOOK_ENTRY="{\"matcher\":\"Bash|Write\",\"hooks\":[{\"type\":\"command\",\"command\":\"$HOOK_CMD\",\"timeout\":8000,\"statusMessage\":\"Harness monitor...\"}]}"
+HOOK_PATH="$HOME/.local/share/harness-hooks/harness-monitor.py"
 
-# Claude Code
-if [ -f ~/.claude/settings.json ]; then
-    python3 -c "
+register_hook() {
+    local config_file="$1"
+    local platform="$2"
+
+    python3 << PYEOF
 import json
 from pathlib import Path
-p = Path.home() / '.claude' / 'settings.json'
-d = json.loads(p.read_text())
-hooks = d.setdefault('hooks', {}).setdefault('PostToolUse', [])
-if not any('harness-monitor' in h.get('command','') for item in hooks for h in item.get('hooks',[])):
-    hooks.append(json.loads('$HOOK_ENTRY'))
-    p.write_text(json.dumps(d, indent=2, ensure_ascii=False))
-    print('✅ Claude Code hook registered')
+
+config_file = Path("$config_file")
+if not config_file.exists():
+    # Create minimal config if missing
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    if config_file.name == "hooks.json":
+        config_file.write_text('{"hooks": {}}')
+    else:
+        config_file.write_text('{}')
+
+d = json.loads(config_file.read_text())
+hooks = d.setdefault("hooks", {}).setdefault("PostToolUse", [])
+
+if not any("harness-monitor" in h.get("command", "") for item in hooks for h in item.get("hooks", [])):
+    hooks.append({
+        "matcher": "Bash|Write",
+        "hooks": [{
+            "type": "command",
+            "command": "python3 \"$HOOK_PATH\"",
+            "timeout": 8000,
+            "statusMessage": "Harness monitor..."
+        }]
+    })
+    config_file.write_text(json.dumps(d, indent=2, ensure_ascii=False))
+    print("✅ $platform hook registered")
 else:
-    print('✅ Claude Code hook already exists')
-"
+    print("✅ $platform hook already exists")
+PYEOF
+}
+
+# Claude Code
+if [ -d "$HOME/.claude" ]; then
+    register_hook "$HOME/.claude/settings.json" "Claude Code"
 fi
 
 # Codex
-if [ -f ~/.codex/hooks.json ]; then
-    python3 -c "
-import json
-from pathlib import Path
-p = Path.home() / '.codex' / 'hooks.json'
-d = json.loads(p.read_text())
-hooks = d.setdefault('hooks', {}).setdefault('PostToolUse', [])
-if not any('harness-monitor' in h.get('command','') for item in hooks for h in item.get('hooks',[])):
-    hooks.append(json.loads('$HOOK_ENTRY'))
-    p.write_text(json.dumps(d, indent=2, ensure_ascii=False))
-    print('✅ Codex hook registered')
-else:
-    print('✅ Codex hook already exists')
-"
+if [ -d "$HOME/.codex" ]; then
+    register_hook "$HOME/.codex/hooks.json" "Codex"
+fi
+
+# ── 5. GitNexus hook reachability (pure Codex environments) ──
+if [ -d "$HOME/.codex" ] && [ ! -f "$HOME/.claude/hooks/gitnexus/gitnexus-hook.cjs" ]; then
+    GITNEXUS_HOOK_SRC="$(npm root -g 2>/dev/null)/gitnexus/hooks/claude/gitnexus-hook.cjs"
+    if [ -f "$GITNEXUS_HOOK_SRC" ]; then
+        mkdir -p "$HOME/.claude/hooks/gitnexus"
+        cp "$GITNEXUS_HOOK_SRC" "$HOME/.claude/hooks/gitnexus/gitnexus-hook.cjs"
+        echo "✅ GitNexus hook copied for Codex compatibility"
+    fi
 fi
 
 echo ""
