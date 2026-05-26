@@ -5,11 +5,10 @@
 ## 功能
 
 - **CLAUDE.md / AGENTS.md 生成**：项目约束 + `@CODE_MAP.md` 引用
-- **CODE_MAP.md 自动维护**：GitNexus 知识图谱结构 + AI 语义描述（需 opt-in）
+- **CODE_MAP.md 自动维护**：GitNexus 知识图谱结构 + AI 语义描述，Hook 自动更新
 - **GitNexus / LSP 推荐**：实测 grep 噪声度和类型覆盖率，按需建议安装
-- **项目成长检测**：文件增量达阈值时自动诊断，推荐合适时机升级工具链
+- **项目成长检测**：每 20 个新文件自动诊断，推荐合适时机升级工具链
 - **跨平台**：Claude Code + Codex 对等支持
-- **安全默认**：Hook 默认只检测通知，自动写文件需项目级 `.harness.json` 开启
 
 ## 前置依赖
 

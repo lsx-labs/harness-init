@@ -491,20 +491,6 @@ def is_merge_to_main(ctx: dict) -> bool:
 # Main entry
 # ══════════════════════════════════════════════════════════
 
-def is_auto_update_enabled() -> bool:
-    """Check if project opted in to auto CODE_MAP.md updates.
-    Requires .harness.json with {"auto_update": true} in project root.
-    No config file = no auto-write (safe default).
-    """
-    config = Path(".harness.json")
-    if not config.exists():
-        return False
-    try:
-        return json.loads(config.read_text()).get("auto_update", False)
-    except (json.JSONDecodeError, OSError):
-        return False
-
-
 def main():
     try:
         ctx = json.load(sys.stdin)
@@ -529,12 +515,12 @@ def main():
     state_file = COUNTER_DIR / f"{project_id}.json"
     state = load_state(state_file)
 
-    if is_on_main_branch() and is_auto_update_enabled():
-        # On main + project opted in: full processing
+    if is_on_main_branch():
+        # On main: full processing — update CODE_MAP.md + growth check
         handle_codemap_update(project_id)
         handle_growth_check(state, state_file)
-    elif is_git_operation(ctx):
-        # Any git operation: growth check only (notify, never write files)
+    else:
+        # Feature branch: growth check only (notify, never write files)
         handle_growth_check(state, state_file)
 
 
