@@ -42,21 +42,29 @@ bash ~/.local/bin/harness-init.sh .
 
 #### Layer 1: CLAUDE.md + AGENTS.md + CODE_MAP.md
 
-**三个文件职责分离**：
+**四类文件，三种维护方式**：
 
-| 文件 | 谁读 | 维护方式 | 内容 |
+| 文件 | 谁读 | 初始化时 | 日常维护 |
 |---|---|---|---|
-| `CODE_MAP.md` | 两边都读 | Hook 自动 | 目录/模块级导航索引 |
-| `CLAUDE.md` | Claude Code | 本 Skill + GitNexus | 项目约束 + `@CODE_MAP.md` |
-| `AGENTS.md` | Codex | 本 Skill + GitNexus | 项目约束 + `@CODE_MAP.md` |
+| `CODE_MAP.md` | 两边 | 自动生成 | Hook 自动更新（main 分支 git 操作后） |
+| 根 `CLAUDE.md` / `AGENTS.md` | 两边 | **初始化写一次** | **不自动修改**，由项目主人手动维护 |
+| 子目录 `*/CLAUDE.md` / `*/AGENTS.md` | 进入时 | 自动生成 | Hook 检测过期 → AI 更新 `<!-- harness:start/end -->` 区域 |
 
-**Code Map 是独立文件**。CLAUDE.md 和 AGENTS.md 通过 `@CODE_MAP.md` 引用，单一数据源。
+**根 CLAUDE.md / AGENTS.md 的特殊性**：
+
+根文件包含的是**项目级全局决策**（构建命令、领域概念、危险操作），不是代码分析能自动生成的内容。
+- `/harness-init` **首次执行时写入**：生成模板 + `@CODE_MAP.md` 引用 + `<!-- gitnexus:start/end -->` 标记
+- **之后不再自动修改**：内容由项目主人手动维护（加约束、改构建命令、更新领域概念等）
+- 只有 GitNexus 会更新其 `<!-- gitnexus:start/end -->` 标记区域（GitNexus 自己管理）
+
+**Code Map 是独立文件**。根 CLAUDE.md 和 AGENTS.md 通过 `@CODE_MAP.md` 引用，单一数据源。
 
 **检查与行动**：
-- `CODE_MAP.md` 不存在 → `python3 ~/.local/share/harness-hooks/harness-monitor.py` 生成骨架（通过模拟 Bash 触发）
+- `CODE_MAP.md` 不存在 → 自动生成骨架
 - `CODE_MAP.md` 存在但有空描述 → **AI 补全描述**（见下方）
-- `CLAUDE.md` / `AGENTS.md` 不存在 → 生成（模板见下方）
-- 已存在但缺少 `@CODE_MAP.md` → 追加引用行
+- 根 `CLAUDE.md` / `AGENTS.md` 不存在 → **首次生成**（模板见下方，含 @CODE_MAP.md 引用）
+- 根 `CLAUDE.md` / `AGENTS.md` 已存在但缺少 `@CODE_MAP.md` → 追加引用行
+- 根 `CLAUDE.md` / `AGENTS.md` 已存在且完整 → **跳过，不修改**
 
 **AI 补全 Code Map 描述（核心步骤）**：
 
