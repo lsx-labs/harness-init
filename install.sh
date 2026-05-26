@@ -3,6 +3,47 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "Installing harness-init from $SCRIPT_DIR"
+echo ""
+
+# ── 0. Prerequisites ──
+
+# Node.js (required by GitNexus)
+if ! command -v node &>/dev/null; then
+    echo "❌ Node.js not found. Install Node.js 18+ first: https://nodejs.org"
+    exit 1
+fi
+echo "✅ Node.js $(node --version)"
+
+# GitNexus
+if ! npx gitnexus --version &>/dev/null 2>&1; then
+    echo ""
+    echo "⚠️  GitNexus not found. It is required for:"
+    echo "   - CODE_MAP.md auto-generation (knowledge graph → module structure)"
+    echo "   - PreToolUse search enrichment (grep/glob augmented with call graph)"
+    echo "   - PostToolUse stale index detection (auto-reindex after commits)"
+    echo ""
+    echo "Install and setup:"
+    echo "   npx gitnexus setup"
+    echo ""
+    read -p "Continue without GitNexus? (y/N) " -n 1 -r
+    echo ""
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "Aborted. Install GitNexus first, then re-run install.sh"
+        exit 1
+    fi
+    echo "⚠️  Continuing in degraded mode (docstring-only CODE_MAP, no search enrichment)"
+else
+    echo "✅ GitNexus $(npx gitnexus --version 2>/dev/null || echo 'installed')"
+fi
+
+# Python 3 (required by harness scripts)
+if ! command -v python3 &>/dev/null; then
+    echo "❌ Python 3 not found."
+    exit 1
+fi
+echo "✅ Python $(python3 --version | awk '{print $2}')"
+
+echo ""
 
 # ── 1. Shared scripts ──
 mkdir -p ~/.local/bin

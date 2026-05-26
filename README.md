@@ -10,11 +10,27 @@
 - **项目成长检测**：每 20 个新文件自动诊断，推荐合适时机升级工具链
 - **跨平台**：Claude Code + Codex 对等支持
 
+## 前置依赖
+
+| 依赖 | 必须 | 用途 |
+|---|---|---|
+| **Node.js 18+** | ✅ | GitNexus 运行环境 |
+| **GitNexus** | ✅ | 知识图谱索引 + CODE_MAP 生成 + Hook 搜索增强 |
+| **Python 3** | ✅ | 诊断脚本 + Hook 脚本 |
+| Claude Code 或 Codex | 至少一个 | AI 编程平台 |
+
+```bash
+# 安装 GitNexus（首次）
+npx gitnexus setup
+```
+
 ## 安装
 
 ```bash
 bash install.sh
 ```
+
+install.sh 会自动检测所有依赖，缺失时提示安装。
 
 ## 使用
 
