@@ -364,8 +364,8 @@ def handle_codemap_update(project_id: str):
                 affected_files.extend([f"{d}/CLAUDE.md", f"{d}/AGENTS.md"])
             result["affected_files"] = affected_files
             result["action"] = (
-                f"以下文件已更新：{', '.join(affected_files)}。"
-                f"请提交：git add {' '.join(affected_files)} && "
+                f"由于当前功能变动较大，以下文件需要同步更新：{', '.join(affected_files)}。"
+                f"请提交这些变更的文件：git add {' '.join(affected_files)} && "
                 f'git commit -m "docs: update harness files"'
             )
             stale_track.parent.mkdir(parents=True, exist_ok=True)
