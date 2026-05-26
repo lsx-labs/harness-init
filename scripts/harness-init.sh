@@ -152,11 +152,39 @@ existing['mcp_codex'] = 'gitnexus' in ((Path.home()/'.codex'/'config.toml').read
                                         if (Path.home()/'.codex'/'config.toml').exists() else '')
 
 # ── 5. LSP assessment ──
+
+# Detect installed LSP plugins (global, shared across projects)
+LSP_PLUGIN_MAP = {
+    'Python': 'code-intelligence-python',
+    'TypeScript': 'code-intelligence-typescript',
+    'Go': 'code-intelligence-go',
+    'Rust': 'code-intelligence-rust',
+    'Java': 'code-intelligence-java', 'Kotlin': 'code-intelligence-java',
+    'C#': 'code-intelligence-csharp',
+    'Swift': 'code-intelligence-swift',
+    'C': 'code-intelligence-cpp', 'C++': 'code-intelligence-cpp',
+}
+
+def check_lsp_installed(lang):
+    plugin = LSP_PLUGIN_MAP.get(lang, '')
+    if not plugin: return False
+    # Check Claude Code plugins
+    claude_plugins = Path.home() / '.claude' / 'plugins'
+    if claude_plugins.is_dir() and any(claude_plugins.glob(f'*{plugin}*')): return True
+    # Check settings for plugin references
+    for cfg in [Path.home()/'.claude'/'settings.json', Path.home()/'.claude.json']:
+        if cfg.exists() and plugin in cfg.read_text(): return True
+    return False
+
 lsp = []
 for li in languages:
     lang, files = li['language'], li['files']
-    a = {'language': lang, 'files': files, 'recommend': False, 'reason': ''}
-    if lang in STRONG_TYPED:
+    installed = check_lsp_installed(lang)
+    a = {'language': lang, 'files': files, 'recommend': False, 'installed': installed,
+         'plugin': LSP_PLUGIN_MAP.get(lang, ''), 'reason': ''}
+    if installed:
+        a['reason'] = "✅ 已安装"
+    elif lang in STRONG_TYPED:
         a['recommend'] = files >= 30
         a['reason'] = f"{files} 个文件{'，强类型，LSP 价值高' if a['recommend'] else ' < 30，暂不需要'}"
     elif lang == 'Python':
