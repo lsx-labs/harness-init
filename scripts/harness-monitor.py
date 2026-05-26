@@ -359,24 +359,15 @@ def handle_codemap_update(project_id: str):
             stale_module_docs = [d for d in stale_dirs if
                                  Path(d, "CLAUDE.md").exists() or
                                  Path(d, "AGENTS.md").exists()]
-            actions = [
-                f"CODE_MAP.md 中 {len(stale_dirs)} 个目录的描述可能过期：{', '.join(stale_dirs)}。"
-                f"请用 subagent 读取这些目录的核心源文件，更新 CODE_MAP.md 中对应的一句话描述。"
-            ]
-            if stale_module_docs:
-                actions.append(
-                    f"以下模块的 CLAUDE.md/AGENTS.md 也可能需要更新（同步过期）：{', '.join(stale_module_docs)}。"
-                    f"请一并读取核心源文件，更新模块约束（测试命令/编码约束/危险操作）。两个文件内容保持一致。"
-                )
-            # Build commit hint with affected files
             affected_files = ["CODE_MAP.md"]
             for d in stale_module_docs:
                 affected_files.extend([f"{d}/CLAUDE.md", f"{d}/AGENTS.md"])
-            actions.append(
-                f"更新完成后请提交变更：git add {' '.join(affected_files)} && "
-                f'git commit -m "docs: update harness files after merge"'
+            result["affected_files"] = affected_files
+            result["action"] = (
+                f"以下文件已更新：{', '.join(affected_files)}。"
+                f"请提交：git add {' '.join(affected_files)} && "
+                f'git commit -m "docs: update harness files"'
             )
-            result["action"] = " ".join(actions)
             stale_track.parent.mkdir(parents=True, exist_ok=True)
             stale_track.write_text(json.dumps({"dirs": stale_dirs}))
         else:
