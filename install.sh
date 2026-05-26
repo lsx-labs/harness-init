@@ -22,16 +22,17 @@ if ! npx gitnexus --version &>/dev/null 2>&1; then
     echo "   - PreToolUse search enrichment (grep/glob augmented with call graph)"
     echo "   - PostToolUse stale index detection (auto-reindex after commits)"
     echo ""
-    echo "Install and setup:"
-    echo "   npx gitnexus setup"
+    read -p "Install GitNexus now? (Y/n) " -n 1 -r
     echo ""
-    read -p "Continue without GitNexus? (y/N) " -n 1 -r
-    echo ""
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "Aborted. Install GitNexus first, then re-run install.sh"
-        exit 1
+    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+        echo "Installing GitNexus..."
+        npm install -g gitnexus
+        echo "Running GitNexus setup (registers MCP + hooks)..."
+        npx gitnexus setup
+        echo "✅ GitNexus installed and configured"
+    else
+        echo "⚠️  Continuing without GitNexus (degraded mode: docstring-only CODE_MAP, no search enrichment)"
     fi
-    echo "⚠️  Continuing in degraded mode (docstring-only CODE_MAP, no search enrichment)"
 else
     echo "✅ GitNexus $(npx gitnexus --version 2>/dev/null || echo 'installed')"
 fi
