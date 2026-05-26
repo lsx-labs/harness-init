@@ -25,7 +25,7 @@ STALE_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "stale-pending"
 DIAG_SCRIPT = Path.home() / ".local" / "bin" / "harness-init.sh"
 HOOK_TIMEOUT = 15  # seconds — subprocess timeouts within the hook must be less than hook's own timeout
 
-SOURCE_EXTS = {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".kt", ".rb", ".c", ".cpp", ".cs", ".swift"}
+SOURCE_EXTS = {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".kt", ".rb", ".c", ".h", ".cpp", ".cs", ".swift", ".php"}
 SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".gitnexus", ".claude", ".codex",
              "dist", "build", "vendor", "third_party", "sdk", ".worktrees", ".tox"}
 
@@ -396,11 +396,14 @@ def run_diagnostic():
 def count_source_files() -> int:
     """Quick count of source files for growth detection."""
     count = 0
-    for root, dirs, files in os.walk("."):
-        dirs[:] = [d for d in dirs if not should_skip(d)]
-        for f in files:
-            if Path(f).suffix.lower() in SOURCE_EXTS:
-                count += 1
+    try:
+        for root, dirs, files in os.walk("."):
+            dirs[:] = [d for d in dirs if not should_skip(d)]
+            for f in files:
+                if Path(f).suffix.lower() in SOURCE_EXTS:
+                    count += 1
+    except OSError:
+        pass
     return count
 
 
