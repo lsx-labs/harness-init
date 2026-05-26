@@ -27,7 +27,11 @@ npx gitnexus setup
 ## 安装
 
 ```bash
+# 普通用户（复制模式）
 bash install.sh
+
+# 开发者（符号链接模式 — 改源码立即生效，无需重新安装）
+bash install.sh --link
 ```
 
 install.sh 会自动检测所有依赖，缺失时提示安装。

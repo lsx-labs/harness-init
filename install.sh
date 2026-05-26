@@ -2,8 +2,32 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-echo "Installing harness-init from $SCRIPT_DIR"
+
+# ── Parse flags ──
+USE_LINK=false
+if [[ "${1:-}" == "--link" ]]; then
+    USE_LINK=true
+fi
+
+if $USE_LINK; then
+    echo "Installing harness-init from $SCRIPT_DIR (symlink mode — for developers)"
+else
+    echo "Installing harness-init from $SCRIPT_DIR (copy mode)"
+fi
 echo ""
+
+# Helper: install a file (copy or symlink)
+install_file() {
+    local src="$1"
+    local dst="$2"
+    rm -f "$dst"
+    if $USE_LINK; then
+        ln -s "$src" "$dst"
+    else
+        cp "$src" "$dst"
+        chmod +x "$dst" 2>/dev/null || true
+    fi
+}
 
 # ── 0. Prerequisites ──
 
@@ -47,18 +71,15 @@ echo ""
 mkdir -p "$HOME/.local/bin"
 mkdir -p "$HOME/.local/share/harness-hooks"
 
-cp "$SCRIPT_DIR/scripts/harness-init.sh" "$HOME/.local/bin/harness-init.sh"
-chmod +x "$HOME/.local/bin/harness-init.sh"
-
-cp "$SCRIPT_DIR/scripts/harness-monitor.py" "$HOME/.local/share/harness-hooks/harness-monitor.py"
-chmod +x "$HOME/.local/share/harness-hooks/harness-monitor.py"
+install_file "$SCRIPT_DIR/scripts/harness-init.sh" "$HOME/.local/bin/harness-init.sh"
+install_file "$SCRIPT_DIR/scripts/harness-monitor.py" "$HOME/.local/share/harness-hooks/harness-monitor.py"
 
 echo "✅ Shared scripts installed"
 
 # ── 2. Claude Code skill ──
 if [ -d "$HOME/.claude" ]; then
     mkdir -p "$HOME/.claude/skills/harness-init"
-    cp "$SCRIPT_DIR/skills/claude/SKILL.md" "$HOME/.claude/skills/harness-init/SKILL.md"
+    install_file "$SCRIPT_DIR/skills/claude/SKILL.md" "$HOME/.claude/skills/harness-init/SKILL.md"
     echo "✅ Claude Code skill installed"
 else
     echo "⏭️  ~/.claude not found, skipping Claude Code skill"
@@ -67,7 +88,7 @@ fi
 # ── 3. Codex skill ──
 if [ -d "$HOME/.codex" ]; then
     mkdir -p "$HOME/.codex/skills/harness-init"
-    cp "$SCRIPT_DIR/skills/codex/SKILL.md" "$HOME/.codex/skills/harness-init/SKILL.md"
+    install_file "$SCRIPT_DIR/skills/codex/SKILL.md" "$HOME/.codex/skills/harness-init/SKILL.md"
     echo "✅ Codex skill installed"
 else
     echo "⏭️  ~/.codex not found, skipping Codex skill"
@@ -86,7 +107,6 @@ from pathlib import Path
 
 config_file = Path("$config_file")
 if not config_file.exists():
-    # Create minimal config if missing
     config_file.parent.mkdir(parents=True, exist_ok=True)
     if config_file.name == "hooks.json":
         config_file.write_text('{"hooks": {}}')
@@ -113,12 +133,10 @@ else:
 PYEOF
 }
 
-# Claude Code
 if [ -d "$HOME/.claude" ]; then
     register_hook "$HOME/.claude/settings.json" "Claude Code"
 fi
 
-# Codex
 if [ -d "$HOME/.codex" ]; then
     register_hook "$HOME/.codex/hooks.json" "Codex"
 fi
@@ -134,4 +152,8 @@ if [ -d "$HOME/.codex" ] && [ ! -f "$HOME/.claude/hooks/gitnexus/gitnexus-hook.c
 fi
 
 echo ""
-echo "Done! Run /harness-init in any project to get started."
+if $USE_LINK; then
+    echo "Done! (symlink mode — edits to $SCRIPT_DIR take effect immediately)"
+else
+    echo "Done! Run /harness-init in any project to get started."
+fi
