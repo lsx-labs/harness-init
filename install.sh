@@ -17,14 +17,23 @@ fi
 echo ""
 
 # Helper: install a file or directory
+# Safety: copy mode will NOT overwrite an existing symlink (preserves --link installs)
 install_file() {
     local src="$1" dst="$2"
+    if ! $USE_LINK && [ -L "$dst" ]; then
+        echo "  ⏭️  $(basename "$dst") is a symlink (--link mode), skipping copy"
+        return 0
+    fi
     rm -f "$dst"
     if $USE_LINK; then ln -sf "$src" "$dst"; else cp "$src" "$dst"; chmod +x "$dst" 2>/dev/null || true; fi
 }
 install_dir() {
     local src="$1" dst="$2"
     mkdir -p "$(dirname "$dst")"
+    if ! $USE_LINK && [ -L "$dst" ]; then
+        echo "  ⏭️  $(basename "$dst") is a symlink (--link mode), skipping copy"
+        return 0
+    fi
     rm -rf "$dst"
     if $USE_LINK; then ln -sf "$src" "$dst"; else cp -r "$src" "$dst"; fi
 }
