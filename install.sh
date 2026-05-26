@@ -154,11 +154,11 @@ session = hooks.setdefault("SessionStart", [])
 session[:] = [item for item in session
               if not any("session-context" in h.get("command", "") for h in item.get("hooks", []))]
 session.append({
-    "matcher": "",
+    "matcher": "startup|resume|clear|compact",
     "hooks": [{
         "type": "command",
         "command": f'bash "{context_path}"',
-        "timeout": 5000,
+        "timeout": 10,
         "statusMessage": "Loading project context..."
     }]
 })
