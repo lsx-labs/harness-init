@@ -23,13 +23,17 @@ else
 fi
 
 # Recent commits with module mapping
-echo "📜 最近提交:"
-git log --oneline --no-decorate -5 2>/dev/null | while read hash msg; do
-    # Get the primary module from this commit's changed files
-    MODULE=$(git diff-tree --no-commit-id --name-only -r "$hash" 2>/dev/null | head -1 | cut -d'/' -f1-2)
-    AGO=$(git log -1 --format='%cr' "$hash" 2>/dev/null | sed 's/ ago//')
-    echo "  $hash ${AGO}  $msg — ${MODULE:-root}/"
-done
+COMMITS=$(git log --oneline --no-decorate -5 2>/dev/null || true)
+if [ -n "$COMMITS" ]; then
+    echo "📜 最近提交:"
+    echo "$COMMITS" | while read hash msg; do
+        MODULE=$(git diff-tree --no-commit-id --name-only -r "$hash" 2>/dev/null | head -1 | cut -d'/' -f1-2)
+        AGO=$(git log -1 --format='%cr' "$hash" 2>/dev/null | sed 's/ ago//')
+        echo "  $hash ${AGO}  $msg — ${MODULE:-root}/"
+    done
+else
+    echo "📜 最近提交: (无提交历史)"
+fi
 
 # ── Harness health ──
 WARNINGS=""
