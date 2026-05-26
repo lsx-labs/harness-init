@@ -14,9 +14,9 @@
 
 | 依赖 | 必须 | 用途 |
 |---|---|---|
-| **Node.js 18+** | ✅ | GitNexus 运行环境 |
-| **GitNexus** | ✅ | 知识图谱索引 + CODE_MAP 生成 + Hook 搜索增强 |
 | **Python 3** | ✅ | 诊断脚本 + Hook 脚本 |
+| **Node.js 18+** | ✅ | GitNexus 运行环境 |
+| **GitNexus** | 推荐 | 知识图谱索引 + CODE_MAP 生成 + Hook 搜索增强。未安装时降级为 docstring 模式 |
 | Claude Code 或 Codex | 至少一个 | AI 编程平台 |
 
 ```bash
@@ -54,13 +54,14 @@ bash uninstall.sh
 ```
 harness-init/
 ├── scripts/
-│   ├── harness-init.sh      ← 核心诊断脚本（跨平台，JSON 输出）
+│   ├── harness-init.sh      ← 核心诊断脚本（跨平台，JSON 输出，schema_version: 1）
 │   └── harness-monitor.py   ← 统一 Hook（CODE_MAP 更新 + 项目成长检测）
 ├── skills/
 │   ├── claude/SKILL.md      ← Claude Code 入口（完整执行逻辑）
 │   └── codex/SKILL.md       ← Codex 入口
-├── install.sh               ← 一键安装
+├── install.sh               ← 一键安装（--link 开发者模式）
 ├── uninstall.sh             ← 一键卸载
+├── VERSION                  ← 版本号（诊断输出中包含 harness_version 字段）
 └── README.md
 ```
 

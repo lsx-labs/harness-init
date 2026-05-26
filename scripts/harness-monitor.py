@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Unified harness monitor — CODE_MAP.md updates + project growth detection.
+"""Harness monitor — CODE_MAP.md updates + project growth detection.
 
-Two trigger modes via PostToolUse:
-  Bash  → update CODE_MAP.md (GitNexus or docstring) + detect stale descriptions
-  Write → increment file counter + periodic diagnostic (GitNexus/LSP recommendations)
+Triggered via PostToolUse [Bash]:
+  1. Update CODE_MAP.md (GitNexus or docstring fallback) + detect stale descriptions
+  2. Check project growth (file count delta) + periodic diagnostic (GitNexus/LSP recommendations)
 
 State persisted per-project in ~/.local/share/harness-hooks/counters/{project}.json
 """
@@ -21,16 +21,24 @@ from pathlib import Path
 CHECK_EVERY_N_FILES = 20
 STALE_THRESHOLD = 0.2
 COUNTER_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "counters"
+STALE_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "stale-pending"
 DIAG_SCRIPT = Path.home() / ".local" / "bin" / "harness-init.sh"
+HOOK_TIMEOUT = 15  # seconds — subprocess timeouts within the hook must be less than hook's own timeout
 
-SOURCE_EXTS = {".py",".ts",".tsx",".js",".jsx",".go",".rs",".java",".kt",".rb",".c",".cpp",".cs",".swift"}
-SKIP_DIRS = {".git",".venv","venv","node_modules","__pycache__",".gitnexus",".claude",".codex",
-             "dist","build","vendor","third_party","sdk",".worktrees",".tox","data","doc","docs"}
+SOURCE_EXTS = {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".kt", ".rb", ".c", ".cpp", ".cs", ".swift"}
+SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".gitnexus", ".claude", ".codex",
+             "dist", "build", "vendor", "third_party", "sdk", ".worktrees", ".tox"}
 
-def should_skip(n): return n in SKIP_DIRS or n.endswith(".egg-info") or (n.startswith(".") and n != ".")
-def has_source(d):
-    try: return any(d.rglob(f"*{e}") for e in SOURCE_EXTS)
-    except: return False
+
+def should_skip(name: str) -> bool:
+    return name in SKIP_DIRS or name.endswith(".egg-info") or (name.startswith(".") and name != ".")
+
+
+def has_source(d: Path) -> bool:
+    try:
+        return any(d.rglob(f"*{e}") for e in SOURCE_EXTS)
+    except Exception:
+        return False
 
 
 # ── Project identity ──
@@ -41,21 +49,29 @@ def get_project_id() -> str:
                            capture_output=True, text=True, timeout=3)
         if r.returncode == 0:
             return r.stdout.strip().replace("/", "_").lstrip("_")
-    except: pass
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
     return ""
+
+
+def get_stale_track_file(project_id: str) -> Path:
+    return STALE_DIR / f"{project_id}.json"
 
 
 # ── State management ──
 
 def load_state(state_file: Path) -> dict:
     if state_file.exists():
-        try: return json.loads(state_file.read_text())
-        except: pass
+        try:
+            return json.loads(state_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
     return {
         "file_count": 0, "last_check_count": 0,
         "gitnexus_recommended": False, "lsp_recommended": [],
         "retired": False, "last_symbol_counts": {},
     }
+
 
 def save_state(state_file: Path, state: dict):
     state_file.parent.mkdir(parents=True, exist_ok=True)
@@ -63,20 +79,16 @@ def save_state(state_file: Path, state: dict):
 
 
 # ══════════════════════════════════════════════════════════
-# CODE_MAP.md update (triggered by Bash)
+# CODE_MAP.md update
 # ══════════════════════════════════════════════════════════
 
 def _extract_desc_and_count(text: str) -> tuple[str, int | None]:
-    """Parse description and symbol count from a line fragment, tolerating both orders:
-    '— desc (N symbols)' or '(N symbols) — desc'
-    """
+    """Parse description and symbol count, tolerating both orders."""
     desc, count = "", None
-    # Extract symbol count from anywhere in the text
     cm = re.search(r'\((\d+)\s*symbols?\)', text)
     if cm:
         count = int(cm.group(1))
-        text = text[:cm.start()] + text[cm.end():]  # remove count from text
-    # Extract description after —
+        text = text[:cm.start()] + text[cm.end():]
     dm = re.search(r'—\s*(.+)', text)
     if dm:
         desc = dm.group(1).strip()
@@ -89,28 +101,32 @@ def parse_existing_codemap(codemap_path: Path) -> tuple[dict[str, str], dict[str
         return descs, counts
     current_section = ""
     for line in codemap_path.read_text().split("\n"):
-        # ### dir/ (N symbols) — desc  OR  ### dir/ — desc (N symbols)
         m = re.match(r'^###\s+(\S+?)/?(.*)$', line)
         if m:
             current_section = m.group(1)
             desc, count = _extract_desc_and_count(m.group(2))
-            if desc and not desc.startswith("⚠️"): descs[current_section] = desc
-            if count is not None: counts[current_section] = count
+            if desc and not desc.startswith("⚠️"):
+                descs[current_section] = desc
+            if count is not None:
+                counts[current_section] = count
             continue
-        # - **sub/** — desc (N symbols)  OR  - **sub/** (N symbols) — desc
         m = re.match(r'^-\s+\*\*(\S+?)/?\*\*(.*)$', line)
         if m:
             sub = f"{current_section}/{m.group(1)}"
             desc, count = _extract_desc_and_count(m.group(2))
-            if desc and not desc.startswith("⚠️"): descs[sub] = desc
-            if count is not None: counts[sub] = count
+            if desc and not desc.startswith("⚠️"):
+                descs[sub] = desc
+            if count is not None:
+                counts[sub] = count
     return descs, counts
 
 
 def check_staleness(key, new_syms, old_counts, descs):
-    if key not in descs or key not in old_counts: return None
+    if key not in descs or key not in old_counts:
+        return None
     old = old_counts[key]
-    if old == 0: return None
+    if old == 0:
+        return None
     change = abs(new_syms - old) / old
     if change >= STALE_THRESHOLD:
         return f"⚠️ 描述可能过期（符号数 {old}→{new_syms}，变化 {change:.0%}）请运行 /harness-init 更新"
@@ -118,31 +134,37 @@ def check_staleness(key, new_syms, old_counts, descs):
 
 
 def get_gitnexus_communities():
-    if not Path(".gitnexus").is_dir(): return None
+    if not Path(".gitnexus").is_dir():
+        return None
     try:
         r = subprocess.run(
             ["npx", "gitnexus", "cypher",
              "MATCH (c:Community) WITH c.label AS area, sum(c.symbolCount) AS syms, "
              "count(*) AS clusters RETURN area, syms, clusters ORDER BY syms DESC LIMIT 25",
              "-r", Path(".").resolve().name],
-            capture_output=True, text=True, timeout=10)
-        if r.returncode != 0: return None
+            capture_output=True, text=True, timeout=HOOK_TIMEOUT)
+        if r.returncode != 0:
+            return None
         output = r.stdout.strip() or r.stderr.strip()
-        if not output: return None
+        if not output:
+            return None
         md = json.loads(output).get("markdown", "")
         lines = [l.strip() for l in md.split("\n") if l.strip()]
-        if len(lines) < 3: return None
+        if len(lines) < 3:
+            return None
         result = {}
         for line in lines[2:]:
             cols = [c.strip() for c in line.split("|") if c.strip()]
             if len(cols) >= 3 and cols[1].isdigit():
                 area, syms, clusters = cols[0], int(cols[1]), int(cols[2])
                 if area in result:
-                    result[area]["symbols"] += syms; result[area]["clusters"] += clusters
+                    result[area]["symbols"] += syms
+                    result[area]["clusters"] += clusters
                 else:
                     result[area] = {"symbols": syms, "clusters": clusters}
         return result or None
-    except: return None
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError, KeyError):
+        return None
 
 
 def build_area_to_dir(communities):
@@ -152,19 +174,22 @@ def build_area_to_dir(communities):
             ["npx", "gitnexus", "cypher",
              "MATCH (f:Folder) RETURN f.filePath ORDER BY f.filePath",
              "-r", Path(".").resolve().name],
-            capture_output=True, text=True, timeout=10)
+            capture_output=True, text=True, timeout=HOOK_TIMEOUT)
         output = r.stdout.strip() or r.stderr.strip()
         md = json.loads(output).get("markdown", "")
         folders = []
         for line in [l.strip() for l in md.split("\n") if l.strip()][2:]:
             cols = [c.strip() for c in line.split("|") if c.strip()]
-            if cols: folders.append(cols[0])
-    except: folders = []
+            if cols:
+                folders.append(cols[0])
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
+        folders = []
     for area in communities:
         area_lower = area.lower().lstrip("_")
         for f in folders:
             if f.split("/")[-1].lower().lstrip("_") == area_lower:
-                mapping[area] = f; break
+                mapping[area] = f
+                break
     return mapping
 
 
@@ -176,7 +201,8 @@ def build_gitnexus_codemap(communities, existing_descs, old_counts):
     top_dirs = {}
     for area, info in sorted(communities.items(), key=lambda x: -x[1]["symbols"]):
         dir_path = area_to_dir.get(area)
-        if not dir_path: continue
+        if not dir_path:
+            continue
         parts = dir_path.split("/")
         top, sub = parts[0], "/".join(parts[1:]) if len(parts) > 1 else ""
         top_dirs.setdefault(top, []).append((sub, info["symbols"], area))
@@ -186,48 +212,62 @@ def build_gitnexus_codemap(communities, existing_descs, old_counts):
         total_syms = sum(e[1] for e in entries)
         desc = existing_descs.get(top_dir, "")
         stale = check_staleness(top_dir, total_syms, old_counts, existing_descs)
-        if stale:       lines.append(f"### {top_dir}/ ({total_syms} symbols) — {stale}")
-        elif desc:      lines.append(f"### {top_dir}/ ({total_syms} symbols) — {desc}")
-        else:           lines.append(f"### {top_dir}/ ({total_syms} symbols)")
+        if stale:
+            lines.append(f"### {top_dir}/ ({total_syms} symbols) — {stale}")
+        elif desc:
+            lines.append(f"### {top_dir}/ ({total_syms} symbols) — {desc}")
+        else:
+            lines.append(f"### {top_dir}/ ({total_syms} symbols)")
         for sub, syms, area in sorted(entries, key=lambda x: -x[1]):
             if sub:
                 sub_key = f"{top_dir}/{sub}"
                 sub_desc = existing_descs.get(sub_key, "")
                 sub_stale = check_staleness(sub_key, syms, old_counts, existing_descs)
-                if sub_stale:    lines.append(f"- **{sub}/** — {sub_stale} ({syms} symbols)")
-                elif sub_desc:   lines.append(f"- **{sub}/** — {sub_desc} ({syms} symbols)")
-                else:            lines.append(f"- **{sub}/** ({syms} symbols)")
+                if sub_stale:
+                    lines.append(f"- **{sub}/** — {sub_stale} ({syms} symbols)")
+                elif sub_desc:
+                    lines.append(f"- **{sub}/** — {sub_desc} ({syms} symbols)")
+                else:
+                    lines.append(f"- **{sub}/** ({syms} symbols)")
         lines.append("")
     return "\n".join(lines) + "\n"
 
 
 def extract_doc(fp):
-    try: src = fp.read_text(encoding="utf-8", errors="ignore")
-    except: return ""
+    try:
+        src = fp.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
     ext = fp.suffix.lower()
     if ext == ".py":
         try:
             ds = ast.get_docstring(ast.parse(src))
             if ds:
                 line = ds.strip().split("\n")[0]
-                for sep in ("—","–","-"):
-                    if sep in line: line = line.split(sep,1)[1].strip(); break
+                for sep in ("—", "–", "-"):
+                    if sep in line:
+                        line = line.split(sep, 1)[1].strip()
+                        break
                 return line[:100]
-        except: pass
-    elif ext in (".js",".ts",".jsx",".tsx",".java",".kt"):
+        except SyntaxError:
+            pass
+    elif ext in (".js", ".ts", ".jsx", ".tsx", ".java", ".kt"):
         m = re.search(r'/\*\*\s*\n?\s*\*?\s*(.+?)[\n*]', src[:2000])
-        if m: return m.group(1).strip().rstrip("*/").strip()[:100]
+        if m:
+            return m.group(1).strip().rstrip("*/").strip()[:100]
     elif ext == ".go":
         ls = src.split("\n")
-        for i,l in enumerate(ls):
+        for i, l in enumerate(ls):
             if l.strip().startswith("package "):
-                for j in range(max(0,i-5),i):
+                for j in range(max(0, i - 5), i):
                     cl = ls[j].strip()
-                    if cl.startswith("//") and not cl.startswith("//go:"): return cl.lstrip("/").strip()[:100]
+                    if cl.startswith("//") and not cl.startswith("//go:"):
+                        return cl.lstrip("/").strip()[:100]
                 break
     elif ext == ".rs":
         for l in src.split("\n")[:10]:
-            if l.strip().startswith("//!"): return l.strip().lstrip("/!").strip()[:100]
+            if l.strip().startswith("//!"):
+                return l.strip().lstrip("/!").strip()[:100]
     return ""
 
 
@@ -235,53 +275,59 @@ def build_docstring_codemap(existing_descs):
     root = Path(".")
     lines = ["# Code Map", ""]
     for d in sorted(root.iterdir()):
-        if not d.is_dir() or should_skip(d.name) or not has_source(d): continue
+        if not d.is_dir() or should_skip(d.name) or not has_source(d):
+            continue
         desc = existing_descs.get(d.name, "")
         if not desc:
-            for entry in ("__init__.py","index.ts","index.js","mod.rs","lib.rs"):
+            for entry in ("__init__.py", "index.ts", "index.js", "mod.rs", "lib.rs"):
                 f = d / entry
                 if f.exists():
                     desc = extract_doc(f)
-                    if desc: break
+                    if desc:
+                        break
         lines.append(f"### {d.name}/" + (f" — {desc}" if desc else ""))
         for sub in sorted(d.iterdir()):
             if sub.is_dir() and not should_skip(sub.name) and not sub.name.startswith("_"):
                 sub_key = f"{d.name}/{sub.name}"
                 sub_desc = existing_descs.get(sub_key, "")
                 if not sub_desc:
-                    for entry in ("__init__.py","index.ts","index.js","mod.rs","lib.rs"):
+                    for entry in ("__init__.py", "index.ts", "index.js", "mod.rs", "lib.rs"):
                         f = sub / entry
                         if f.exists():
                             sub_desc = extract_doc(f)
-                            if sub_desc: break
+                            if sub_desc:
+                                break
                 lines.append(f"  - **{sub.name}/**" + (f" — {sub_desc}" if sub_desc else ""))
         lines.append("")
     return "\n".join(lines) + "\n"
 
 
-STALE_TRACK_FILE = Path(".harness-stale-pending")
-
-def handle_codemap_update():
+def handle_codemap_update(project_id: str):
     """Update CODE_MAP.md — called on Bash triggers."""
-    # Fallback check: if previous stale markers were not resolved, escalate to user
     codemap_file = Path("CODE_MAP.md")
-    if STALE_TRACK_FILE.exists() and codemap_file.exists():
-        pending = json.loads(STALE_TRACK_FILE.read_text())
-        still_stale = [d for d in pending.get("dirs", [])
-                       if f"⚠️ 描述可能过期" in
-                       next((l for l in codemap_file.read_text().split("\n") if d in l), "")]
-        if still_stale:
-            print(json.dumps({
-                "decision": "warn",
-                "reason": (
-                    f"⚠️ 以下目录的描述在上次标记后仍未更新：{', '.join(still_stale)}。"
-                    f"请手动运行 /harness-init 更新这些目录的 CODE_MAP.md 描述"
-                    + (f"和子目录 CLAUDE.md/AGENTS.md" if any(
-                        Path(d, "CLAUDE.md").exists() for d in still_stale) else "")
-                    + "。"
-                )
-            }, ensure_ascii=False))
-            STALE_TRACK_FILE.unlink()
+    stale_track = get_stale_track_file(project_id)
+
+    # Fallback check: previous stale markers not resolved → escalate
+    if stale_track.exists() and codemap_file.exists():
+        try:
+            pending = json.loads(stale_track.read_text())
+            codemap_text = codemap_file.read_text()
+            still_stale = [d for d in pending.get("dirs", [])
+                           if any("⚠️ 描述可能过期" in l for l in codemap_text.split("\n") if d in l)]
+            if still_stale:
+                print(json.dumps({
+                    "decision": "warn",
+                    "reason": (
+                        f"⚠️ 以下目录的描述在上次标记后仍未更新：{', '.join(still_stale)}。"
+                        f"请手动运行 /harness-init 更新这些目录的 CODE_MAP.md 描述"
+                        + (f"和子目录 CLAUDE.md/AGENTS.md" if any(
+                            Path(d, "CLAUDE.md").exists() for d in still_stale) else "")
+                        + "。"
+                    )
+                }, ensure_ascii=False))
+                stale_track.unlink(missing_ok=True)
+        except (json.JSONDecodeError, OSError):
+            stale_track.unlink(missing_ok=True)
 
     existing_descs, old_counts = parse_existing_codemap(codemap_file)
 
@@ -302,65 +348,72 @@ def handle_codemap_update():
     for line in new_content.split("\n"):
         if "⚠️ 描述可能过期" in line:
             m = re.match(r'^(?:###\s+|.*\*\*)(\S+?)/?', line)
-            if m: stale_dirs.append(m.group(1))
+            if m:
+                stale_dirs.append(m.group(1))
 
     if new_content != old_content:
         codemap_file.write_text(new_content)
         result = {"status": "codemap_updated", "source": source}
         if stale_dirs:
             result["stale_descriptions"] = stale_dirs
-            # Check which stale dirs also have sub-directory CLAUDE.md/AGENTS.md
             stale_module_docs = [d for d in stale_dirs if
-                                 Path(d.replace("/", os.sep), "CLAUDE.md").exists() or
-                                 Path(d.replace("/", os.sep), "AGENTS.md").exists()]
-            actions = []
-            actions.append(
+                                 Path(d, "CLAUDE.md").exists() or
+                                 Path(d, "AGENTS.md").exists()]
+            actions = [
                 f"CODE_MAP.md 中 {len(stale_dirs)} 个目录的描述可能过期：{', '.join(stale_dirs)}。"
                 f"请用 subagent 读取这些目录的核心源文件，更新 CODE_MAP.md 中对应的一句话描述。"
-            )
+            ]
             if stale_module_docs:
                 actions.append(
                     f"以下模块的 CLAUDE.md/AGENTS.md 也可能需要更新（同步过期）：{', '.join(stale_module_docs)}。"
                     f"请一并读取核心源文件，更新模块约束（测试命令/编码约束/危险操作）。两个文件内容保持一致。"
                 )
             result["action"] = " ".join(actions)
-            # Track stale dirs for fallback reminder
-            STALE_TRACK_FILE.write_text(json.dumps({"dirs": stale_dirs}))
+            stale_track.parent.mkdir(parents=True, exist_ok=True)
+            stale_track.write_text(json.dumps({"dirs": stale_dirs}))
         else:
-            # No stale dirs — clean up tracking file if exists
-            if STALE_TRACK_FILE.exists():
-                STALE_TRACK_FILE.unlink()
+            stale_track.unlink(missing_ok=True)
         print(json.dumps(result, ensure_ascii=False))
 
 
 # ══════════════════════════════════════════════════════════
-# Project growth detection (triggered by Write)
+# Project growth detection (piggybacks on Bash triggers)
 # ══════════════════════════════════════════════════════════
 
 def run_diagnostic():
-    if not DIAG_SCRIPT.exists(): return None
+    if not DIAG_SCRIPT.exists():
+        return None
     try:
         r = subprocess.run(["bash", str(DIAG_SCRIPT), "."],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=HOOK_TIMEOUT)
         if r.returncode == 0 and r.stdout.strip():
             return json.loads(r.stdout)
-    except: pass
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
+        pass
     return None
 
 
-def handle_file_growth(ctx, state, state_file):
-    """Track new file creation, periodic diagnostic — called on Write triggers."""
-    file_path = ctx.get("tool_input", {}).get("file_path", "")
-    if not file_path:
-        return
+def count_source_files() -> int:
+    """Quick count of source files for growth detection."""
+    count = 0
+    for root, dirs, files in os.walk("."):
+        dirs[:] = [d for d in dirs if not should_skip(d)]
+        for f in files:
+            if Path(f).suffix.lower() in SOURCE_EXTS:
+                count += 1
+    return count
 
+
+def handle_growth_check(state, state_file):
+    """Check project growth on Bash triggers."""
     if state.get("retired"):
         return
 
-    state["file_count"] += 1
-    files_since_check = state["file_count"] - state["last_check_count"]
+    current_count = count_source_files()
+    prev_count = state.get("file_count", 0)
+    state["file_count"] = current_count
 
-    if files_since_check < CHECK_EVERY_N_FILES:
+    if current_count - prev_count < CHECK_EVERY_N_FILES:
         save_state(state_file, state)
         return
 
@@ -372,7 +425,6 @@ def handle_file_growth(ctx, state, state_file):
     state["last_check_count"] = state["file_count"]
     messages = []
 
-    # Check GitNexus
     grep_noise = diag.get("grep_noise", {}).get("grep_noise_files", 0)
     most_imported = diag.get("grep_noise", {}).get("most_imported", "")
     gitnexus_indexed = diag.get("existing", {}).get("gitnexus", {}).get("indexed", False)
@@ -383,7 +435,6 @@ def handle_file_growth(ctx, state, state_file):
             f"📊 项目复杂度增长提醒：最热模块 `{most_imported}` 的 grep 噪声已达 {grep_noise} 个文件，"
             f"建议安装 GitNexus 知识图谱索引。运行 /harness-init 查看详情。")
 
-    # Check LSP
     already_recommended = set(state.get("lsp_recommended", []))
     for assessment in diag.get("lsp_assessment", []):
         lang = assessment["language"]
@@ -392,7 +443,6 @@ def handle_file_growth(ctx, state, state_file):
             messages.append(f"📊 {lang} LSP 建议：{assessment['reason']}。运行 /harness-init 查看详情。")
     state["lsp_recommended"] = list(already_recommended)
 
-    # Retire check
     gitnexus_done = gitnexus_indexed or grep_noise <= 20
     lsp_needed = {a["language"] for a in diag.get("lsp_assessment", []) if a["recommend"]}
     if gitnexus_done and (lsp_needed.issubset(already_recommended) or not lsp_needed) and not messages:
@@ -411,10 +461,15 @@ def handle_file_growth(ctx, state, state_file):
 def main():
     try:
         ctx = json.load(sys.stdin)
-    except:
+    except (json.JSONDecodeError, ValueError):
+        return
+
+    if not isinstance(ctx, dict) or "tool_name" not in ctx:
         return
 
     tool = ctx.get("tool_name", "")
+    if tool != "Bash":
+        return
 
     project_id = get_project_id()
     if not project_id:
@@ -423,11 +478,8 @@ def main():
     state_file = COUNTER_DIR / f"{project_id}.json"
     state = load_state(state_file)
 
-    if tool in ("Bash",):
-        handle_codemap_update()
-
-    elif tool in ("Write",):
-        handle_file_growth(ctx, state, state_file)
+    handle_codemap_update(project_id)
+    handle_growth_check(state, state_file)
 
 
 main()

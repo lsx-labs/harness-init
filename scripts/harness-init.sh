@@ -3,8 +3,11 @@ set -euo pipefail
 PROJECT_DIR="${1:-.}"
 cd "$PROJECT_DIR"
 
-python3 << 'PYEOF'
-import os, re, json, subprocess
+# Resolve script's own location for VERSION lookup
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)"
+
+python3 - "$SCRIPT_DIR" << 'PYEOF'
+import os, re, json, subprocess, sys
 from pathlib import Path
 from collections import Counter, defaultdict
 
@@ -168,6 +171,12 @@ for li in languages:
     lsp.append(a)
 
 print(json.dumps({
+    'schema_version': 1,
+    'harness_version': next(
+        (p.read_text().strip() for p in [
+            Path(sys.argv[1]).parent / 'VERSION',  # script_dir/../VERSION (works in both symlink and copy modes)
+            Path.home() / '.local' / 'share' / 'harness-hooks' / 'VERSION',  # copy mode fallback
+        ] if p.exists()), 'unknown'),
     'project': os.path.basename(os.path.abspath('.')),
     'project_dir': os.path.abspath('.'),
     'languages': languages, 'grep_noise': grep_noise,
