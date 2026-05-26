@@ -271,10 +271,21 @@ def handle_codemap_update():
         result = {"status": "codemap_updated", "source": source}
         if stale_dirs:
             result["stale_descriptions"] = stale_dirs
-            result["action"] = (
+            # Check which stale dirs also have sub-directory CLAUDE.md/AGENTS.md
+            stale_module_docs = [d for d in stale_dirs if
+                                 Path(d.replace("/", os.sep), "CLAUDE.md").exists() or
+                                 Path(d.replace("/", os.sep), "AGENTS.md").exists()]
+            actions = []
+            actions.append(
                 f"CODE_MAP.md 中 {len(stale_dirs)} 个目录的描述可能过期：{', '.join(stale_dirs)}。"
                 f"请用 subagent 读取这些目录的核心源文件，更新 CODE_MAP.md 中对应的一句话描述。"
             )
+            if stale_module_docs:
+                actions.append(
+                    f"以下模块的 CLAUDE.md/AGENTS.md 也可能需要更新（同步过期）：{', '.join(stale_module_docs)}。"
+                    f"请一并读取核心源文件，更新模块约束（测试命令/编码约束/危险操作）。两个文件内容保持一致。"
+                )
+            result["action"] = " ".join(actions)
         print(json.dumps(result, ensure_ascii=False))
 
 
