@@ -57,13 +57,14 @@ def get_ai_cmd():
     return ""
 
 
-def ai_invoke(prompt, timeout=15):
+def ai_invoke(prompt, timeout=15):  # Must be < hook deadline (20s in install.sh)
     """Invoke AI CLI non-interactively. Timeout must be < hook's 20s deadline."""
     cmd = get_ai_cmd()
     if not cmd:
         return ""
     try:
         if "claude" in cmd:
+            # No Bash in allowedTools — prompts only need Read + GitNexus MCP
             r = subprocess.run(
                 [cmd, "-p", prompt, "--allowedTools", "Read,mcp__gitnexus*"],
                 capture_output=True, text=True, timeout=timeout)

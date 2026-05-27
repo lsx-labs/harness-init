@@ -86,7 +86,7 @@ if [ -n "$AI_CMD" ] && [ -d ".gitnexus" ]; then
 
     RESULT=""
     if [ "$AI_CMD" = "claude" ]; then
-        RESULT=$(claude -p "$PROMPT" --output-format stream-json 2>/dev/null | \
+        RESULT=$(timeout 15 claude -p "$PROMPT" --output-format stream-json 2>/dev/null | \
                  python3 -c "
 import json, sys
 text = ''
