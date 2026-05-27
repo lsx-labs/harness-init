@@ -116,7 +116,50 @@ autoresearch/                  ← 最后生成（复用子层总结）
 └── qdata/                     ← Step 5
 ```
 
-数据源：GitNexus 优先（context / impact / query），grep 降级。
+数据源：**所有约束和危险操作必须先通过 GitNexus 查询获取事实，再由 AI 总结。禁止 AI 直接读代码推断。**
+
+**约束生成流程（严格 GitNexus 驱动）**：
+
+```
+Step 1: gitnexus_context({目录核心函数})
+  → 获取：callers / callees / 参与的执行流
+  → AI 从返回数据中识别：公开 API 契约（incoming calls 多 = 签名不可改）
+
+Step 2: gitnexus_impact({目录核心符号}, direction=upstream)
+  → 获取：影响节点数 / risk 等级 / affected_modules
+  → AI 从返回数据中识别：高扇入符号 = 约束（改签名需排查 N 个调用者）
+
+Step 3: gitnexus_query({目录名})
+  → 获取：相关执行流列表
+  → AI 从返回数据中识别：跨模块依赖约束
+```
+
+每条约束必须标注**GitNexus 查询来源**：
+```
+- `load_baseline_contract` 被 13 个函数调用（gitnexus_context 返回 13 incoming calls）
+  → 改签名需排查 status.py/post_oos.py/vbt_runner.py 等（见 baseline_contract.py L92）
+```
+
+**危险操作生成流程（严格 GitNexus 驱动）**：
+
+```
+Step 1: gitnexus_impact({目录所有公开函数}, direction=upstream)
+  → 筛选：risk=HIGH 或 impactedCount > 10 的符号
+
+Step 2: 对每个高风险符号，AI 读该函数源码（仅该函数，不读整个文件）
+  → 判断"为什么危险"（写操作？状态修改？不可逆？）
+
+Step 3: 组合 GitNexus 数据 + 源码判断 → 写危险描述
+```
+
+格式：`**{文件名}**: {为什么危险}（gitnexus_impact: {N} 个调用者, risk={LEVEL}）`
+
+**禁止**：
+- ❌ AI 直接通读代码文件推断约束（绕过 GitNexus）
+- ❌ 没有 GitNexus 查询数据支撑的约束
+- ❌ 没有 impact 分析的危险操作
+
+**降级**：GitNexus 不可用时，不生成约束和危险操作（留空），只生成测试命令。
 
 输出模板：
 
@@ -128,13 +171,13 @@ autoresearch/                  ← 最后生成（复用子层总结）
 {测试命令，ls 验证路径存在}
 
 <!-- harness:start -->
-## 约束（自动生成）
+## 约束（基于 GitNexus 事实）
 
-- {约束}（见 {文件名} {符号名}）
+- {符号名} 被 {N} 个函数调用（gitnexus_context: {N} incoming）→ {约束}（见 {文件名}）
 
-## 危险操作（自动生成）
+## 危险操作（基于 GitNexus impact 分析）
 
-- **{文件名}**: {原因}，影响 {N} 个调用者
+- **{文件名}**: {为什么危险}（gitnexus_impact: {N} callers, risk={LEVEL}）
 <!-- harness:end -->
 
 ## 补充约束（手动维护）
