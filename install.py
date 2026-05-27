@@ -69,7 +69,7 @@ def register_hooks(config_file: Path, platform_name: str, monitor_path: str, con
     d = json.loads(config_file.read_text())
     hooks = d.setdefault("hooks", {})
 
-    # PostToolUse: harness-monitor (idempotent)
+    # PostToolUse: harness_monitor (idempotent)
     post = hooks.setdefault("PostToolUse", [])
     post[:] = [item for item in post
                if not any("harness_monitor" in h.get("command", "") or "harness-monitor" in h.get("command", "")
@@ -162,6 +162,10 @@ def main():
     if USE_LINK:
         monitor_path = str(SCRIPT_DIR / "scripts" / "harness_monitor.py")
         context_path = str(SCRIPT_DIR / "scripts" / "session_context.py")
+        # Clean up stale copy-mode files
+        for stale in ["harness-monitor.py", "harness_monitor.py",
+                       "generate_descriptions.py", "session_context.py"]:
+            (local_share / stale).unlink(missing_ok=True)
     else:
         local_share.mkdir(parents=True, exist_ok=True)
         install_file(SCRIPT_DIR / "scripts" / "harness_monitor.py", local_share / "harness_monitor.py")

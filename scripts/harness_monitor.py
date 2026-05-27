@@ -404,7 +404,7 @@ def update_subdir_docs(stale_dirs):
         f"目录：{', '.join(dirs_with_docs)}"
     )
 
-    result = ai_invoke(prompt, timeout=15)
+    result = ai_invoke(prompt, timeout=60)
     return dirs_with_docs if result else []
 
 
@@ -583,6 +583,16 @@ def handle_growth_check(state, state_file):
 
 def do_growth_check(state_file_path, project_dir):
     """Background worker: run diagnostic + save notifications."""
+    project_id = Path(project_dir).name
+    if not acquire_lock(f"{project_id}_growth"):
+        return
+    try:
+        _do_growth_check_inner(state_file_path, project_dir)
+    finally:
+        release_lock(f"{project_id}_growth")
+
+
+def _do_growth_check_inner(state_file_path, project_dir):
     os.chdir(project_dir)
     state_file = Path(state_file_path)
     state = load_state(state_file)
@@ -659,7 +669,7 @@ def main():
 
 if __name__ == "__main__":
     if len(sys.argv) >= 4 and sys.argv[1] == "--bg":
-        # Background mode: harness-monitor.py --bg <project_id> <project_dir>
+        # Background mode: harness_monitor.py --bg <project_id> <project_dir>
         os.chdir(sys.argv[3])
         do_main_branch_update(sys.argv[2])
     elif len(sys.argv) >= 4 and sys.argv[1] == "--bg-growth":

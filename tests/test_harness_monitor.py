@@ -589,6 +589,7 @@ class TestDoGrowthCheck:
 
     def test_diag_script_failure(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
         state_file = tmp_path / "state.json"
         state = {"file_count": 25, "retired": False}
         state_file.write_text(json.dumps(state))
@@ -599,6 +600,7 @@ class TestDoGrowthCheck:
 
     def test_diag_script_timeout(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
         state_file = tmp_path / "state.json"
         state = {"file_count": 25, "retired": False}
         state_file.write_text(json.dumps(state))
@@ -609,6 +611,7 @@ class TestDoGrowthCheck:
 
     def test_empty_diag_stdout(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
         state_file = tmp_path / "state.json"
         state = {"file_count": 25, "retired": False}
         state_file.write_text(json.dumps(state))
@@ -619,6 +622,7 @@ class TestDoGrowthCheck:
 
     def test_gitnexus_recommendation(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
         notify_dir = tmp_path / "notifications"
         monkeypatch.setattr(hm, 'NOTIFY_DIR', notify_dir)
         state_file = tmp_path / "state.json"
@@ -643,6 +647,7 @@ class TestDoGrowthCheck:
 
     def test_lsp_recommendation(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
         notify_dir = tmp_path / "notifications"
         monkeypatch.setattr(hm, 'NOTIFY_DIR', notify_dir)
         state_file = tmp_path / "state.json"
@@ -667,6 +672,7 @@ class TestDoGrowthCheck:
 
     def test_retirement(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
         notify_dir = tmp_path / "notifications"
         monkeypatch.setattr(hm, 'NOTIFY_DIR', notify_dir)
         state_file = tmp_path / "state.json"
@@ -687,7 +693,21 @@ class TestDoGrowthCheck:
         saved = json.loads(state_file.read_text())
         assert saved["retired"] is True
         notify_file = notify_dir / f"{tmp_path.name}.json"
-        assert not notify_file.exists()  # no messages → no notification
+        assert not notify_file.exists()
+
+    def test_skips_if_locked(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        lock_dir = tmp_path / "locks"
+        lock_dir.mkdir()
+        monkeypatch.setattr(hm, 'LOCK_DIR', lock_dir)
+        lock_file = lock_dir / f"{tmp_path.name}_growth.lock"
+        lock_file.write_text(str(os.getpid()))
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps({"file_count": 25, "retired": False}))
+        with patch.object(hm, 'DIAG_SCRIPT', tmp_path / "diag.sh"), \
+             patch.object(hm.subprocess, 'run') as mock_run:
+            hm.do_growth_check(str(state_file), str(tmp_path))
+        mock_run.assert_not_called()
 
 
 class TestMainFunction:
@@ -938,6 +958,7 @@ class TestCoverageGaps:
 
     def test_bg_growth_cli_mode(self, tmp_path, monkeypatch):
         """Cover __main__ --bg-growth entry point."""
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
         state_file = tmp_path / "state.json"
         state_file.write_text(json.dumps({"file_count": 25, "retired": False}))
         mock_result = MagicMock(returncode=1, stdout="")

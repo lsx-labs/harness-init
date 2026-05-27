@@ -63,6 +63,8 @@ def main():
               "session_context.py", "session-context.sh", "VERSION"]:
         rm_file(share / f)
     rm_dir(share / "counters")
+    rm_dir(share / "locks")
+    rm_dir(share / "notifications")
 
     # Skills
     rm_dir(HOME / ".claude" / "skills" / "harness-init")

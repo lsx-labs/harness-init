@@ -48,7 +48,7 @@ install.py 自动检测依赖，一键安装 GitNexus（可选）。
 harness-init/
 ├── scripts/
 │   ├── harness-init.py          ← 诊断脚本（JSON, schema_version: 1）
-│   ├── harness-monitor.py       ← PostToolUse Hook（AI CLI + GitNexus）
+│   ├── harness_monitor.py        ← PostToolUse Hook（AI CLI + GitNexus）
 │   ├── generate_descriptions.py ← CODE_MAP 描述生成
 │   └── session_context.py       ← SessionStart Hook
 ├── skills/
@@ -64,7 +64,7 @@ harness-init/
 
 | Hook | 事件 | 功能 |
 |---|---|---|
-| harness-monitor.py | PostToolUse [Bash] | main 分支 git 操作后：CODE_MAP + 子目录 + 成长检测 |
+| harness_monitor.py | PostToolUse [Bash] | main 分支 git 操作后：CODE_MAP + 子目录 + 成长检测 |
 | session_context.py | SessionStart [startup\|clear] | 注入 git 状态 + 模块映射 |
 | gitnexus-hook.cjs | PreToolUse [Grep\|Glob\|Bash] | GitNexus 搜索增强（第三方） |
 
