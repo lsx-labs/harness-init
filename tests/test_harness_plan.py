@@ -2,12 +2,13 @@
 
 import json
 import os
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, PropertyMock
 from pathlib import Path
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 import harness_plan as hp
+import shared
 
 
 class TestPlatformFiles:
@@ -35,10 +36,10 @@ class TestPlanRootDoc:
         assert hp.plan_root_doc("CLAUDE.md", "AGENTS.md") == {"action": "generate"}
 
 
-class TestParseCodemapEntries:
+class TestParseCodemap:
     def test_empty(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        assert hp.parse_codemap_entries() == []
+        assert shared.parse_codemap(tmp_path / "CODE_MAP.md") == []
 
     def test_with_entries(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -49,7 +50,7 @@ class TestParseCodemapEntries:
             "### tests/ — Test suite\n",
             encoding="utf-8"
         )
-        entries = hp.parse_codemap_entries()
+        entries = shared.parse_codemap(tmp_path / "CODE_MAP.md")
         assert len(entries) == 3
         assert entries[0]["dir"] == "src"
         assert entries[0]["symbols"] == 200
@@ -111,20 +112,21 @@ class TestPlanGitnexus:
 
 
 class TestFindComplexDirs:
-    def test_finds_complex(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "CODE_MAP.md").write_text(
-            "### src/ (200 symbols)\n"
-            "- **api/** (150 symbols)\n"
-            "- **utils/** (50 symbols)\n"
-            "### tests/ (30 symbols)\n",
-            encoding="utf-8"
-        )
-        dirs = hp.find_complex_dirs()
+    def test_finds_complex(self):
+        entries = [
+            {"dir": "src", "desc": "", "symbols": 200},
+            {"dir": "src/api", "desc": "", "symbols": 150},
+            {"dir": "src/utils", "desc": "", "symbols": 50},
+            {"dir": "tests", "desc": "", "symbols": 30},
+        ]
+        dirs = hp.find_complex_dirs(entries)
         assert "src" in dirs
         assert "src/api" in dirs
         assert "src/utils" not in dirs
         assert "tests" not in dirs
+
+    def test_empty(self):
+        assert hp.find_complex_dirs([]) == []
 
 
 class TestPlanSubdirs:
@@ -183,3 +185,35 @@ class TestPlanLsp:
 
     def test_empty(self):
         assert hp.plan_lsp({}) == []
+
+
+class TestMain:
+    def test_main_with_codemap(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text(
+            "### src/ (200 symbols) — Core\n", encoding="utf-8")
+        monkeypatch.setattr('sys.argv', ['hp', str(tmp_path), '--platform', 'claude'])
+        with patch('pathlib.Path.home', return_value=tmp_path):
+            hp.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["platform"] == "claude"
+        assert out["doc_file"] == "CLAUDE.md"
+        assert "root_doc" in out
+        assert "codemap" in out
+        assert "subdirs" in out
+
+    def test_main_default_platform(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr('sys.argv', ['hp', str(tmp_path)])
+        with patch('pathlib.Path.home', return_value=tmp_path):
+            hp.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["platform"] == "claude"
+
+    def test_main_platform_equals(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr('sys.argv', ['hp', str(tmp_path), '--platform=codex'])
+        with patch('pathlib.Path.home', return_value=tmp_path):
+            hp.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["platform"] == "codex"

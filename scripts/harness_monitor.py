@@ -25,28 +25,19 @@ from pathlib import Path
 if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
+from shared import (SKIP_DIRS, STALE_THRESHOLD, SOURCE_EXTS, MAIN_BRANCHES,
+                    should_skip, parse_codemap_entry)
+
 # ── Config ──
 
 CHECK_EVERY_N_FILES = 20
-STALE_THRESHOLD = 0.2
 COUNTER_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "counters"
 LOCK_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "locks"
 NOTIFY_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "notifications"
 DIAG_SCRIPT = Path.home() / ".local" / "bin" / "harness-init.py"
 DESC_SCRIPT = Path.home() / ".local" / "share" / "harness-hooks" / "generate_descriptions.py"
 GITNEXUS_TIMEOUT = 15
-
-SOURCE_EXTS = {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".kt",
-               ".rb", ".c", ".h", ".cpp", ".cs", ".swift", ".php"}
-SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".gitnexus",
-             ".claude", ".codex", "dist", "build", "vendor", "third_party", "sdk",
-             ".worktrees", ".tox"}
 GIT_COMMANDS = re.compile(r'\bgit\s+(commit|merge|rebase|pull|checkout|switch|cherry-pick)\b')
-MAIN_BRANCHES = {"main", "master"}
-
-
-def should_skip(name):
-    return name in SKIP_DIRS or name.endswith(".egg-info") or (name.startswith(".") and name != ".")
 
 
 # ── Directory description helpers (deterministic, no AI) ──
@@ -198,41 +189,11 @@ def save_state(state_file, state):
 # CODE_MAP.md update (structure + descriptions)
 # ══════════════════════════════════════════════════════════
 
-def _extract_desc_and_count(text):
-    desc, count = "", None
-    cm = re.search(r'\((\d+)\s*symbols?\)', text)
-    if cm:
-        count = int(cm.group(1))
-        text = text[:cm.start()] + text[cm.end():]
-    dm = re.search(r'—\s*(.+)', text)
-    if dm:
-        desc = dm.group(1).strip()
-    return desc, count
-
-
 def parse_existing_codemap(codemap_path):
-    descs, counts = {}, {}
-    if not codemap_path.exists():
-        return descs, counts
-    current_section = ""
-    for line in codemap_path.read_text(encoding="utf-8").split("\n"):
-        m = re.match(r'^###\s+(\S+)/?(.*)$', line)
-        if m:
-            current_section = m.group(1).rstrip("/")
-            desc, count = _extract_desc_and_count(m.group(2))
-            if desc and not desc.startswith("⚠️"):
-                descs[current_section] = desc
-            if count is not None:
-                counts[current_section] = count
-            continue
-        m = re.match(r'^-\s+\*\*(\S+)/?\*\*(.*)$', line)
-        if m:
-            sub = f"{current_section}/{m.group(1).rstrip('/')}"
-            desc, count = _extract_desc_and_count(m.group(2))
-            if desc and not desc.startswith("⚠️"):
-                descs[sub] = desc
-            if count is not None:
-                counts[sub] = count
+    from shared import parse_codemap as _parse
+    entries = _parse(codemap_path)
+    descs = {e["dir"]: e["desc"] for e in entries if e["desc"] and not e["desc"].startswith("⚠️")}
+    counts = {e["dir"]: e["symbols"] for e in entries if e["symbols"] is not None}
     return descs, counts
 
 

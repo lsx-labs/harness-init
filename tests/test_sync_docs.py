@@ -72,3 +72,41 @@ class TestFindDocDirs:
         (git / "CLAUDE.md").write_text("nope")
         dirs = sd.find_doc_dirs()
         assert not any(".git" in d for d in dirs)
+
+
+class TestMain:
+    def test_main_sync(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "AGENTS.md").write_text("content", encoding="utf-8")
+        monkeypatch.setattr('sys.argv', ['sd', str(tmp_path), '--platform', 'claude'])
+        sd.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["synced"] == 1
+        assert (tmp_path / "CLAUDE.md").exists()
+
+    def test_main_nothing_to_sync(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr('sys.argv', ['sd', str(tmp_path)])
+        sd.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["synced"] == 0
+
+    def test_main_explicit_dirs(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        sub = tmp_path / "src"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("sub content", encoding="utf-8")
+        monkeypatch.setattr('sys.argv', ['sd', str(tmp_path), '--platform', 'claude', '--dirs', 'src'])
+        sd.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["synced"] >= 1
+        assert (sub / "CLAUDE.md").exists()
+
+    def test_main_codex_platform(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CLAUDE.md").write_text("content", encoding="utf-8")
+        monkeypatch.setattr('sys.argv', ['sd', str(tmp_path), '--platform', 'codex'])
+        sd.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["synced"] == 1
+        assert (tmp_path / "AGENTS.md").exists()

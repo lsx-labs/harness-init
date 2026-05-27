@@ -16,7 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-MANUAL_MARKER = "📌"
+from shared import MANUAL_MARKER
+
 HOOK_TIMEOUT = 10
 GENERIC = {"main", "init", "run", "start", "stop", "get", "set", "test", "setup", "parse",
            "build", "create", "delete", "update", "load", "save", "read", "write", "open",

@@ -230,50 +230,17 @@ Step 3: 组合 GitNexus 数据 + 源码判断 → 写危险描述
 
 标记机制：`<!-- harness:start/end -->` 区域自动更新，标记外永不动。
 
-#### Layer 2: Hooks
+### 参考：Hooks / GitNexus / LSP
 
-**两个 Hook，两个平台对齐注册**：
+Hooks、GitNexus、LSP 的决策已由 `harness-plan.py` 输出的 plan JSON 驱动，以下仅供参考。
 
-| Hook | 事件 | matcher | 功能 |
-|---|---|---|---|
-| harness_monitor.py | PostToolUse | Bash | git 操作后：CODE_MAP 更新 + 子目录更新 + 成长检测 |
-| session_context.py | SessionStart | startup\|clear | 注入 git 状态 + 模块映射 + harness 健康 |
-
-第三方 Hook（GitNexus 管理）：
-- PreToolUse [Grep|Glob|Bash] → gitnexus-hook.cjs（搜索增强）
-
-前置检查：纯 Codex 环境下 `~/.claude/hooks/gitnexus/gitnexus-hook.cjs` 可能不存在 → install.py 自动复制。
-
-#### Layer 3: Skills
-
-跟随 Layer 4（GitNexus analyze 自动生成 6 个 Skills）。
-
-#### Layer 4: GitNexus MCP
-
-确保 GitNexus 可用且当前项目已索引：
-
-```
-已安装？ → NO + grep 噪声 > 20 → 提示安装
-已索引？（existing.gitnexus.indexed）
-  NO  → npx gitnexus analyze（首次索引）
-  YES → 检查 existing.gitnexus.up_to_date
-        up_to_date=true  → ✅ 跳过（不跑 analyze，节省 25s+）
-        up_to_date=false → npx gitnexus analyze（增量更新）
-```
-
-**重要：索引已最新时绝不跑 `gitnexus analyze`。** 即使增量模式也需 25s+ 启动开销。
-
-| grep 噪声 | 判断 |
+| 组件 | 参考 |
 |---|---|
-| ≤ 10 | ⏭️ 不需要 |
-| 11-20 | 💡 可选 |
-| > 20 | 💡 建议安装 |
+| **Hooks** | harness_monitor.py (PostToolUse/Bash) + session_context.py (SessionStart) |
+| **GitNexus** | plan.gitnexus 决定 skip/analyze/install。索引已最新时绝不跑 analyze |
+| **LSP** | 仅 Claude Code 支持。plan.lsp 决定 skip/recommend |
 
-#### Layer 5: LSP / Code Intelligence
-
-**仅 Claude Code 支持。** Codex 无 LSP 插件体系。
-
-先检查是否已安装（全局，跨项目）→ 已装跳过。
+LSP 插件参考表：
 
 | 语言 | 门槛 | 插件名 |
 |---|---|---|

@@ -15,28 +15,12 @@ Usage:
 
 import json
 import os
-import re
+import subprocess
 import sys
 from pathlib import Path
 
-SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".gitnexus",
-             ".claude", ".codex", "dist", "build", "vendor", "third_party", "sdk",
-             ".worktrees", ".tox"}
-SYMBOL_THRESHOLD = 100
-STALE_THRESHOLD = 0.2
-MANUAL_MARKER = "📌"
-
-
-def detect_platform() -> str:
-    if os.environ.get("CODEX_ENV") or "codex" in os.environ.get("TERM_PROGRAM", "").lower():
-        return "codex"
-    return "claude"
-
-
-def platform_files(platform: str) -> tuple[str, str]:
-    if platform == "claude":
-        return "CLAUDE.md", "AGENTS.md"
-    return "AGENTS.md", "CLAUDE.md"
+from shared import (MANUAL_MARKER, STALE_THRESHOLD, SYMBOL_THRESHOLD,
+                    parse_codemap, platform_files)
 
 
 def plan_root_doc(own_file: str, other_file: str) -> dict:
@@ -47,39 +31,6 @@ def plan_root_doc(own_file: str, other_file: str) -> dict:
     if other.exists():
         return {"action": "copy", "from": other_file}
     return {"action": "generate"}
-
-
-def parse_codemap_entries() -> list[dict]:
-    codemap = Path("CODE_MAP.md")
-    if not codemap.exists():
-        return []
-    entries = []
-    current = ""
-    for line in codemap.read_text(encoding="utf-8").split("\n"):
-        m = re.match(r'^###\s+(\S+)/?(.*)$', line)
-        if m:
-            current = m.group(1).rstrip("/")
-            rest = m.group(2)
-            entries.append(_parse_entry(current, rest))
-            continue
-        m = re.match(r'^-\s+\*\*(\S+)/?\*\*(.*)$', line)
-        if m:
-            sub = f"{current}/{m.group(1).rstrip('/')}"
-            entries.append(_parse_entry(sub, m.group(2)))
-    return entries
-
-
-def _parse_entry(dir_path: str, rest: str) -> dict:
-    desc = ""
-    count = None
-    cm = re.search(r'\((\d+)\s*symbols?\)', rest)
-    if cm:
-        count = int(cm.group(1))
-        rest = rest[:cm.start()] + rest[cm.end():]
-    dm = re.search(r'—\s*(.+)', rest)
-    if dm:
-        desc = dm.group(1).strip()
-    return {"dir": dir_path, "desc": desc, "symbols": count}
 
 
 def plan_codemap(entries: list[dict], old_counts: dict) -> dict:
@@ -115,25 +66,9 @@ def plan_gitnexus(diagnostic: dict) -> dict:
     return {"action": "skip"}
 
 
-def find_complex_dirs() -> list[dict]:
-    codemap = Path("CODE_MAP.md")
-    if not codemap.exists():
-        return []
-    dirs = []
-    current_top = ""
-    for line in codemap.read_text(encoding="utf-8").split("\n"):
-        m = re.match(r'^###\s+(\S+)/?.*\((\d+)\s*symbols?\)', line)
-        if m:
-            current_top = m.group(1).rstrip("/")
-            if int(m.group(2)) >= SYMBOL_THRESHOLD:
-                dirs.append(current_top)
-            continue
-        m = re.match(r'^-\s+\*\*(\S+)/?\*\*.*\((\d+)\s*symbols?\)', line)
-        if m and current_top:
-            sub = f"{current_top}/{m.group(1).rstrip('/')}"
-            if int(m.group(2)) >= SYMBOL_THRESHOLD:
-                dirs.append(sub)
-    return dirs
+def find_complex_dirs(entries: list[dict]) -> list[str]:
+    return [e["dir"] for e in entries
+            if e["symbols"] is not None and e["symbols"] >= SYMBOL_THRESHOLD]
 
 
 def plan_subdirs(complex_dirs: list[str], own_file: str, other_file: str) -> dict:
@@ -179,14 +114,11 @@ def plan_lsp(diagnostic: dict) -> list[dict]:
 def main():
     project_dir = sys.argv[1] if len(sys.argv) > 1 else "."
     platform = "claude"
-    for arg in sys.argv[2:]:
-        if arg.startswith("--platform"):
-            if "=" in arg:
-                platform = arg.split("=", 1)[1]
-            else:
-                idx = sys.argv.index(arg)
-                if idx + 1 < len(sys.argv):
-                    platform = sys.argv[idx + 1]
+    for i, arg in enumerate(sys.argv[2:], start=2):
+        if arg == "--platform" and i + 1 < len(sys.argv):
+            platform = sys.argv[i + 1]
+        elif arg.startswith("--platform="):
+            platform = arg.split("=", 1)[1]
 
     os.chdir(project_dir)
     own_file, other_file = platform_files(platform)
@@ -194,7 +126,6 @@ def main():
     diag_script = Path.home() / ".local" / "bin" / "harness-init.py"
     diagnostic = {}
     if diag_script.exists():
-        import subprocess
         try:
             r = subprocess.run([sys.executable, str(diag_script), "."],
                                capture_output=True, text=True, timeout=30)
@@ -203,9 +134,9 @@ def main():
         except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
             pass
 
-    entries = parse_codemap_entries()
+    entries = parse_codemap(Path("CODE_MAP.md"))
     old_counts = {e["dir"]: e["symbols"] for e in entries if e["symbols"] is not None}
-    complex_dirs = find_complex_dirs()
+    complex_dirs = find_complex_dirs(entries)
 
     plan = {
         "platform": platform,

@@ -14,15 +14,7 @@ import os
 import sys
 from pathlib import Path
 
-SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".gitnexus",
-             ".claude", ".codex", "dist", "build", "vendor", "third_party", "sdk",
-             ".worktrees", ".tox"}
-
-
-def platform_files(platform: str) -> tuple[str, str]:
-    if platform == "claude":
-        return "CLAUDE.md", "AGENTS.md"
-    return "AGENTS.md", "CLAUDE.md"
+from shared import SKIP_DIRS, platform_files
 
 
 def sync_one(dir_path: str, own_file: str, other_file: str) -> dict | None:

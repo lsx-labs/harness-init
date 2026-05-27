@@ -170,6 +170,7 @@ def main():
             (local_share / stale).unlink(missing_ok=True)
     else:
         local_share.mkdir(parents=True, exist_ok=True)
+        install_file(SCRIPT_DIR / "scripts" / "shared.py", local_share / "shared.py")
         install_file(SCRIPT_DIR / "scripts" / "harness_monitor.py", local_share / "harness_monitor.py")
         install_file(SCRIPT_DIR / "scripts" / "generate_descriptions.py", local_share / "generate_descriptions.py")
         install_file(SCRIPT_DIR / "scripts" / "session_context.py", local_share / "session_context.py")
@@ -219,12 +220,13 @@ def main():
     log("=== Installation verification ===")
     errors = 0
 
-    diag = local_bin / "harness-init.py"
-    if diag.exists() or diag.is_symlink():
-        log(f"  ✅ harness-init.py ({'symlink' if diag.is_symlink() else 'copy'})")
-    else:
-        log("  ❌ harness-init.py missing")
-        errors += 1
+    for script_name in ["harness-init.py", "harness-plan.py", "sync-docs.py"]:
+        p = local_bin / script_name
+        if p.exists() or p.is_symlink():
+            log(f"  ✅ {script_name} ({'symlink' if p.is_symlink() else 'copy'})")
+        else:
+            log(f"  ❌ {script_name} missing")
+            errors += 1
 
     if USE_LINK:
         if Path(monitor_path).exists():
