@@ -31,7 +31,7 @@ disable-model-invocation: true
 
 ## 执行流程
 
-### Step 1: 运行诊断
+### Step 1: 运行诊断 → Step 2: 逐层处理（连续执行，不暂停）
 
 ```bash
 python3 ~/.local/bin/harness-init.py .
@@ -39,9 +39,11 @@ python3 ~/.local/bin/harness-init.py .
 
 输出 JSON（schema_version: 1）：`languages` / `grep_noise` / `type_coverage` / `lsp_assessment` / `existing`
 
-向用户展示诊断结果，确认后继续。
+**诊断完成后立即进入 Step 2，不暂停等待用户确认。** 全部执行完毕后，在最终报告（Step 3）中一并展示诊断数据和执行结果。
 
-### Step 2: 五层驾具逐层处理
+只有涉及全局环境变更的操作（安装 GitNexus、安装 LSP 插件）才暂停询问用户。
+
+### 五层驾具逐层处理
 
 #### Layer 1: CODE_MAP.md + CLAUDE.md + AGENTS.md
 
