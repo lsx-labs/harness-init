@@ -165,21 +165,28 @@ def check_existing() -> dict:
     }
     existing["gitnexus_hook_reachable"] = (Path.home() / ".claude" / "hooks" / "gitnexus" / "gitnexus-hook.cjs").exists()
 
-    def check_hooks(path, keys):
+    def check_hooks_multi(path, keys):
+        """Like check_hooks but supports multiple match strings per key."""
         try:
             hooks = json.loads(Path(path).read_text()).get("hooks", {})
-            return {k: any(v in h.get("command", "") for items in hooks.values()
-                           for item in items for h in item.get("hooks", []))
-                    for k, v in keys.items()}
+            result = {}
+            for k, patterns in keys.items():
+                if isinstance(patterns, str):
+                    patterns = [patterns]
+                result[k] = any(
+                    any(p in h.get("command", "") for p in patterns)
+                    for items in hooks.values()
+                    for item in items for h in item.get("hooks", []))
+            return result
         except (json.JSONDecodeError, OSError, KeyError):
             return {k: False for k in keys}
 
-    existing["hooks_claude"] = check_hooks(
+    existing["hooks_claude"] = check_hooks_multi(
         Path.home() / ".claude" / "settings.json",
-        {"gitnexus": "gitnexus", "harness_monitor": "harness-monitor"})
-    existing["hooks_codex"] = check_hooks(
+        {"gitnexus": "gitnexus", "harness_monitor": ["harness_monitor", "harness-monitor"]})
+    existing["hooks_codex"] = check_hooks_multi(
         Path.home() / ".codex" / "hooks.json",
-        {"gitnexus": "gitnexus", "harness_monitor": "harness-monitor"})
+        {"gitnexus": "gitnexus", "harness_monitor": ["harness_monitor", "harness-monitor"]})
     existing["mcp_claude"] = "gitnexus" in (
         (Path.home() / ".claude.json").read_text() if (Path.home() / ".claude.json").exists() else "")
     existing["mcp_codex"] = "gitnexus" in (
