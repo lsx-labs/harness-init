@@ -89,6 +89,7 @@ install_file "$SCRIPT_DIR/scripts/harness-init.sh" "$HOME/.local/bin/harness-ini
 if ! $USE_LINK; then
     mkdir -p "$HOME/.local/share/harness-hooks"
     install_file "$SCRIPT_DIR/scripts/harness-monitor.py" "$HOME/.local/share/harness-hooks/harness-monitor.py"
+    install_file "$SCRIPT_DIR/scripts/generate-descriptions.sh" "$HOME/.local/share/harness-hooks/generate-descriptions.sh"
     install_file "$SCRIPT_DIR/scripts/session-context.sh" "$HOME/.local/share/harness-hooks/session-context.sh"
     cp "$SCRIPT_DIR/VERSION" "$HOME/.local/share/harness-hooks/VERSION"
 fi

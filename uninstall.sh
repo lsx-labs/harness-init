@@ -5,6 +5,7 @@ echo "Uninstalling harness-init..."
 
 rm -f ~/.local/bin/harness-init.sh
 rm -f ~/.local/share/harness-hooks/harness-monitor.py
+rm -f ~/.local/share/harness-hooks/generate-descriptions.sh
 rm -f ~/.local/share/harness-hooks/session-context.sh
 rm -f ~/.local/share/harness-hooks/VERSION
 rm -rf ~/.local/share/harness-hooks/counters

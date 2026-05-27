@@ -319,8 +319,17 @@ def handle_main_branch_update(project_id):
     codemap_file.write_text(new_content)
 
     # Step 2: Generate/refresh descriptions
-    desc_script = DESC_SCRIPT if DESC_SCRIPT.exists() else Path(__file__).resolve().parent / "generate-descriptions.sh"
-    if desc_script.exists():
+    # Fallback chain: ~/.local/bin/ (symlink) → ~/.local/share/harness-hooks/ (copy) → repo sibling
+    desc_script = None
+    for candidate in [
+        DESC_SCRIPT,
+        Path.home() / ".local" / "share" / "harness-hooks" / "generate-descriptions.sh",
+        Path(__file__).resolve().parent / "generate-descriptions.sh",
+    ]:
+        if candidate.exists():
+            desc_script = candidate
+            break
+    if desc_script:
         try:
             subprocess.run(["bash", str(desc_script), ".", "--refresh"],
                            capture_output=True, text=True, timeout=HOOK_TIMEOUT)
