@@ -708,3 +708,92 @@ class TestMainFunction:
             hm.main()
             mock_update.assert_not_called()
             mock_growth.assert_called_once()
+
+
+class TestGetReadmeFirstLine:
+    def test_with_readme(self, tmp_path):
+        (tmp_path / "README.md").write_text("# Title\n\nThis is the project description.\n")
+        assert hm.get_readme_first_line(tmp_path) == "This is the project description."
+
+    def test_no_readme(self, tmp_path):
+        assert hm.get_readme_first_line(tmp_path) == ""
+
+    def test_only_headings(self, tmp_path):
+        (tmp_path / "README.md").write_text("# Title\n## Subtitle\n")
+        assert hm.get_readme_first_line(tmp_path) == ""
+
+    def test_truncate(self, tmp_path):
+        (tmp_path / "README.md").write_text("# H\n" + "x" * 200 + "\n")
+        result = hm.get_readme_first_line(tmp_path)
+        assert len(result) <= 80
+
+
+class TestGetInitDocstring:
+    def test_with_docstring(self, tmp_path):
+        d = tmp_path / "mymod"
+        d.mkdir()
+        (d / "__init__.py").write_text('"""My module description."""\n')
+        assert hm.get_init_docstring(d) == "My module description."
+
+    def test_with_separator(self, tmp_path):
+        d = tmp_path / "mod"
+        d.mkdir()
+        (d / "__init__.py").write_text('"""mod — The core module."""\n')
+        assert hm.get_init_docstring(d) == "The core module."
+
+    def test_no_init(self, tmp_path):
+        d = tmp_path / "mod"
+        d.mkdir()
+        assert hm.get_init_docstring(d) == ""
+
+    def test_no_docstring(self, tmp_path):
+        d = tmp_path / "mod"
+        d.mkdir()
+        (d / "__init__.py").write_text("x = 1\n")
+        assert hm.get_init_docstring(d) == ""
+
+
+class TestGetSubdirList:
+    def test_with_subdirs(self, tmp_path):
+        d = tmp_path / "tests"
+        d.mkdir()
+        (d / "unit").mkdir()
+        (d / "integration").mkdir()
+        (d / "__pycache__").mkdir()
+        result = hm.get_subdir_list(d)
+        assert "integration" in result
+        assert "unit" in result
+        assert "__pycache__" not in result
+
+    def test_empty_dir(self, tmp_path):
+        d = tmp_path / "empty"
+        d.mkdir()
+        assert hm.get_subdir_list(d) == ""
+
+    def test_only_files(self, tmp_path):
+        d = tmp_path / "flat"
+        d.mkdir()
+        (d / "file.py").write_text("")
+        assert hm.get_subdir_list(d) == ""
+
+
+class TestBuildCodemapStructureWithUncovered:
+    def test_appends_uncovered_dirs(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        # Create dirs: src/ (covered by GitNexus) + docs/ (not covered)
+        (tmp_path / "src").mkdir()
+        (tmp_path / "docs").mkdir()
+        (tmp_path / "docs" / "README.md").write_text("# Docs\n\nProject documentation and contracts.\n")
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "unit").mkdir()
+        (tmp_path / "tests" / "integration").mkdir()
+
+        communities = {"Src": {"symbols": 100, "clusters": 5}}
+        with patch.object(hm, 'build_area_to_dir', return_value={"Src": "src"}):
+            content, stale = hm.build_codemap_structure(communities, {}, {})
+
+        assert "### src/" in content
+        assert "### docs/" in content
+        assert "Project documentation" in content
+        assert "### tests/" in content
+        assert "integration" in content or "unit" in content

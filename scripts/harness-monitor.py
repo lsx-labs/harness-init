@@ -43,6 +43,56 @@ def should_skip(name):
     return name in SKIP_DIRS or name.endswith(".egg-info") or (name.startswith(".") and name != ".")
 
 
+# ── Directory description helpers (deterministic, no AI) ──
+
+def get_readme_first_line(dir_path) -> str:
+    """Read first non-empty, non-heading content line from README.md."""
+    readme = Path(dir_path) / "README.md"
+    if not readme.exists():
+        return ""
+    try:
+        for line in readme.read_text(encoding="utf-8", errors="ignore").split("\n"):
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and not stripped.startswith("="):
+                return stripped[:80]
+    except OSError:
+        pass
+    return ""
+
+
+def get_init_docstring(dir_path) -> str:
+    """Read __init__.py / index.ts docstring first line."""
+    import ast as _ast
+    for fname in ("__init__.py", "index.ts", "index.js", "mod.rs"):
+        fpath = Path(dir_path) / fname
+        if fpath.exists():
+            try:
+                if fname.endswith(".py"):
+                    ds = _ast.get_docstring(_ast.parse(fpath.read_text(encoding="utf-8", errors="ignore")))
+                    if ds:
+                        line = ds.strip().split("\n")[0]
+                        for sep in ("—", "–", "-"):
+                            if sep in line:
+                                line = line.split(sep, 1)[1].strip()
+                                break
+                        return line[:80]
+            except (SyntaxError, OSError):
+                pass
+    return ""
+
+
+def get_subdir_list(dir_path) -> str:
+    """List subdirectory names as description."""
+    try:
+        subs = sorted(d.name for d in Path(dir_path).iterdir()
+                      if d.is_dir() and not should_skip(d.name))
+        if subs:
+            return " / ".join(subs[:8])
+    except OSError:
+        pass
+    return ""
+
+
 # ── Platform detection ──
 
 def get_ai_cmd():
@@ -265,6 +315,29 @@ def build_codemap_structure(communities, existing_descs, old_counts):
                 else:
                     lines.append(f"- **{sub}/** ({syms} symbols)")
         lines.append("")
+
+    # Append directories not covered by GitNexus (docs, tests, etc.)
+    covered = set(top_dirs.keys())
+    try:
+        for d in sorted(Path(".").iterdir()):
+            if not d.is_dir() or should_skip(d.name) or d.name in covered:
+                continue
+            desc = existing_descs.get(d.name, "") or get_readme_first_line(d) or get_init_docstring(d) or get_subdir_list(d)
+            if desc:
+                lines.append(f"### {d.name}/ — {desc}")
+            else:
+                lines.append(f"### {d.name}/")
+            for sub in sorted(d.iterdir()):
+                if sub.is_dir() and not should_skip(sub.name) and not sub.name.startswith("_"):
+                    sub_key = f"{d.name}/{sub.name}"
+                    sub_desc = existing_descs.get(sub_key, "") or get_readme_first_line(sub) or get_init_docstring(sub) or ""
+                    if sub_desc:
+                        lines.append(f"- **{sub.name}/** — {sub_desc}")
+                    else:
+                        lines.append(f"- **{sub.name}/**")
+            lines.append("")
+    except OSError:
+        pass
 
     return "\n".join(lines) + "\n", stale_dirs
 
