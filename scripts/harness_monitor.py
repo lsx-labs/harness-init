@@ -493,7 +493,6 @@ def _do_main_branch_update_inner():
     desc_script = None
     for candidate in [
         DESC_SCRIPT,
-        Path.home() / ".local" / "share" / "harness-hooks" / "generate_descriptions.py",
         Path(__file__).resolve().parent / "generate_descriptions.py",
     ]:
         if candidate.exists():
