@@ -72,7 +72,8 @@ def register_hooks(config_file: Path, platform_name: str, monitor_path: str, con
     # PostToolUse: harness-monitor (idempotent)
     post = hooks.setdefault("PostToolUse", [])
     post[:] = [item for item in post
-               if not any("harness-monitor" in h.get("command", "") or "Harness monitor" in h.get("statusMessage", "")
+               if not any("harness_monitor" in h.get("command", "") or "harness-monitor" in h.get("command", "")
+                          or "Harness monitor" in h.get("statusMessage", "")
                           for h in item.get("hooks", []))]
     post.append({
         "matcher": "Bash",
@@ -94,7 +95,7 @@ def register_hooks(config_file: Path, platform_name: str, monitor_path: str, con
         "hooks": [{
             "type": "command",
             "command": f'python3 "{context_path}"',
-            "timeout": 10,
+            "timeout": 10000,
             "statusMessage": "Loading project context..."
         }]
     })
@@ -159,16 +160,15 @@ def main():
     install_file(SCRIPT_DIR / "scripts" / "harness_init.py", local_bin / "harness-init.py")
 
     if USE_LINK:
-        # Hook commands point directly to repo
-        monitor_path = str(SCRIPT_DIR / "scripts" / "harness-monitor.py")
+        monitor_path = str(SCRIPT_DIR / "scripts" / "harness_monitor.py")
         context_path = str(SCRIPT_DIR / "scripts" / "session_context.py")
     else:
         local_share.mkdir(parents=True, exist_ok=True)
-        install_file(SCRIPT_DIR / "scripts" / "harness-monitor.py", local_share / "harness-monitor.py")
+        install_file(SCRIPT_DIR / "scripts" / "harness_monitor.py", local_share / "harness_monitor.py")
         install_file(SCRIPT_DIR / "scripts" / "generate_descriptions.py", local_share / "generate_descriptions.py")
         install_file(SCRIPT_DIR / "scripts" / "session_context.py", local_share / "session_context.py")
         shutil.copy2(SCRIPT_DIR / "VERSION", local_share / "VERSION")
-        monitor_path = str(local_share / "harness-monitor.py")
+        monitor_path = str(local_share / "harness_monitor.py")
         context_path = str(local_share / "session_context.py")
 
     log("✅ Shared scripts installed")
@@ -222,16 +222,16 @@ def main():
 
     if USE_LINK:
         if Path(monitor_path).exists():
-            log("  ✅ harness-monitor.py (repo direct)")
+            log("  ✅ harness_monitor.py (repo direct)")
         else:
-            log("  ❌ harness-monitor.py missing")
+            log("  ❌ harness_monitor.py missing")
             errors += 1
     else:
-        mp = local_share / "harness-monitor.py"
+        mp = local_share / "harness_monitor.py"
         if mp.exists():
-            log("  ✅ harness-monitor.py")
+            log("  ✅ harness_monitor.py")
         else:
-            log("  ❌ harness-monitor.py missing")
+            log("  ❌ harness_monitor.py missing")
             errors += 1
 
     for name, path in [("Claude Code", claude_dir / "skills" / "harness-init" / "SKILL.md"),

@@ -1,4 +1,4 @@
-"""Tests for harness-monitor.py"""
+"""Tests for harness_monitor.py"""
 
 import json
 import os
@@ -6,14 +6,9 @@ import subprocess
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 import sys
-import importlib.util
 
-# Load module with hyphen in name
-_spec = importlib.util.spec_from_file_location(
-    "harness_monitor",
-    os.path.join(os.path.dirname(__file__), '..', 'scripts', 'harness-monitor.py'))
-hm = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(hm)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+import harness_monitor as hm
 
 
 class TestShouldSkip:
@@ -849,3 +844,103 @@ class TestBuildCodemapStructureWithUncovered:
         assert "Project documentation" in content
         assert "### tests/" in content
         assert "integration" in content or "unit" in content
+
+
+class TestCoverageGaps:
+    """Fill remaining coverage gaps."""
+
+    def test_get_readme_first_line_oserror(self, tmp_path):
+        readme = tmp_path / "README.md"
+        readme.write_text("# H\ncontent\n")
+        with patch.object(Path, 'read_text', side_effect=OSError("disk error")):
+            assert hm.get_readme_first_line(tmp_path) == ""
+
+    def test_get_init_docstring_syntax_error(self, tmp_path):
+        d = tmp_path / "mod"
+        d.mkdir()
+        (d / "__init__.py").write_text("def broken(:\n")
+        assert hm.get_init_docstring(d) == ""
+
+    def test_ensure_gitnexus_fresh_no_dir(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        hm.ensure_gitnexus_fresh()  # no .gitnexus → returns immediately
+
+    def test_ensure_gitnexus_fresh_up_to_date(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".gitnexus").mkdir()
+        mock_result = MagicMock(stdout="Status: up-to-date", stderr="")
+        with patch.object(hm.subprocess, 'run', return_value=mock_result) as mock_run:
+            hm.ensure_gitnexus_fresh()
+        assert mock_run.call_count == 1  # only status, no analyze
+
+    def test_ensure_gitnexus_fresh_stale(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".gitnexus").mkdir()
+        status_result = MagicMock(stdout="Status: stale", stderr="")
+        analyze_result = MagicMock(returncode=0)
+        with patch.object(hm.subprocess, 'run', side_effect=[status_result, analyze_result]) as mock_run:
+            hm.ensure_gitnexus_fresh()
+        assert mock_run.call_count == 2
+
+    def test_ensure_gitnexus_fresh_timeout(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".gitnexus").mkdir()
+        with patch.object(hm.subprocess, 'run',
+                          side_effect=subprocess.TimeoutExpired("npx", 5)):
+            hm.ensure_gitnexus_fresh()  # should not raise
+
+    def test_build_codemap_uncovered_subdir_with_readme(self, tmp_path, monkeypatch):
+        """Cover L344-354: uncovered sub-dirs inside a GitNexus top-level dir."""
+        monkeypatch.chdir(tmp_path)
+        src = tmp_path / "src"
+        src.mkdir()
+        core = src / "core"
+        core.mkdir()
+        (core / "README.md").write_text("# Core\n\nCore module for everything.\n")
+        communities = {"Src": {"symbols": 50, "clusters": 1}}
+        with patch.object(hm, 'build_area_to_dir', return_value={"Src": "src"}):
+            content, _ = hm.build_codemap_structure(communities, {}, {})
+        assert "core" in content
+        assert "Core module" in content
+
+    def test_build_codemap_non_gitnexus_subdir(self, tmp_path, monkeypatch):
+        """Cover L368-379: non-GitNexus dir with sub-directories."""
+        monkeypatch.chdir(tmp_path)
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        api = docs / "api"
+        api.mkdir()
+        (api / "README.md").write_text("# API\n\nAPI documentation.\n")
+        communities = {}
+        with patch.object(hm, 'build_area_to_dir', return_value={}):
+            content, _ = hm.build_codemap_structure(communities, {}, {})
+        assert "### docs/" in content
+        assert "api" in content
+
+    def test_handle_main_branch_update_lock_corrupt(self, tmp_path, monkeypatch, capsys):
+        """Cover L520-521: corrupt lock file value."""
+        monkeypatch.chdir(tmp_path)
+        lock_dir = tmp_path / "locks"
+        lock_dir.mkdir()
+        (lock_dir / "test.lock").write_text("not_a_pid")
+        monkeypatch.setattr(hm, 'LOCK_DIR', lock_dir)
+        with patch.object(hm.subprocess, 'Popen'):
+            hm.handle_main_branch_update("test")
+        out = json.loads(capsys.readouterr().out)
+        assert out["status"] == "background"
+
+    def test_bg_cli_mode(self, tmp_path, monkeypatch):
+        """Cover __main__ --bg entry point."""
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
+        with patch.object(hm, 'ensure_gitnexus_fresh'), \
+             patch.object(hm, 'get_gitnexus_communities', return_value=None):
+            hm.do_main_branch_update("test")
+
+    def test_bg_growth_cli_mode(self, tmp_path, monkeypatch):
+        """Cover __main__ --bg-growth entry point."""
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps({"file_count": 25, "retired": False}))
+        mock_result = MagicMock(returncode=1, stdout="")
+        with patch.object(hm, 'DIAG_SCRIPT', tmp_path / "diag.sh"), \
+             patch.object(hm.subprocess, 'run', return_value=mock_result):
+            hm.do_growth_check(str(state_file), str(tmp_path))

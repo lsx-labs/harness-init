@@ -3,14 +3,14 @@
 
 Triggered via PostToolUse [Bash], only on git operations:
   - Non-git commands (pytest, profile, etc.) → immediate return, zero overhead
-  - Git on feature branch → growth check only (notify, no file writes)
-  - Git on main/master → full update:
-    1. CODE_MAP.md structure + descriptions (via generate-descriptions.sh)
-    2. Sub-directory CLAUDE.md/AGENTS.md harness regions (via AI CLI + GitNexus)
-    3. Growth check (GitNexus/LSP recommendations)
+  - Git on feature branch → growth check only (background, no file writes)
+  - Git on main/master → background update:
+    1. GitNexus reindex (if stale)
+    2. CODE_MAP.md structure + descriptions (via generate_descriptions.py)
+    3. Sub-directory CLAUDE.md/AGENTS.md harness regions (via AI CLI + GitNexus)
+    4. Growth check (GitNexus/LSP recommendations)
 
-All file modifications use AI CLI (claude -p / codex exec) + GitNexus MCP
-for fact-grounded generation. No hope-based action messages.
+All heavy work runs as detached background processes. Hook returns in <500ms.
 """
 
 import json
@@ -29,8 +29,8 @@ COUNTER_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "counters"
 LOCK_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "locks"
 NOTIFY_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "notifications"
 DIAG_SCRIPT = Path.home() / ".local" / "bin" / "harness-init.py"
-DESC_SCRIPT = Path.home() / ".local" / "bin" / "generate-descriptions.py"
-HOOK_TIMEOUT = 15
+DESC_SCRIPT = Path.home() / ".local" / "share" / "harness-hooks" / "generate_descriptions.py"
+GITNEXUS_TIMEOUT = 15
 
 SOURCE_EXTS = {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".kt",
                ".rb", ".c", ".h", ".cpp", ".cs", ".swift", ".php"}
@@ -125,8 +125,8 @@ def get_ai_cmd():
     return ""
 
 
-def ai_invoke(prompt, timeout=15):  # Must be < hook deadline (20s in install.sh)
-    """Invoke AI CLI non-interactively. Timeout must be < hook's 20s deadline."""
+def ai_invoke(prompt, timeout=15):
+    """Invoke AI CLI non-interactively. Called from background workers only."""
     cmd = get_ai_cmd()
     if not cmd:
         return ""
@@ -241,7 +241,7 @@ def get_gitnexus_communities():
              "MATCH (c:Community) WITH c.label AS area, sum(c.symbolCount) AS syms, "
              "count(*) AS clusters RETURN area, syms, clusters ORDER BY syms DESC LIMIT 25",
              "-r", Path(".").resolve().name],
-            capture_output=True, text=True, timeout=HOOK_TIMEOUT)
+            capture_output=True, text=True, timeout=GITNEXUS_TIMEOUT)
         output = r.stdout.strip() or r.stderr.strip()
         if not output or r.returncode != 0:
             return None
@@ -271,7 +271,7 @@ def build_area_to_dir(communities):
             ["npx", "gitnexus", "cypher",
              "MATCH (f:Folder) RETURN f.filePath ORDER BY f.filePath",
              "-r", Path(".").resolve().name],
-            capture_output=True, text=True, timeout=HOOK_TIMEOUT)
+            capture_output=True, text=True, timeout=GITNEXUS_TIMEOUT)
         output = r.stdout.strip() or r.stderr.strip()
         md = parse_gitnexus_markdown(output)
         folders = [
@@ -413,7 +413,7 @@ def update_subdir_docs(stale_dirs):
 # ══════════════════════════════════════════════════════════
 
 def acquire_lock(project_id):
-    """Try to acquire a lock file. Returns True if acquired, False if already locked."""
+    """Try to acquire a lock file atomically. Returns True if acquired."""
     LOCK_DIR.mkdir(parents=True, exist_ok=True)
     lock_file = LOCK_DIR / f"{project_id}.lock"
     if lock_file.exists():
@@ -423,11 +423,16 @@ def acquire_lock(project_id):
                 os.kill(pid, 0)
                 return False
             except OSError:
-                pass  # stale lock, process dead
+                lock_file.unlink(missing_ok=True)
         except (ValueError, OSError):
-            pass
-    lock_file.write_text(str(os.getpid()))
-    return True
+            lock_file.unlink(missing_ok=True)
+    try:
+        fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        return True
+    except FileExistsError:
+        return False
 
 
 def release_lock(project_id):
@@ -514,7 +519,7 @@ def handle_main_branch_update(project_id):
             pid = int(lock_file.read_text().strip())
             try:
                 os.kill(pid, 0)
-                return  # already running
+                return
             except OSError:
                 pass
         except (ValueError, OSError):

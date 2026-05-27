@@ -34,9 +34,10 @@ def cleanup_hooks(config_file: Path, platform_name: str):
         for event in list(hooks.keys()):
             hooks[event] = [
                 i for i in hooks[event]
-                if not any("harness-monitor" in h.get("command", "") or
-                           "session-context" in h.get("command", "") or
-                           "session_context" in h.get("command", "")
+                if not any("harness_monitor" in h.get("command", "") or
+                           "harness-monitor" in h.get("command", "") or
+                           "session_context" in h.get("command", "") or
+                           "session-context" in h.get("command", "")
                            for h in i.get("hooks", []))
             ]
             if not hooks[event]:
@@ -57,7 +58,8 @@ def main():
     rm_file(HOME / ".local" / "bin" / "harness-init.sh")  # legacy
 
     share = HOME / ".local" / "share" / "harness-hooks"
-    for f in ["harness-monitor.py", "generate_descriptions.py", "generate-descriptions.sh",
+    for f in ["harness_monitor.py", "harness-monitor.py",
+              "generate_descriptions.py", "generate-descriptions.sh",
               "session_context.py", "session-context.sh", "VERSION"]:
         rm_file(share / f)
     rm_dir(share / "counters")
