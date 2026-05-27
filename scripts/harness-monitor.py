@@ -353,25 +353,28 @@ def handle_codemap_update(project_id: str):
 
     if new_content != old_content:
         codemap_file.write_text(new_content)
+
+        # Auto-generate descriptions for entries that are empty or stale
+        # Uses generate-descriptions.sh --refresh (deterministic, no AI needed)
+        desc_script = Path.home() / ".local" / "bin" / "generate-descriptions.sh"
+        if desc_script.exists() or Path(__file__).resolve().parent.joinpath("generate-descriptions.sh").exists():
+            script = str(desc_script) if desc_script.exists() else str(Path(__file__).resolve().parent / "generate-descriptions.sh")
+            try:
+                subprocess.run(["bash", script, ".", "--refresh"],
+                               capture_output=True, text=True, timeout=HOOK_TIMEOUT)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+
         result = {"status": "codemap_updated", "source": source}
-        if stale_dirs:
-            result["stale_descriptions"] = stale_dirs
-            stale_module_docs = [d for d in stale_dirs if
-                                 Path(d, "CLAUDE.md").exists() or
-                                 Path(d, "AGENTS.md").exists()]
-            affected_files = ["CODE_MAP.md"]
-            for d in stale_module_docs:
-                affected_files.extend([f"{d}/CLAUDE.md", f"{d}/AGENTS.md"])
-            result["affected_files"] = affected_files
+
+        # Check if CODE_MAP.md changed after description refresh
+        final_content = codemap_file.read_text()
+        if final_content != old_content:
             result["action"] = (
-                f"由于当前功能变动较大，以下文件需要同步更新：{', '.join(affected_files)}。"
-                f"请提交这些变更的文件：git add {' '.join(affected_files)} && "
-                f'git commit -m "docs: update harness files"'
+                f"CODE_MAP.md 已更新（结构 + 描述）。"
+                f"请提交：git add CODE_MAP.md && git commit -m \"docs: refresh CODE_MAP.md\""
             )
-            stale_track.parent.mkdir(parents=True, exist_ok=True)
-            stale_track.write_text(json.dumps({"dirs": stale_dirs}))
-        else:
-            stale_track.unlink(missing_ok=True)
+        stale_track.unlink(missing_ok=True)
         print(json.dumps(result, ensure_ascii=False))
 
 
