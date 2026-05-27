@@ -72,7 +72,8 @@ def register_hooks(config_file: Path, platform_name: str, monitor_path: str, con
     # PostToolUse: harness-monitor (idempotent)
     post = hooks.setdefault("PostToolUse", [])
     post[:] = [item for item in post
-               if not any("harness-monitor" in h.get("command", "") for h in item.get("hooks", []))]
+               if not any("harness-monitor" in h.get("command", "") or "Harness monitor" in h.get("statusMessage", "")
+                          for h in item.get("hooks", []))]
     post.append({
         "matcher": "Bash",
         "hooks": [{

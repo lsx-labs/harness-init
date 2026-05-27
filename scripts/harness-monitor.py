@@ -460,4 +460,5 @@ def main():
         handle_growth_check(state, state_file)
 
 
-main()
+if __name__ == "__main__":
+    main()
