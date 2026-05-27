@@ -158,7 +158,35 @@ PYEOF
 fi
 
 # Step 3: Fallback — keyword extraction (no AI or no GitNexus)
-python3 - "$DIRS_JSON" << 'PYEOF'
+# IMPORTANT: fallback only fills EMPTY descriptions, never overwrites existing ones.
+# Only the AI path (Step 2) has permission to refresh existing descriptions.
+# Re-parse with --generate mode to get only empty entries.
+FALLBACK_DIRS=$(python3 - "--generate" << 'FBEOF'
+import json, re, sys
+from pathlib import Path
+MODE = sys.argv[1]
+def _extract_desc(text):
+    dm = re.search(r'—\s*(.+)', text)
+    return dm.group(1).strip() if dm else ""
+codemap = Path("CODE_MAP.md")
+if not codemap.exists(): print(json.dumps([])); sys.exit(0)
+dirs, current = [], ""
+for line in codemap.read_text().split("\n"):
+    m = re.match(r'^###\s+(\S+)/?(.*)$', line)
+    if m:
+        current = m.group(1).rstrip("/")
+        desc = _extract_desc(m.group(2))
+        if not desc or desc.startswith("⚠️"): dirs.append(current)
+        continue
+    m = re.match(r'^-\s+\*\*(\S+)/?\*\*(.*)$', line)
+    if m:
+        sub = f"{current}/{m.group(1).rstrip('/')}"
+        desc = _extract_desc(m.group(2))
+        if not desc or desc.startswith("⚠️"): dirs.append(sub)
+print(json.dumps(dirs))
+FBEOF
+)
+python3 - "$FALLBACK_DIRS" << 'PYEOF'
 import json, re, subprocess, sys, ast
 from pathlib import Path
 
