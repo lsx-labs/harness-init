@@ -56,6 +56,8 @@ def main():
     # Scripts
     rm_file(HOME / ".local" / "bin" / "harness-init.py")
     rm_file(HOME / ".local" / "bin" / "harness-init.sh")  # legacy
+    rm_file(HOME / ".local" / "bin" / "harness-plan.py")
+    rm_file(HOME / ".local" / "bin" / "sync-docs.py")
 
     share = HOME / ".local" / "share" / "harness-hooks"
     for f in ["harness_monitor.py", "harness-monitor.py",

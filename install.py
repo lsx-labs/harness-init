@@ -158,6 +158,8 @@ def main():
     local_bin.mkdir(parents=True, exist_ok=True)
 
     install_file(SCRIPT_DIR / "scripts" / "harness_init.py", local_bin / "harness-init.py")
+    install_file(SCRIPT_DIR / "scripts" / "harness_plan.py", local_bin / "harness-plan.py")
+    install_file(SCRIPT_DIR / "scripts" / "sync_docs.py", local_bin / "sync-docs.py")
 
     if USE_LINK:
         monitor_path = str(SCRIPT_DIR / "scripts" / "harness_monitor.py")
