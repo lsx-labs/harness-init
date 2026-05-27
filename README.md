@@ -47,13 +47,16 @@ install.py 自动检测依赖，一键安装 GitNexus（可选）。
 ```
 harness-init/
 ├── scripts/
-│   ├── harness-init.py          ← 诊断脚本（JSON, schema_version: 1）
-│   ├── harness_monitor.py        ← PostToolUse Hook（AI CLI + GitNexus）
+│   ├── shared.py                ← 公共常量和工具函数
+│   ├── harness_init.py          ← 项目诊断（JSON 输出）
+│   ├── harness_plan.py          ← 执行计划生成（JSON action plan）
+│   ├── sync_docs.py             ← 跨平台文档同步
+│   ├── harness_monitor.py       ← PostToolUse Hook
 │   ├── generate_descriptions.py ← CODE_MAP 描述生成
 │   └── session_context.py       ← SessionStart Hook
 ├── skills/
-│   ├── claude/SKILL.md          ← Claude Code 完整规范
-│   └── codex/SKILL.md           ← Codex 完整规范
+│   ├── claude/SKILL.md          ← Claude Code 执行规范
+│   └── codex/SKILL.md           ← Codex 执行规范
 ├── install.py                   ← 安装（--link 开发者模式）
 ├── uninstall.py                 ← 卸载
 ├── VERSION                      ← 版本号

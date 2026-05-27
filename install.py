@@ -157,6 +157,7 @@ def main():
     local_share = HOME / ".local" / "share" / "harness-hooks"
     local_bin.mkdir(parents=True, exist_ok=True)
 
+    install_file(SCRIPT_DIR / "scripts" / "shared.py", local_bin / "shared.py")
     install_file(SCRIPT_DIR / "scripts" / "harness_init.py", local_bin / "harness-init.py")
     install_file(SCRIPT_DIR / "scripts" / "harness_plan.py", local_bin / "harness-plan.py")
     install_file(SCRIPT_DIR / "scripts" / "sync_docs.py", local_bin / "sync-docs.py")
