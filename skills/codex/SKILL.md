@@ -66,26 +66,33 @@ bash ~/.local/bin/harness-init.sh .
 - 根 `CLAUDE.md` / `AGENTS.md` 已存在但缺少 `@CODE_MAP.md` → 追加引用行
 - 根 `CLAUDE.md` / `AGENTS.md` 已存在且完整 → **跳过，不修改**
 
-**AI 补全 Code Map 描述（核心步骤）**：
+**AI 补全 Code Map 描述（脚本驱动）**：
 
-Hook 自动生成的 CODE_MAP.md 只有目录名和符号数，没有语义描述。本 Skill 执行时负责补全：
+运行诊断脚本收集数据，再由 AI 基于事实生成描述：
 
-1. 读取 CODE_MAP.md，找到所有缺少 `—` 描述的条目
-2. 对每个缺描述的目录，读取其中的 README.md 或 2-3 个核心源文件的 docstring
-3. 用一句话总结该目录的职责（中文，≤ 50 字）
-4. 写回 CODE_MAP.md
+```bash
+bash ~/.local/bin/generate-descriptions.sh .
+```
+
+脚本输出 JSON：每个缺描述目录的 top functions（按引用数排序）+ execution flows + docstring。
+
+AI 基于脚本输出写描述，规则：
+1. 只用脚本返回的函数名和调用数据，不自行推测
+2. 描述格式：`{核心职责}：{2-3 个关键功能用 / 分隔}`
+3. 中文，≤ 50 字
+4. 写回 CODE_MAP.md 对应条目
 
 **示例**：
 ```
-补全前: ### autoresearch/ (4394 symbols)
-补全后: ### autoresearch/ (4394 symbols) — 闭环因子研究平台：实验编排/权重优化/分布式执行
-
-补全前: - **distributed/** (1529 symbols)
-补全后: - **distributed/** — coordinator + worker 分布式执行框架 (1529 symbols)
-
-补全前: - **_lib/** (332 symbols)
-补全后: - **_lib/** — 核心共享库：baseline 契约/路径/回测引擎/执行计划 (332 symbols)
+脚本输出:
+  dir: autoresearch/continuous (467 symbols)
+  top_functions: main@cli.py(55refs), build_cycle_status@status.py(15refs)
+  
+AI 写入:
+  - **continuous/** — 持续研究控制面：cycle CLI 入口/状态构建/平台路由 (467 symbols)
 ```
+
+脚本返回 `{"status": "all_described"}` 时跳过此步。
 
 **保护规则**：已有描述的条目不覆盖。后续 Hook 更新时只刷新符号数，保留人工描述。
 
