@@ -61,26 +61,22 @@ bash ~/.local/bin/harness-init.sh .
 
 **检查与行动**：
 - `CODE_MAP.md` 不存在 → 自动生成骨架
-- `CODE_MAP.md` 存在但有空描述 → **AI 补全描述**（见下方）
+- `CODE_MAP.md` 存在 → **强制重新生成所有非 📌 描述**（每次 `/harness-init` 都刷新，确保描述基于最新代码）
 - 根 `CLAUDE.md` / `AGENTS.md` 不存在 → **首次生成**（模板见下方，含 @CODE_MAP.md 引用）
 - 根 `CLAUDE.md` / `AGENTS.md` 已存在但缺少 `@CODE_MAP.md` → 追加引用行
 - 根 `CLAUDE.md` / `AGENTS.md` 已存在且完整 → **跳过，不修改**
 
-**AI 补全 Code Map 描述（脚本驱动）**：
+**AI 生成 Code Map 描述（每次 /harness-init 强制刷新）**：
 
-运行诊断脚本收集数据，再由 AI 基于事实生成描述：
+`/harness-init` 执行时，对 CODE_MAP.md 中**所有非 📌 前缀的条目**重新生成描述：
 
-```bash
-bash ~/.local/bin/generate-descriptions.sh .
-```
+1. 对每个目录调用 `gitnexus_context` 查询核心函数（调用者/被调用者）
+2. 基于 GitNexus 返回的事实写描述，不自行推测
+3. 描述格式：`{核心职责}：{2-3 个关键功能}`，中文，≤ 50 字
+4. 📌 前缀的描述跳过（手动保护）
+5. 写回 CODE_MAP.md
 
-脚本输出 JSON：每个缺描述目录的 top functions（按引用数排序）+ execution flows + docstring。
-
-AI 基于脚本输出写描述，规则：
-1. 只用脚本返回的函数名和调用数据，不自行推测
-2. 描述格式：`{核心职责}：{2-3 个关键功能用 / 分隔}`
-3. 中文，≤ 50 字
-4. 写回 CODE_MAP.md 对应条目
+生成成本低：每个目录 1 次 MCP 查询 + 1 行输出。
 
 **示例**：
 ```
