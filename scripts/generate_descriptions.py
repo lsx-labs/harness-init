@@ -78,13 +78,24 @@ def write_descriptions(descriptions: dict[str, str]) -> list[dict]:
             content = content[:m.start()] + f"{m.group(1)} — {desc}" + content[m.end():]
             changes.append({"dir": dir_path, "desc": desc})
             continue
-        # Sub-level
-        sub_name = dir_path.split("/")[-1]
-        p = re.compile(rf'^(-\s+\*\*{re.escape(sub_name)}/?\*\*)\s*(.*?)(\(\d+\s+symbols\))(.*)$', re.MULTILINE)
-        m = p.search(content)
-        if m:
-            content = content[:m.start()] + f"{m.group(1)} — {desc} {m.group(3)}" + content[m.end():]
-            changes.append({"dir": dir_path, "desc": desc})
+        # Sub-level: search within the parent section to avoid ambiguous leaf names
+        parts = dir_path.split("/")
+        if len(parts) >= 2:
+            parent, sub_name = parts[0], parts[-1]
+            parent_pat = re.compile(rf'^###\s+{re.escape(parent)}/', re.MULTILINE)
+            parent_m = parent_pat.search(content)
+            if parent_m:
+                section_start = parent_m.start()
+                next_section = re.search(r'^### ', content[parent_m.end():], re.MULTILINE)
+                section_end = parent_m.end() + next_section.start() if next_section else len(content)
+                section = content[section_start:section_end]
+                p = re.compile(rf'^(-\s+\*\*{re.escape(sub_name)}/?\*\*)\s*(.*?)(\(\d+\s+symbols\))(.*)$', re.MULTILINE)
+                m = p.search(section)
+                if m:
+                    abs_start = section_start + m.start()
+                    abs_end = section_start + m.end()
+                    content = content[:abs_start] + f"{m.group(1)} — {desc} {m.group(3)}" + content[abs_end:]
+                    changes.append({"dir": dir_path, "desc": desc})
     if changes:
         codemap.write_text(content, encoding="utf-8")
     return changes
@@ -124,8 +135,8 @@ def ai_generate(dirs: list[str]) -> dict[str, str] | None:
     try:
         if "claude" in cmd:
             r = subprocess.run(
-                ["timeout", "15", cmd, "-p", prompt, "--output-format", "stream-json"],
-                capture_output=True, text=True, timeout=20)
+                ["timeout", "30", cmd, "-p", prompt, "--output-format", "stream-json"],
+                capture_output=True, text=True, timeout=35)
             # Parse stream-json
             text = ""
             for line in r.stdout.split("\n"):
@@ -141,7 +152,7 @@ def ai_generate(dirs: list[str]) -> dict[str, str] | None:
             raw = text
         else:
             r = subprocess.run([cmd, "exec", prompt],
-                               capture_output=True, text=True, timeout=20)
+                               capture_output=True, text=True, timeout=35)
             raw = r.stdout.strip()
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
@@ -152,12 +163,12 @@ def ai_generate(dirs: list[str]) -> dict[str, str] | None:
     # Extract JSON from response
     json_match = re.search(r'\{[^{}]*("[\w/]+":\s*"[^"]*"[,\s]*)+\}', raw, re.DOTALL)
     if not json_match:
-        json_match = re.search(r'\{.*\}', raw, re.DOTALL)
-    if not json_match:
+        print(f"ai_generate: no JSON found in response ({len(raw)} chars)", file=sys.stderr)
         return None
     try:
         return json.loads(json_match.group())
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        print(f"ai_generate: JSON parse failed: {e}", file=sys.stderr)
         return None
 
 
@@ -211,16 +222,14 @@ def get_keywords(dir_path: str) -> str:
         f"MATCH (f:Function) WHERE f.filePath STARTS WITH '{dir_path}/' AND NOT f.name STARTS WITH '_' "
         f"OPTIONAL MATCH (c)-[:CodeRelation {{type:'CALLS'}}]->(f) WITH f, count(c) AS refs "
         f"WHERE refs > 0 RETURN f.name ORDER BY refs DESC LIMIT 4")
-    kw = [r[0] for r in rows if r[0].lower() not in GENERIC and len(r[0]) > 3]
+    kw = list(dict.fromkeys(r[0] for r in rows if r[0].lower() not in GENERIC and len(r[0]) > 3))
     return " / ".join(kw[:3]) if kw else ""
 
 
 def fallback_generate(dirs: list[str]) -> dict[str, str]:
-    """Generate descriptions from docstrings or GitNexus keywords. Only fills empty."""
-    # Re-parse in --generate mode to only get empty entries
-    empty_dirs = parse_codemap("--generate")
+    """Generate descriptions from docstrings or GitNexus keywords for given dirs."""
     result = {}
-    for d in empty_dirs:
+    for d in dirs:
         desc = get_docstring(d) or get_keywords(d)
         if desc:
             result[d] = desc
