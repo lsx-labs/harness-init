@@ -9,6 +9,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 import harness_monitor as hm
+import harness_shared
 
 
 class TestShouldSkip:
@@ -65,19 +66,19 @@ class TestGetAiCmd:
             assert hm.get_ai_cmd() == "codex"
 
 
-class TestExtractDescAndCount:
+class TestParseCodemapEntry:
     def test_desc_before_count(self):
-        desc, count = hm._extract_desc_and_count("(100 symbols) — My description")
+        desc, count = harness_shared.parse_codemap_entry("(100 symbols) — My description")
         assert desc == "My description"
         assert count == 100
 
     def test_only_count(self):
-        desc, count = hm._extract_desc_and_count("(50 symbols)")
+        desc, count = harness_shared.parse_codemap_entry("(50 symbols)")
         assert desc == ""
         assert count == 50
 
     def test_empty(self):
-        desc, count = hm._extract_desc_and_count("")
+        desc, count = harness_shared.parse_codemap_entry("")
         assert desc == ""
         assert count is None
 

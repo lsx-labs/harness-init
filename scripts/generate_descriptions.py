@@ -16,7 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-MANUAL_MARKER = "📌"
+from harness_shared import MANUAL_MARKER, parse_codemap as _parse_codemap
+
 HOOK_TIMEOUT = 10
 GENERIC = {"main", "init", "run", "start", "stop", "get", "set", "test", "setup", "parse",
            "build", "create", "delete", "update", "load", "save", "read", "write", "open",
@@ -27,38 +28,17 @@ GENERIC = {"main", "init", "run", "start", "stop", "get", "set", "test", "setup"
 # CODE_MAP.md parsing
 # ══════════════════════════════════════════════════════════
 
-def extract_desc(text: str) -> str:
-    dm = re.search(r'—\s*(.+)', text)
-    return dm.group(1).strip() if dm else ""
-
-
 def parse_codemap(mode: str) -> list[str]:
     """Return list of directories needing descriptions based on mode."""
-    codemap = Path("CODE_MAP.md")
-    if not codemap.exists():
-        return []
+    entries = _parse_codemap(Path("CODE_MAP.md"))
     dirs = []
-    current = ""
-    for line in codemap.read_text(encoding="utf-8").split("\n"):
-        m = re.match(r'^###\s+(\S+)/?(.*)$', line)
-        if m:
-            current = m.group(1).rstrip("/")
-            desc = extract_desc(m.group(2))
-            if desc.startswith(MANUAL_MARKER):
-                continue
-            if mode == "--generate" and desc and not desc.startswith("⚠️"):
-                continue
-            dirs.append(current)
+    for e in entries:
+        desc = e.get("desc") or ""
+        if desc.startswith(MANUAL_MARKER):
             continue
-        m = re.match(r'^-\s+\*\*(\S+)/?\*\*(.*)$', line)
-        if m:
-            sub = f"{current}/{m.group(1).rstrip('/')}"
-            desc = extract_desc(m.group(2))
-            if desc.startswith(MANUAL_MARKER):
-                continue
-            if mode == "--generate" and desc and not desc.startswith("⚠️"):
-                continue
-            dirs.append(sub)
+        if mode == "--generate" and desc and not desc.startswith("⚠️"):
+            continue
+        dirs.append(e["dir"])
     return dirs
 
 

@@ -13,11 +13,9 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-# ── Config ──
+from harness_shared import SKIP_DIRS, should_skip
 
-SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__",
-             ".gitnexus", ".claude", ".codex", "dist", "build",
-             "vendor", "third_party", "sdk", ".tox", ".worktrees"}
+# ── Config ──
 TEST_DIRS = {"tests", "test"}
 GENERIC_NAMES = {"base", "utils", "helpers", "common", "core", "main", "config",
                  "settings", "models", "views", "loader", "registry", "pipeline",
@@ -47,10 +45,6 @@ LSP_PLUGIN_MAP = {
     "Swift": "code-intelligence-swift",
     "C": "code-intelligence-cpp", "C++": "code-intelligence-cpp",
 }
-
-
-def should_skip(name: str) -> bool:
-    return name in SKIP_DIRS or (name.startswith(".") and name != ".")
 
 
 # ── 1. Language distribution ──
