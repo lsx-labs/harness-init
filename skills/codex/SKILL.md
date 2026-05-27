@@ -6,6 +6,9 @@ disable-model-invocation: true
 
 # Harness Init — Project Harness Lifecycle Manager
 
+> **当前平台：Codex** — 生成 `AGENTS.md`，不生成 `CLAUDE.md`。
+> 子目录同理：只生成 `*/AGENTS.md`。
+
 ## 架构
 
 ```

@@ -6,6 +6,9 @@ disable-model-invocation: true
 
 # Harness Init — 项目驾具生命周期管理
 
+> **当前平台：Claude Code** — 生成 `CLAUDE.md`，不生成 `AGENTS.md`。
+> 子目录同理：只生成 `*/CLAUDE.md`。
+
 ## 架构
 
 ```
