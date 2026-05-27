@@ -81,6 +81,22 @@ def get_init_docstring(dir_path) -> str:
     return ""
 
 
+def parse_gitnexus_markdown(output: str) -> str:
+    """Extract markdown table from GitNexus output. Handles both dict and list formats."""
+    try:
+        data = json.loads(output)
+        if isinstance(data, dict):
+            return data.get("markdown", "")
+        elif isinstance(data, list) and data:
+            # List format: first item may contain markdown
+            if isinstance(data[0], dict):
+                return data[0].get("markdown", "")
+            return str(data[0])
+    except (json.JSONDecodeError, IndexError, TypeError):
+        pass
+    return ""
+
+
 def get_subdir_list(dir_path) -> str:
     """List subdirectory names as description."""
     try:
@@ -227,7 +243,7 @@ def get_gitnexus_communities():
         output = r.stdout.strip() or r.stderr.strip()
         if not output or r.returncode != 0:
             return None
-        md = json.loads(output).get("markdown", "")
+        md = parse_gitnexus_markdown(output)
         lines = [l.strip() for l in md.split("\n") if l.strip()]
         if len(lines) < 3:
             return None
@@ -255,7 +271,7 @@ def build_area_to_dir(communities):
              "-r", Path(".").resolve().name],
             capture_output=True, text=True, timeout=HOOK_TIMEOUT)
         output = r.stdout.strip() or r.stderr.strip()
-        md = json.loads(output).get("markdown", "")
+        md = parse_gitnexus_markdown(output)
         folders = [
             [c.strip() for c in l.split("|") if c.strip()][0]
             for l in [x.strip() for x in md.split("\n") if x.strip()][2:]
@@ -303,8 +319,11 @@ def build_codemap_structure(communities, existing_descs, old_counts):
         else:
             lines.append(f"### {top_dir}/ ({total_syms} symbols)")
 
+        # List sub-dirs: GitNexus communities first
+        covered_subs = set()
         for sub, syms, area in sorted(entries, key=lambda x: -x[1]):
             if sub:
+                covered_subs.add(sub.split("/")[0] if "/" in sub else sub)
                 sub_key = f"{top_dir}/{sub}"
                 sub_desc = existing_descs.get(sub_key, "")
                 sub_old = old_counts.get(sub_key, 0)
@@ -314,6 +333,24 @@ def build_codemap_structure(communities, existing_descs, old_counts):
                     lines.append(f"- **{sub}/** — {sub_desc} ({syms} symbols)")
                 else:
                     lines.append(f"- **{sub}/** ({syms} symbols)")
+
+        # Append uncovered sub-dirs (e.g., core/ inside gmatrix_vbt_engine/)
+        try:
+            top_path = Path(top_dir)
+            if top_path.is_dir():
+                for sub_d in sorted(top_path.iterdir()):
+                    if (sub_d.is_dir() and not should_skip(sub_d.name)
+                            and not sub_d.name.startswith("_")
+                            and sub_d.name not in covered_subs):
+                        sub_key = f"{top_dir}/{sub_d.name}"
+                        sub_desc = existing_descs.get(sub_key, "") or get_readme_first_line(sub_d) or get_init_docstring(sub_d) or ""
+                        if sub_desc:
+                            lines.append(f"- **{sub_d.name}/** — {sub_desc}")
+                        else:
+                            lines.append(f"- **{sub_d.name}/**")
+        except OSError:
+            pass
+
         lines.append("")
 
     # Append directories not covered by GitNexus (docs, tests, etc.)

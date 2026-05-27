@@ -173,7 +173,13 @@ def gitnexus_query(cypher: str) -> list[list[str]]:
         output = r.stdout.strip() or r.stderr.strip()
         if not output:
             return []
-        md = json.loads(output).get("markdown", "")
+        data = json.loads(output)
+        if isinstance(data, dict):
+            md = data.get("markdown", "")
+        elif isinstance(data, list) and data and isinstance(data[0], dict):
+            md = data[0].get("markdown", "")
+        else:
+            md = ""
         lines = [l.strip() for l in md.split("\n") if l.strip()]
         if len(lines) < 3:
             return []
