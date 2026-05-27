@@ -57,15 +57,15 @@ def get_ai_cmd():
     return ""
 
 
-def ai_invoke(prompt, timeout=60):
-    """Invoke AI CLI non-interactively, return output text."""
+def ai_invoke(prompt, timeout=15):
+    """Invoke AI CLI non-interactively. Timeout must be < hook's 20s deadline."""
     cmd = get_ai_cmd()
     if not cmd:
         return ""
     try:
         if "claude" in cmd:
             r = subprocess.run(
-                [cmd, "-p", prompt, "--allowedTools", "mcp__gitnexus*,Bash,Read"],
+                [cmd, "-p", prompt, "--allowedTools", "Read,mcp__gitnexus*"],
                 capture_output=True, text=True, timeout=timeout)
             return r.stdout.strip()
         else:
@@ -291,7 +291,7 @@ def update_subdir_docs(stale_dirs):
         f"目录：{', '.join(dirs_with_docs)}"
     )
 
-    result = ai_invoke(prompt, timeout=90)
+    result = ai_invoke(prompt, timeout=15)
     return dirs_with_docs if result else []
 
 

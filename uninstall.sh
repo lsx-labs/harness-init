@@ -8,7 +8,6 @@ rm -f ~/.local/share/harness-hooks/harness-monitor.py
 rm -f ~/.local/share/harness-hooks/session-context.sh
 rm -f ~/.local/share/harness-hooks/VERSION
 rm -rf ~/.local/share/harness-hooks/counters
-rm -rf ~/.local/share/harness-hooks/stale-pending
 rm -rf ~/.claude/skills/harness-init
 rm -rf ~/.codex/skills/harness-init
 
