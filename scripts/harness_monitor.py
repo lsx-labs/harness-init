@@ -389,6 +389,21 @@ def build_codemap_structure(communities, existing_descs, old_counts):
 # Sub-directory CLAUDE.md/AGENTS.md update via AI CLI
 # ══════════════════════════════════════════════════════════
 
+def sync_platform_docs(dir_path):
+    """If both CLAUDE.md and AGENTS.md exist, copy the newer one to the other."""
+    claude = Path(dir_path, "CLAUDE.md")
+    agents = Path(dir_path, "AGENTS.md")
+    if not claude.exists() or not agents.exists():
+        return
+    try:
+        if claude.stat().st_mtime >= agents.stat().st_mtime:
+            agents.write_text(claude.read_text(encoding="utf-8"), encoding="utf-8")
+        else:
+            claude.write_text(agents.read_text(encoding="utf-8"), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def update_subdir_docs(stale_dirs):
     """Update harness:start/end regions in sub-directory docs via AI CLI."""
     dirs_with_docs = [d for d in stale_dirs
@@ -403,12 +418,14 @@ def update_subdir_docs(stale_dirs):
         f"规则：\n"
         f"1. 对每个目录，调用 gitnexus_context 查询其核心函数\n"
         f"2. 基于 GitNexus 返回的事实更新约束和危险操作\n"
-        f"3. 只改 harness:start/end 之间的内容，其他部分不动\n"
-        f"4. CLAUDE.md 和 AGENTS.md 内容保持一致\n\n"
+        f"3. 只改 harness:start/end 之间的内容，其他部分不动\n\n"
         f"目录：{', '.join(dirs_with_docs)}"
     )
 
     result = ai_invoke(prompt, timeout=60)
+    if result:
+        for d in dirs_with_docs:
+            sync_platform_docs(d)
     return dirs_with_docs if result else []
 
 
@@ -512,6 +529,9 @@ def _do_main_branch_update_inner():
     # Step 3: Update sub-directory CLAUDE.md/AGENTS.md for stale dirs
     if stale_dirs:
         update_subdir_docs(stale_dirs)
+
+    # Step 4: Sync root CLAUDE.md ↔ AGENTS.md if both exist
+    sync_platform_docs(".")
 
 
 def handle_main_branch_update(project_id):
