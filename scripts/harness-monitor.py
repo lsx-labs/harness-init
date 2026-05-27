@@ -410,13 +410,31 @@ def update_subdir_docs(stale_dirs):
 # Main update handler
 # ══════════════════════════════════════════════════════════
 
+def ensure_gitnexus_fresh():
+    """If GitNexus is indexed but stale, run incremental analyze first."""
+    if not Path(".gitnexus").is_dir():
+        return
+    try:
+        r = subprocess.run(["npx", "gitnexus", "status"],
+                           capture_output=True, text=True, timeout=5)
+        output = (r.stdout + r.stderr).lower()
+        if "stale" in output:
+            subprocess.run(["npx", "gitnexus", "analyze"],
+                           capture_output=True, text=True, timeout=HOOK_TIMEOUT)
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+
+
 def handle_main_branch_update(project_id):
-    """Full update on main branch: CODE_MAP + descriptions + sub-dir docs."""
+    """Full update on main branch: reindex → CODE_MAP → descriptions → sub-dir docs."""
+    # Step 0: Ensure GitNexus index is fresh before reading community data
+    ensure_gitnexus_fresh()
+
     codemap_file = Path("CODE_MAP.md")
     old_content = codemap_file.read_text() if codemap_file.exists() else ""
     existing_descs, old_counts = parse_existing_codemap(codemap_file)
 
-    # Step 1: Update CODE_MAP.md structure
+    # Step 1: Update CODE_MAP.md structure (now with fresh index)
     communities = get_gitnexus_communities()
     if communities:
         new_content, stale_dirs = build_codemap_structure(communities, existing_descs, old_counts)
