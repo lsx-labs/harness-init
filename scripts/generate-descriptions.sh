@@ -1,14 +1,10 @@
 #!/usr/bin/env bash
-# Generate CODE_MAP.md descriptions deterministically from code data.
-#
-# Strategy:
-#   1. Has __init__.py docstring → use it directly
-#   2. No docstring → use "top_func1 / top_func2 / top_func3" from GitNexus
+# Generate CODE_MAP.md descriptions: AI + GitNexus (primary) / keywords (fallback).
 #
 # Modes:
-#   --generate  — produce descriptions for missing entries, write to CODE_MAP.md
-#   --refresh   — regenerate ALL descriptions from current data, preserve only manual overrides
-#   --dry-run   — show what would change without writing
+#   --generate  fill empty entries only (default)
+#   --refresh   regenerate all (except 📌 manual overrides)
+#   --dry-run   show what would change
 
 set -euo pipefail
 
@@ -16,164 +12,216 @@ PROJECT_DIR="${1:-.}"
 MODE="${2:---generate}"
 cd "$PROJECT_DIR"
 
-python3 - "$MODE" << 'PYEOF'
+# Step 1: Find directories needing descriptions
+DIRS_JSON=$(python3 - "$MODE" << 'PYEOF'
+import json, re, sys
+from pathlib import Path
+
+MODE = sys.argv[1]
+
+def _extract_desc(text):
+    dm = re.search(r'—\s*(.+)', text)
+    return dm.group(1).strip() if dm else ""
+
+codemap = Path("CODE_MAP.md")
+if not codemap.exists():
+    print(json.dumps([])); sys.exit(0)
+
+dirs = []
+current = ""
+for line in codemap.read_text().split("\n"):
+    m = re.match(r'^###\s+(\S+)/?(.*)$', line)
+    if m:
+        current = m.group(1).rstrip("/")
+        desc = _extract_desc(m.group(2))
+        if desc.startswith("📌"): continue
+        if MODE == "--generate" and desc and not desc.startswith("⚠️"): continue
+        dirs.append(current)
+        continue
+    m = re.match(r'^-\s+\*\*(\S+)/?\*\*(.*)$', line)
+    if m:
+        sub = f"{current}/{m.group(1).rstrip('/')}"
+        desc = _extract_desc(m.group(2))
+        if desc.startswith("📌"): continue
+        if MODE == "--generate" and desc and not desc.startswith("⚠️"): continue
+        dirs.append(sub)
+
+print(json.dumps(dirs))
+PYEOF
+)
+
+DIR_LIST=$(echo "$DIRS_JSON" | python3 -c "import json,sys; dirs=json.load(sys.stdin); print(' '.join(dirs))")
+DIR_COUNT=$(echo "$DIRS_JSON" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")
+
+if [ "$DIR_COUNT" = "0" ]; then
+    echo '{"status": "all_described"}'
+    exit 0
+fi
+
+if [ "$MODE" = "--dry-run" ]; then
+    echo "{\"status\": \"dry_run\", \"dirs_needing\": $DIRS_JSON}"
+    exit 0
+fi
+
+# Step 2: Try AI + GitNexus (primary path)
+AI_CMD=""
+if command -v claude &>/dev/null 2>&1; then
+    AI_CMD="claude"
+elif [ -x "/Applications/Codex.app/Contents/Resources/codex" ]; then
+    AI_CMD="/Applications/Codex.app/Contents/Resources/codex"
+elif command -v codex &>/dev/null 2>&1; then
+    AI_CMD="codex"
+fi
+
+if [ -n "$AI_CMD" ] && [ -d ".gitnexus" ]; then
+    PROMPT="你在项目 $(basename "$PWD") 中。为以下 $DIR_COUNT 个目录生成 CODE_MAP.md 导航描述。
+
+规则：
+1. 对每个目录，调用 gitnexus_context 查询其核心函数（被引用最多的），了解调用关系
+2. 只基于 GitNexus 返回的数据写描述，不自行推测
+3. 每个描述中文 ≤ 30 字，格式：核心职责 + 2-3 个关键功能词
+4. 只输出纯 JSON，无 markdown 包裹，格式：{\"目录名\": \"描述\"}
+
+目录：$DIR_LIST"
+
+    RESULT=""
+    if [ "$AI_CMD" = "claude" ]; then
+        RESULT=$(claude -p "$PROMPT" --output-format stream-json 2>/dev/null | \
+                 python3 -c "
+import json, sys
+text = ''
+for line in sys.stdin:
+    line = line.strip()
+    if not line: continue
+    try:
+        d = json.loads(line)
+        if d.get('type') == 'text':
+            text += d.get('content', '')
+    except: pass
+print(text)
+" 2>/dev/null || echo "")
+    else
+        RESULT=$($AI_CMD exec "$PROMPT" 2>/dev/null || echo "")
+    fi
+
+    if [ -n "$RESULT" ]; then
+        # Parse AI output and write to CODE_MAP.md
+        python3 - "$RESULT" << 'PYEOF'
+import json, re, sys
+from pathlib import Path
+
+raw = sys.argv[1]
+json_match = re.search(r'\{[^{}]*("[\w/]+":\s*"[^"]*"[,\s]*)+\}', raw, re.DOTALL)
+if not json_match:
+    json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+if not json_match:
+    print(json.dumps({"status": "ai_parse_error"}, ensure_ascii=False))
+    sys.exit(0)
+
+try:
+    descriptions = json.loads(json_match.group())
+except json.JSONDecodeError:
+    print(json.dumps({"status": "ai_parse_error"}, ensure_ascii=False))
+    sys.exit(0)
+
+codemap = Path("CODE_MAP.md")
+content = codemap.read_text()
+changes = []
+
+for dir_path, desc in descriptions.items():
+    if not desc or not isinstance(desc, str): continue
+    desc = desc.strip()[:60]
+
+    # Top-level
+    p = re.compile(rf'^(###\s+{re.escape(dir_path)}/\s+\(\d+\s+symbols\))(.*)$', re.MULTILINE)
+    m = p.search(content)
+    if m:
+        content = content[:m.start()] + f"{m.group(1)} — {desc}" + content[m.end():]
+        changes.append({"dir": dir_path, "desc": desc})
+        continue
+
+    # Sub-level
+    sub_name = dir_path.split("/")[-1]
+    p = re.compile(rf'^(-\s+\*\*{re.escape(sub_name)}/?\*\*)\s*(.*?)(\(\d+\s+symbols\))(.*)$', re.MULTILINE)
+    m = p.search(content)
+    if m:
+        content = content[:m.start()] + f"{m.group(1)} — {desc} {m.group(3)}" + content[m.end():]
+        changes.append({"dir": dir_path, "desc": desc})
+
+if changes:
+    codemap.write_text(content)
+
+print(json.dumps({"status": "updated", "source": "ai+gitnexus", "count": len(changes), "changes": changes}, indent=2, ensure_ascii=False))
+PYEOF
+        exit 0
+    fi
+fi
+
+# Step 3: Fallback — keyword extraction (no AI or no GitNexus)
+python3 - "$DIRS_JSON" << 'PYEOF'
 import json, re, subprocess, sys, ast
 from pathlib import Path
 
-MODE = sys.argv[1] if len(sys.argv) > 1 else "--generate"
+dirs = json.loads(sys.argv[1])
 HOOK_TIMEOUT = 10
-MANUAL_MARKER = "📌"  # descriptions starting with this are manual overrides, never auto-replaced
+GENERIC = {"main","init","run","start","stop","get","set","test","setup","parse",
+           "build","create","delete","update","load","save","read","write","open",
+           "close","validate","check","add","all","data","config","path","name","type"}
 
-
-def gitnexus_query(cypher_query):
+def gn_query(q):
     try:
-        r = subprocess.run(
-            ["npx", "gitnexus", "cypher", cypher_query, "-r", Path(".").resolve().name],
-            capture_output=True, text=True, timeout=HOOK_TIMEOUT)
+        r = subprocess.run(["npx","gitnexus","cypher",q,"-r",Path(".").resolve().name],
+                           capture_output=True,text=True,timeout=HOOK_TIMEOUT)
         output = r.stdout.strip() or r.stderr.strip()
         if not output: return []
-        md = json.loads(output).get("markdown", "")
+        md = json.loads(output).get("markdown","")
         lines = [l.strip() for l in md.split("\n") if l.strip()]
-        if len(lines) < 3: return []
-        return [[c.strip() for c in line.split("|") if c.strip()] for line in lines[2:]]
-    except Exception:
-        return []
+        return [[c.strip() for c in l.split("|") if c.strip()] for l in lines[2:]] if len(lines)>=3 else []
+    except: return []
 
-
-def get_top_functions(dir_path, limit=3):
-    rows = gitnexus_query(
-        f"MATCH (f:Function) WHERE f.filePath STARTS WITH '{dir_path}/' "
-        f"AND NOT f.name STARTS WITH '_' AND f.name <> 'main' "
-        f"OPTIONAL MATCH (caller)-[:CodeRelation {{type:'CALLS'}}]->(f) "
-        f"WITH f, count(caller) AS refs "
-        f"RETURN f.name, refs ORDER BY refs DESC LIMIT {limit}")
-    return [{"name": r[0], "refs": int(r[1])} for r in rows if len(r) >= 2]
-
-
-def get_docstring(dir_path):
-    for fname in ("__init__.py", "index.ts", "index.js", "mod.rs", "lib.rs"):
-        fpath = Path(dir_path) / fname
-        if fpath.exists():
+def get_desc(d):
+    # Try docstring
+    for f in ("__init__.py","index.ts","mod.rs"):
+        p = Path(d)/f
+        if p.exists():
             try:
-                src = fpath.read_text(encoding="utf-8", errors="ignore")
-                if fname.endswith(".py"):
-                    tree = ast.parse(src)
-                    ds = ast.get_docstring(tree)
-                    if ds:
-                        first_line = ds.strip().split("\n")[0]
-                        # Remove filepath prefix pattern "module/file.py — desc"
-                        for sep in ("—", "–", "-"):
-                            if sep in first_line:
-                                first_line = first_line.split(sep, 1)[1].strip()
-                                break
-                        return first_line[:80]
-            except Exception:
-                pass
-    return ""
+                ds = ast.get_docstring(ast.parse(p.read_text()))
+                if ds:
+                    line = ds.strip().split("\n")[0]
+                    for sep in ("—","–","-"):
+                        if sep in line: line=line.split(sep,1)[1].strip(); break
+                    return line[:60]
+            except: pass
+    # Try GitNexus keywords
+    rows = gn_query(
+        f"MATCH (f:Function) WHERE f.filePath STARTS WITH '{d}/' AND NOT f.name STARTS WITH '_' "
+        f"OPTIONAL MATCH (c)-[:CodeRelation {{type:'CALLS'}}]->(f) WITH f, count(c) AS refs "
+        f"WHERE refs > 0 RETURN f.name ORDER BY refs DESC LIMIT 4")
+    kw = [r[0] for r in rows if r[0].lower() not in GENERIC and len(r[0])>3]
+    return " / ".join(kw[:3]) if kw else ""
 
-
-def generate_description(dir_path):
-    """Generate a description from docstring or top functions. Deterministic, no AI."""
-    # Priority 1: docstring
-    ds = get_docstring(dir_path)
-    if ds:
-        return ds
-
-    # Priority 2: top functions from GitNexus
-    funcs = get_top_functions(dir_path)
-    if funcs:
-        return " / ".join(f"{f['name']}({f['refs']})" for f in funcs)
-
-    # Priority 3: nothing
-    return ""
-
-
-def _extract_desc_and_count(text):
-    desc, count = "", None
-    cm = re.search(r'\((\d+)\s*symbols?\)', text)
-    if cm:
-        count = int(cm.group(1))
-        text = text[:cm.start()] + text[cm.end():]
-    dm = re.search(r'—\s*(.+)', text)
-    if dm:
-        desc = dm.group(1).strip()
-    return desc, count
-
-
-def parse_codemap():
-    codemap = Path("CODE_MAP.md")
-    if not codemap.exists(): return [], ""
-    content = codemap.read_text()
-    entries = []
-    current = ""
-    for line in content.split("\n"):
-        m = re.match(r'^###\s+(\S+)/?(.*)$', line)
-        if m:
-            current = m.group(1).rstrip("/")
-            desc, count = _extract_desc_and_count(m.group(2))
-            entries.append({"dir": current, "symbols": count or 0, "desc": desc, "level": "top", "line": line})
-            continue
-        m = re.match(r'^-\s+\*\*(\S+)/?\*\*(.*)$', line)
-        if m:
-            sub = f"{current}/{m.group(1).rstrip('/')}"
-            desc, count = _extract_desc_and_count(m.group(2))
-            entries.append({"dir": sub, "symbols": count or 0, "desc": desc, "level": "sub", "line": line})
-    return entries, content
-
-
-def write_codemap(entries, original_content):
-    """Rewrite CODE_MAP.md with updated descriptions."""
-    content = original_content
-    for entry in entries:
-        if "new_line" in entry and entry["new_line"] != entry["line"]:
-            content = content.replace(entry["line"], entry["new_line"])
-    Path("CODE_MAP.md").write_text(content)
-
-
-entries, original = parse_codemap()
-if not entries:
-    print(json.dumps({"status": "no_codemap"}, ensure_ascii=False))
-    sys.exit(0)
-
+codemap = Path("CODE_MAP.md")
+content = codemap.read_text()
 changes = []
-for entry in entries:
-    old_desc = entry["desc"]
 
-    # Skip manual overrides (marked with 📌)
-    if old_desc.startswith(MANUAL_MARKER):
+for d in dirs:
+    desc = get_desc(d)
+    if not desc: continue
+    sub = d.split("/")[-1]
+    p = re.compile(rf'^(###\s+{re.escape(d)}/\s+\(\d+\s+symbols\))(.*)$', re.MULTILINE)
+    m = p.search(content)
+    if m:
+        content = content[:m.start()] + f"{m.group(1)} — {desc}" + content[m.end():]
+        changes.append({"dir": d, "desc": desc})
         continue
+    p = re.compile(rf'^(-\s+\*\*{re.escape(sub)}/?\*\*)\s*(.*?)(\(\d+\s+symbols\))(.*)$', re.MULTILINE)
+    m = p.search(content)
+    if m:
+        content = content[:m.start()] + f"{m.group(1)} — {desc} {m.group(3)}" + content[m.end():]
+        changes.append({"dir": d, "desc": desc})
 
-    # --generate: only fill empty descriptions
-    if MODE == "--generate" and old_desc and not old_desc.startswith("⚠️"):
-        continue
+if changes:
+    codemap.write_text(content)
 
-    # Generate new description
-    new_desc = generate_description(entry["dir"])
-    if not new_desc:
-        continue
-
-    # Build new line
-    if entry["level"] == "top":
-        new_line = f"### {entry['dir']}/ ({entry['symbols']} symbols) — {new_desc}"
-    else:
-        new_line = f"- **{entry['dir'].split('/')[-1]}/** — {new_desc} ({entry['symbols']} symbols)"
-
-    if new_line != entry["line"]:
-        entry["new_line"] = new_line
-        changes.append({
-            "dir": entry["dir"],
-            "old": old_desc or "(空)",
-            "new": new_desc,
-        })
-
-if MODE == "--dry-run" or not changes:
-    status = "no_changes" if not changes else "dry_run"
-    print(json.dumps({"status": status, "changes": changes}, indent=2, ensure_ascii=False))
-else:
-    write_codemap(entries, original)
-    print(json.dumps({
-        "status": "updated",
-        "count": len(changes),
-        "changes": changes
-    }, indent=2, ensure_ascii=False))
+print(json.dumps({"status": "updated", "source": "fallback", "count": len(changes), "changes": changes}, indent=2, ensure_ascii=False))
 PYEOF
