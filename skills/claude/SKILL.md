@@ -10,10 +10,10 @@ disable-model-invocation: true
 
 ```
 共享层（平台无关）
-├── ~/.local/bin/harness-init.sh                             ← 核心诊断脚本（JSON 输出）
+├── ~/.local/bin/harness-init.py                             ← 核心诊断脚本（JSON 输出）
 ├── ~/.local/share/harness-hooks/harness-monitor.py          ← PostToolUse Hook（CODE_MAP + 子目录 + 成长检测）
-├── ~/.local/share/harness-hooks/generate-descriptions.sh    ← CODE_MAP 描述生成（AI+GitNexus / fallback）
-├── ~/.local/share/harness-hooks/session-context.sh          ← SessionStart Hook（git 状态注入）
+├── ~/.local/share/harness-hooks/generate_descriptions.py    ← CODE_MAP 描述生成（AI+GitNexus / fallback）
+├── ~/.local/share/harness-hooks/session_context.py          ← SessionStart Hook（git 状态注入）
 └── 项目/CODE_MAP.md                                         ← 独立导航文件，两边引用
 
 平台入口
@@ -34,7 +34,7 @@ disable-model-invocation: true
 ### Step 1: 运行诊断
 
 ```bash
-bash ~/.local/bin/harness-init.sh .
+python3 ~/.local/bin/harness-init.py .
 ```
 
 输出 JSON（schema_version: 1）：`languages` / `grep_noise` / `type_coverage` / `lsp_assessment` / `existing`
@@ -149,7 +149,7 @@ autoresearch/                  ← 最后生成（复用子层总结）
 | Hook | 事件 | matcher | 功能 |
 |---|---|---|---|
 | harness-monitor.py | PostToolUse | Bash | git 操作后：CODE_MAP 更新 + 子目录更新 + 成长检测 |
-| session-context.sh | SessionStart | startup\|clear | 注入 git 状态 + 模块映射 + harness 健康 |
+| session_context.py | SessionStart | startup\|clear | 注入 git 状态 + 模块映射 + harness 健康 |
 
 第三方 Hook（GitNexus 管理）：
 - PreToolUse [Grep|Glob|Bash] → gitnexus-hook.cjs（搜索增强）
