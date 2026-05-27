@@ -101,16 +101,16 @@ def parse_existing_codemap(codemap_path: Path) -> tuple[dict[str, str], dict[str
         return descs, counts
     current_section = ""
     for line in codemap_path.read_text().split("\n"):
-        m = re.match(r'^###\s+(\S+?)/?(.*)$', line)
+        m = re.match(r'^###\s+(\S+)/?(.*)$', line)
         if m:
-            current_section = m.group(1)
+            current_section = m.group(1).rstrip("/")
             desc, count = _extract_desc_and_count(m.group(2))
             if desc and not desc.startswith("⚠️"):
                 descs[current_section] = desc
             if count is not None:
                 counts[current_section] = count
             continue
-        m = re.match(r'^-\s+\*\*(\S+?)/?\*\*(.*)$', line)
+        m = re.match(r'^-\s+\*\*(\S+)/?\*\*(.*)$', line)
         if m:
             sub = f"{current_section}/{m.group(1)}"
             desc, count = _extract_desc_and_count(m.group(2))
