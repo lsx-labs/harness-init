@@ -149,8 +149,18 @@ def check_existing() -> dict:
             "has_codemap": "@CODE_MAP.md" in txt or "<!-- codemap:start -->" in txt,
             "has_gitnexus": "<!-- gitnexus:start -->" in txt,
         }
+    gitnexus_indexed = Path(".gitnexus").is_dir()
+    gitnexus_up_to_date = False
+    if gitnexus_indexed:
+        try:
+            r = subprocess.run(["npx", "gitnexus", "status"],
+                               capture_output=True, text=True, timeout=5)
+            gitnexus_up_to_date = "up-to-date" in (r.stdout + r.stderr).lower()
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
     existing["gitnexus"] = {
-        "indexed": Path(".gitnexus").is_dir(),
+        "indexed": gitnexus_indexed,
+        "up_to_date": gitnexus_up_to_date,
         "in_gitignore": ".gitnexus" in (Path(".gitignore").read_text() if Path(".gitignore").exists() else ""),
     }
     existing["gitnexus_hook_reachable"] = (Path.home() / ".claude" / "hooks" / "gitnexus" / "gitnexus-hook.cjs").exists()

@@ -220,9 +220,14 @@ Step 3: 组合 GitNexus 数据 + 源码判断 → 写危险描述
 
 ```
 已安装？ → NO + grep 噪声 > 20 → 提示安装
-已索引？ → NO → npx gitnexus analyze
-索引过期？ → YES → npx gitnexus analyze（增量）
+已索引？（existing.gitnexus.indexed）
+  NO  → npx gitnexus analyze（首次索引）
+  YES → 检查 existing.gitnexus.up_to_date
+        up_to_date=true  → ✅ 跳过（不跑 analyze，节省 25s+）
+        up_to_date=false → npx gitnexus analyze（增量更新）
 ```
+
+**重要：索引已最新时绝不跑 `gitnexus analyze`。** 即使增量模式也需 25s+ 启动开销。
 
 | grep 噪声 | 判断 |
 |---|---|
