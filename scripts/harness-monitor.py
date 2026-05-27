@@ -26,8 +26,8 @@ from pathlib import Path
 CHECK_EVERY_N_FILES = 20
 STALE_THRESHOLD = 0.2
 COUNTER_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "counters"
-DIAG_SCRIPT = Path.home() / ".local" / "bin" / "harness-init.sh"
-DESC_SCRIPT = Path.home() / ".local" / "bin" / "generate-descriptions.sh"
+DIAG_SCRIPT = Path.home() / ".local" / "bin" / "harness-init.py"
+DESC_SCRIPT = Path.home() / ".local" / "bin" / "generate-descriptions.py"
 HOOK_TIMEOUT = 15
 
 SOURCE_EXTS = {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".kt",
@@ -323,15 +323,15 @@ def handle_main_branch_update(project_id):
     desc_script = None
     for candidate in [
         DESC_SCRIPT,
-        Path.home() / ".local" / "share" / "harness-hooks" / "generate-descriptions.sh",
-        Path(__file__).resolve().parent / "generate-descriptions.sh",
+        Path.home() / ".local" / "share" / "harness-hooks" / "generate_descriptions.py",
+        Path(__file__).resolve().parent / "generate_descriptions.py",
     ]:
         if candidate.exists():
             desc_script = candidate
             break
     if desc_script:
         try:
-            subprocess.run(["bash", str(desc_script), ".", "--refresh"],
+            subprocess.run([sys.executable, str(desc_script), ".", "--refresh"],
                            capture_output=True, text=True, timeout=HOOK_TIMEOUT)
         except (subprocess.TimeoutExpired, OSError):
             pass
@@ -393,7 +393,7 @@ def handle_growth_check(state, state_file):
         return
 
     try:
-        r = subprocess.run(["bash", str(DIAG_SCRIPT), "."],
+        r = subprocess.run([sys.executable, str(DIAG_SCRIPT), "."],
                            capture_output=True, text=True, timeout=HOOK_TIMEOUT)
         if r.returncode != 0 or not r.stdout.strip():
             save_state(state_file, state)
