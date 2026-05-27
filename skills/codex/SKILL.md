@@ -10,21 +10,24 @@ disable-model-invocation: true
 
 ```
 共享层（平台无关）
-├── ~/.local/bin/harness-init.sh                        ← 核心诊断脚本（JSON 输出）
-├── ~/.local/share/harness-hooks/harness-monitor.py     ← 统一 Hook（CODE_MAP 更新 + 项目成长检测）
-└── 项目/CODE_MAP.md                                    ← 独立文件，两边引用
+├── ~/.local/bin/harness-init.sh                             ← 核心诊断脚本（JSON 输出）
+├── ~/.local/share/harness-hooks/harness-monitor.py          ← PostToolUse Hook（CODE_MAP + 子目录 + 成长检测）
+├── ~/.local/share/harness-hooks/generate-descriptions.sh    ← CODE_MAP 描述生成（AI+GitNexus / fallback）
+├── ~/.local/share/harness-hooks/session-context.sh          ← SessionStart Hook（git 状态注入）
+└── 项目/CODE_MAP.md                                         ← 独立导航文件，两边引用
 
 平台入口
-├── ~/.claude/skills/harness-init/SKILL.md              ← 本文件
-└── ~/.codex/skills/harness-init/SKILL.md               ← Codex 入口
+├── ~/.claude/skills/harness-init/SKILL.md                   ← 本文件
+└── ~/.codex/skills/harness-init/SKILL.md                    ← Codex 入口
 ```
 
 ## 核心原则
 
 - **渐进式构建**：根据实测复杂度信号判断，不提前堆叠
-- **多语言感知**：每种语言独立评估
+- **多语言感知**：每种语言独立评估 LSP 价值
 - **跨平台对等**：CLAUDE.md / AGENTS.md 同时维护，CODE_MAP.md 共享
 - **实测优于拍数字**：grep 噪声度、类型覆盖率
+- **确定性执行**：Hook 通过 AI CLI（claude -p / codex exec）直接完成更新，不依赖概率性消息
 
 ## 执行流程
 
@@ -34,65 +37,41 @@ disable-model-invocation: true
 bash ~/.local/bin/harness-init.sh .
 ```
 
-输出 JSON：`languages` / `grep_noise` / `type_coverage` / `lsp_assessment` / `existing`
+输出 JSON（schema_version: 1）：`languages` / `grep_noise` / `type_coverage` / `lsp_assessment` / `existing`
 
 向用户展示诊断结果，确认后继续。
 
 ### Step 2: 五层驾具逐层处理
 
-#### Layer 1: CLAUDE.md + AGENTS.md + CODE_MAP.md
+#### Layer 1: CODE_MAP.md + CLAUDE.md + AGENTS.md
 
 **四类文件，三种维护方式**：
 
-| 文件 | 谁读 | 初始化时 | 日常维护 |
+| 文件 | 谁读 | /harness-init 时 | 日常 Hook |
 |---|---|---|---|
-| `CODE_MAP.md` | 两边 | 自动生成 | Hook 自动更新（main 分支 git 操作后） |
-| 根 `CLAUDE.md` / `AGENTS.md` | 两边 | **初始化写一次** | **不自动修改**，由项目主人手动维护 |
-| 子目录 `*/CLAUDE.md` / `*/AGENTS.md` | 进入时 | 自动生成 | Hook 检测过期 → AI 更新 `<!-- harness:start/end -->` 区域 |
+| `CODE_MAP.md` | 两边 | **强制刷新所有描述** | 只更新符号数 + AI CLI 刷新描述 |
+| 根 `CLAUDE.md` / `AGENTS.md` | 两边 | 首次生成，之后不修改 | 不自动修改 |
+| 子目录 `*/CLAUDE.md` / `*/AGENTS.md` | 进入时 | 自底向上生成/增量更新 | 符号数变化 ≥ 20% → AI CLI 更新 harness 区域 |
 
-**根 CLAUDE.md / AGENTS.md 的特殊性**：
+**CODE_MAP.md 描述生成**：
 
-根文件包含的是**项目级全局决策**（构建命令、领域概念、危险操作），不是代码分析能自动生成的内容。
-- `/harness-init` **首次执行时写入**：生成模板 + `@CODE_MAP.md` 引用 + `<!-- gitnexus:start/end -->` 标记
-- **之后不再自动修改**：内容由项目主人手动维护（加约束、改构建命令、更新领域概念等）
-- 只有 GitNexus 会更新其 `<!-- gitnexus:start/end -->` 标记区域（GitNexus 自己管理）
+每次 `/harness-init` 执行时，对**所有非 📌 前缀的条目**强制重新生成描述：
 
-**Code Map 是独立文件**。根 CLAUDE.md 和 AGENTS.md 通过 `@CODE_MAP.md` 引用，单一数据源。
-
-**检查与行动**：
-- `CODE_MAP.md` 不存在 → 自动生成骨架
-- `CODE_MAP.md` 存在 → **强制重新生成所有非 📌 描述**（每次 `/harness-init` 都刷新，确保描述基于最新代码）
-- 根 `CLAUDE.md` / `AGENTS.md` 不存在 → **首次生成**（模板见下方，含 @CODE_MAP.md 引用）
-- 根 `CLAUDE.md` / `AGENTS.md` 已存在但缺少 `@CODE_MAP.md` → 追加引用行
-- 根 `CLAUDE.md` / `AGENTS.md` 已存在且完整 → **跳过，不修改**
-
-**AI 生成 Code Map 描述（每次 /harness-init 强制刷新）**：
-
-`/harness-init` 执行时，对 CODE_MAP.md 中**所有非 📌 前缀的条目**重新生成描述：
-
-1. 对每个目录调用 `gitnexus_context` 查询核心函数（调用者/被调用者）
+1. 对每个目录调用 `gitnexus_context` 查询核心函数
 2. 基于 GitNexus 返回的事实写描述，不自行推测
-3. 描述格式：`{核心职责}：{2-3 个关键功能}`，中文，≤ 50 字
-4. 📌 前缀的描述跳过（手动保护）
-5. 写回 CODE_MAP.md
+3. 格式：`{核心职责}：{2-3 个关键功能}`，中文 ≤ 50 字
+4. 📌 前缀 → 跳过（手动保护，永不覆盖）
+5. 生成成本低：每目录 1 次 MCP 查询
 
-生成成本低：每个目录 1 次 MCP 查询 + 1 行输出。
+日常 Hook（main 分支 git 操作后）：
+- 更新符号数 + 调 AI CLI 刷新描述
+- AI CLI 不可用时降级为 docstring / 关键词（**只填空，不覆盖已有**）
 
-**示例**：
-```
-脚本输出:
-  dir: autoresearch/continuous (467 symbols)
-  top_functions: main@cli.py(55refs), build_cycle_status@status.py(15refs)
-  
-AI 写入:
-  - **continuous/** — 持续研究控制面：cycle CLI 入口/状态构建/平台路由 (467 symbols)
-```
+**根 CLAUDE.md / AGENTS.md**：
 
-脚本返回 `{"status": "all_described"}` 时跳过此步。
+初始化写一次，之后手动维护。只有 GitNexus 更新其 `<!-- gitnexus:start/end -->` 标记区域。
 
-**保护规则**：已有描述的条目不覆盖。后续 Hook 更新时只刷新符号数，保留人工描述。
-
-**CLAUDE.md / AGENTS.md 模板**（内容一致）：
+**模板**（CLAUDE.md 和 AGENTS.md 内容一致）：
 
 ```markdown
 # {项目名} — {一句话定位}
@@ -111,200 +90,85 @@ AI 写入:
 
 {不可逆操作警告}
 
-## 工具选择（GitNexus 已安装时生成此段，未安装则跳过）
+## 工具选择（GitNexus 已安装时生成此段）
 
 GitNexus 擅长函数级调用链，不擅长文本搜索。以下场景直接用 grep/rg：
 - 查变量/枚举/环境变量/字符串
 - 查模块间 import 关系
-- 模糊搜索/不确定符号名（先 grep/rg 确认名字，再用 GitNexus 查调用链）
-
-## Code Map 描述自动更新
-
-Hook 在 main 分支 git 操作后自动维护 CODE_MAP.md 描述（v1.0.0）：
-1. 调用 AI CLI（claude -p / codex exec）+ GitNexus 生成事实描述
-2. AI 不可用时降级为 docstring / 关键词（只填空，不覆盖已有）
-3. 📌 前缀的描述永远不被自动替换
-全程确定性执行，无需用户干预。超时上限 15s（< Hook 20s 截止时间）。
+- 模糊搜索/不确定符号名（先 grep/rg 确认，再用 GitNexus 查调用链）
 
 <!-- gitnexus:start -->
 <!-- gitnexus:end -->
 ```
 
-总行数 ≤ 100 行（CODE_MAP.md 按需加载，不占 CLAUDE.md 行数）。
+总行数 ≤ 100 行。
 
 **子目录 CLAUDE.md / AGENTS.md（渐进式披露）**：
 
-复杂模块需要独立的约束文件。进入子目录时自动加载，不在该目录工作时不消耗 context。
-
-**触发条件**：CODE_MAP.md 中符号数 ≥ 100 的目录。
-
-**生成策略：自底向上**
-
-多层嵌套目录时从最深层开始生成，父层复用子层总结，不重复读源码：
+复杂模块（符号数 ≥ 100）生成独立约束文件。自底向上策略：
 
 ```
 autoresearch/                  ← 最后生成（复用子层总结）
-├── distributed/               ← Step 1（叶子层，读源码）
-├── weight_grid/               ← Step 2（叶子层）
-├── continuous/                ← Step 3（叶子层）
-├── _lib/                      ← Step 4（叶子层）
-└── qdata/                     ← Step 5（叶子层）
+├── distributed/               ← Step 1（叶子层，读源码 + GitNexus）
+├── weight_grid/               ← Step 2
+├── continuous/                ← Step 3
+├── _lib/                      ← Step 4
+└── qdata/                     ← Step 5
 ```
 
-执行流程：
-1. 从 CODE_MAP.md 筛出符号数 ≥ 100 的目录
-2. 按目录深度排序（最深优先）
-3. 对每个目录：
-   - 不存在 → 全量生成（含 `<!-- harness:start/end -->` 标记）
-   - 已存在 → **增量更新**：只重写 `<!-- harness:start -->` 到 `<!-- harness:end -->` 之间的内容，标记外的手动内容保留不动
-4. 叶子层：读源码 + GitNexus 查询生成
-5. 父层：读子层已生成的 CLAUDE.md + 补充跨模块约束
+数据源：GitNexus 优先（context / impact / query），grep 降级。
 
-**数据源：GitNexus 优先，grep 降级**
-
-叶子层目录读取规则（最多 5 个文件，≤ 500 行）：
-
-| GitNexus 优先 | grep 降级 |
-|---|---|
-| `gitnexus context {核心函数}` → 调用者/被调用者 | 读 `__init__.py` + 被 import 最多的文件 |
-| `gitnexus impact {高扇入符号} -d upstream` → 影响范围 | `grep -rl` 统计引用数 |
-| 社区数据 → 按符号数排序确定核心文件 | `grep -c` 估算 |
-
-父层目录读取规则：
-1. 读所有子层 CLAUDE.md（已生成，token 极少）
-2. 读该层直属 .py 文件的 docstring
-3. GitNexus 查跨子模块调用关系
-
-**各 section 提取规则**
-
-`## 测试`：
-- 查 `tests/{module}/` 路径是否存在 → 构造 `pytest tests/{module}/ -v`
-- **必须 `ls` 验证路径存在**，不存在标注 `⚠️ 测试目录未找到`
-
-`## 约束`（逐项检查，有则写无则跳，最终 3-5 条）：
-
-| 约束类型 | GitNexus 方式 | grep 降级 |
-|---|---|---|
-| 公开 API 契约 | `context {类}` → incoming calls 多 = 签名不可随意改 | `grep -rl` 统计引用 |
-| 注册模式 | `query "register"` → 注册流程 | `grep "@register\|__all__"` |
-| 类继承约束 | `context {基类}` → extends 关系 | `grep "class.*(Base\|ABC)"` |
-| 配置耦合 | 检查目录内 JSON/YAML 是否被代码读取 | `grep "json.load\|yaml.load"` |
-| 状态依赖 | `impact {状态函数}` → 影响链 | `grep "global\|singleton"` |
-
-**硬约束**：
-- ✅ 每条必须附代码出处：`（见 {文件名} {符号名}）`
-- ❌ 禁止通用废话（"保持代码整洁"）
-- ❌ 禁止与根 CLAUDE.md 重复
-- ❌ 禁止编造代码中不存在的模式
-
-`## 危险操作`：
-- GitNexus `impact -d upstream` → 调用者 > 10 的符号 = 高风险文件
-- 查 write/delete/persist 相关操作
-- 查并发/锁相关代码
-- **必须指明**：具体文件名 + 为什么危险 + 影响 N 个调用者
-
-**输出模板**
+输出模板：
 
 ```markdown
-# {目录名}/ — {一句话职责，来自 CODE_MAP.md}
+# {目录名}/ — {一句话职责}
 
 ## 测试
 
-{精确到该模块的测试命令，路径已验证}
+{测试命令，ls 验证路径存在}
 
 <!-- harness:start -->
-## 约束（自动生成，基于代码分析）
+## 约束（自动生成）
 
-- {约束 1}（见 {文件名} {符号名}）
-- {约束 2}（见 {文件名}）
-- ...
+- {约束}（见 {文件名} {符号名}）
 
 ## 危险操作（自动生成）
 
-- **{文件名}**: {为什么危险}，影响 {N} 个外部调用者
+- **{文件名}**: {原因}，影响 {N} 个调用者
 <!-- harness:end -->
 
-## 补充约束（手动维护，自动更新不会覆盖此区域）
-
-{用户/团队手动添加的约束，如部署流程、团队约定等}
+## 补充约束（手动维护）
 ```
 
-**标记机制**：
-- `<!-- harness:start -->` 到 `<!-- harness:end -->`：自动生成区域，增量更新时重写
-- 标记外的内容（标题、测试、补充约束）：永远不动
-- 首次生成时自动带上标记；已有文件增量更新时只替换标记内的内容
-
-叶子层自动区域 ≤ 20 行，父层 ≤ 15 行。手动区域不限。
-
-**增量更新逻辑**：
-1. 读取现有文件
-2. 找到 `<!-- harness:start -->` 和 `<!-- harness:end -->` 标记
-3. 只替换标记之间的内容（基于最新代码分析）
-4. 标记外的所有内容（标题、测试命令、补充约束）原封不动
-5. 如果标记不存在（旧格式文件）→ 在约束段前后插入标记，保留现有内容
-
-**生成后自检清单**：
-1. ✅ 测试命令路径存在（`ls` 验证）
-2. ✅ 每条约束的 `（见 xxx）` 引用文件存在
-3. ✅ 与根 CLAUDE.md 无重复
-4. ✅ 无通用废话
-5. ✅ CLAUDE.md 和 AGENTS.md 内容完全一致
-6. ✅ `<!-- harness:start/end -->` 标记完整成对
-7. ✅ 手动区域内容未被修改
-
-**与 CODE_MAP.md 的关系**：
-- CODE_MAP.md = 全局导航（一行一模块，"这里有什么"）
-- 子目录 CLAUDE.md/AGENTS.md = 模块深度约束（"在这里怎么干活"）
-- 不重叠，互补
+标记机制：`<!-- harness:start/end -->` 区域自动更新，标记外永不动。
 
 #### Layer 2: Hooks
 
-**前置检查：GitNexus Hook 脚本可达性**
+**两个 Hook，两个平台对齐注册**：
 
-`gitnexus setup` 把 Hook 脚本安装到 `~/.claude/hooks/gitnexus/`（硬编码路径）。
-纯 Codex 环境下 `~/.claude/` 目录不存在，`gitnexus setup` 会跳过安装。
+| Hook | 事件 | matcher | 功能 |
+|---|---|---|---|
+| harness-monitor.py | PostToolUse | Bash | git 操作后：CODE_MAP 更新 + 子目录更新 + 成长检测 |
+| session-context.sh | SessionStart | startup\|clear | 注入 git 状态 + 模块映射 + harness 健康 |
 
-检测并修复：
-```bash
-# 如果 gitnexus-hook.cjs 不存在（纯 Codex 环境）
-if [ ! -f ~/.claude/hooks/gitnexus/gitnexus-hook.cjs ]; then
-    mkdir -p ~/.claude/hooks/gitnexus
-    # 从 gitnexus npm 包中复制 hook 脚本
-    cp "$(npm root -g)/gitnexus/hooks/claude/gitnexus-hook.cjs" ~/.claude/hooks/gitnexus/
-fi
-```
+第三方 Hook（GitNexus 管理）：
+- PreToolUse [Grep|Glob|Bash] → gitnexus-hook.cjs（搜索增强）
 
-**Hook 完整性检查**：
-
-两个平台共用同一套 Hook，内容相同：
-- PreToolUse [Grep|Glob|Bash] → `~/.claude/hooks/gitnexus/gitnexus-hook.cjs`（第三方）
-- PostToolUse [Bash] → harness-monitor.py（自定义，git 操作后触发，只在 main 分支写文件）
-
-**Claude Code** (`~/.claude/settings.json`) + **Codex** (`~/.codex/hooks.json`)：逐项检查，缺失 → 给出修复命令。
+前置检查：纯 Codex 环境下 `~/.claude/hooks/gitnexus/gitnexus-hook.cjs` 可能不存在 → install.sh 自动复制。
 
 #### Layer 3: Skills
 
-跟随 Layer 4（GitNexus analyze 自动生成）。
+跟随 Layer 4（GitNexus analyze 自动生成 6 个 Skills）。
 
 #### Layer 4: GitNexus MCP
 
-**前置：确保 GitNexus 可用且当前项目已索引**
+确保 GitNexus 可用且当前项目已索引：
 
 ```
-GitNexus 已安装？
-  NO  → grep 噪声判断是否需要安装（见下方）
-        → 用户确认安装 → npm install -g gitnexus && npx gitnexus setup
-        → 安装完成后继续 ↓
-  YES ↓
-
-当前项目已索引？（.gitnexus/ 目录存在？）
-  NO  → npx gitnexus analyze（建索引，首次约 10-30s）
-  YES → npx gitnexus status 检查是否过期
-        → 过期 → npx gitnexus analyze（增量更新）
-        → 最新 → ✅ 跳过
+已安装？ → NO + grep 噪声 > 20 → 提示安装
+已索引？ → NO → npx gitnexus analyze
+索引过期？ → YES → npx gitnexus analyze（增量）
 ```
-
-**安装判断**：`grep_noise.grep_noise_files`
 
 | grep 噪声 | 判断 |
 |---|---|
@@ -312,28 +176,17 @@ GitNexus 已安装？
 | 11-20 | 💡 可选 |
 | > 20 | 💡 建议安装 |
 
-**跨平台检查**：`existing.mcp_claude` + `existing.mcp_codex`，任一侧缺失给出注册命令。
-
 #### Layer 5: LSP / Code Intelligence
 
-**⚠️ 仅 Claude Code 支持。** Codex 目前无 LSP 插件体系（GitHub issue #8745 请求中）。在 Codex 上跳过此层。
+**仅 Claude Code 支持。** Codex 无 LSP 插件体系。
 
-**判断**：`lsp_assessment` 数组，逐语言展示。先检查是否已安装（全局，跨项目共享）。
+先检查是否已安装（全局，跨项目）→ 已装跳过。
 
-| 状态 | 行动 |
-|---|---|
-| 已安装 | ✅ 跳过 |
-| 未安装 + 达到门槛 | 💡 提示安装命令：`claude plugin add {plugin}` |
-| 未安装 + 未达门槛 | ⏭️ 跳过 |
-
-| 语言类别 | 门槛 | 插件名 |
+| 语言 | 门槛 | 插件名 |
 |---|---|---|
 | Python | 类型覆盖率 ≥ 30% | code-intelligence-python |
 | 强类型（TS/Go/Rust/Java/Kotlin/C#/Swift） | 文件数 ≥ 30 | code-intelligence-{lang} |
-| C/C++ | 文件数 ≥ 30 | code-intelligence-cpp |
 | 弱类型（JS/Ruby/PHP） | 不推荐 | — |
-
-**LSP 插件安装命令因平台而异**，分别给出。
 
 ### Step 3: 输出报告
 
@@ -370,10 +223,21 @@ GitNexus 已安装？
 | AGENTS.md | | 可读 | ✅ 生成 |
 | Hook 注册 | | settings.json | hooks.json |
 | MCP 注册 | | .claude.json | config.toml |
+| LSP 插件 | | ✅ 支持 | ❌ 不支持 |
+
+## 文档权威层级
+
+```
+项目已有文档（ARCHITECTURE.md / 合约文档 / README）  ← 最高
+根 CLAUDE.md / AGENTS.md                            ← 手动维护
+子目录 手动区域（harness 标记外）                     ← 手动维护
+子目录 <!-- harness:start/end -->                    ← 自动生成
+CODE_MAP.md                                          ← 自动生成
+```
 
 ## 注意事项
 
 - `disable-model-invocation: true`：只能 `/harness-init` 手动触发
-- 幂等：多次执行安全
-- 不强制：建议附测量数据，用户确认才执行
-- 核心脚本只诊断不修改文件，所有写操作由本 Skill 控制
+- 幂等：多次执行安全，每次刷新描述确保最新
+- 📌 前缀保护手动描述永不被覆盖
+- AI CLI 超时 15s（< Hook 20s 截止时间），超时静默降级到 fallback
