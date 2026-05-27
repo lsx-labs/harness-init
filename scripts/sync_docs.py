@@ -14,7 +14,7 @@ import os
 import sys
 from pathlib import Path
 
-from shared import SKIP_DIRS, platform_files
+from harness_shared import should_skip, platform_files
 
 
 def sync_one(dir_path: str, own_file: str, other_file: str) -> dict | None:
@@ -24,11 +24,15 @@ def sync_one(dir_path: str, own_file: str, other_file: str) -> dict | None:
 
     if own.exists() and other.exists():
         try:
-            if own.stat().st_mtime >= other.stat().st_mtime:
-                other.write_text(own.read_text(encoding="utf-8"), encoding="utf-8")
+            own_text = own.read_text(encoding="utf-8")
+            other_text = other.read_text(encoding="utf-8")
+            if own_text == other_text:
+                return None
+            if own.stat().st_mtime > other.stat().st_mtime:
+                other.write_text(own_text, encoding="utf-8")
                 return {"dir": dir_path, "action": "sync", "from": own_file, "to": other_file}
             else:
-                own.write_text(other.read_text(encoding="utf-8"), encoding="utf-8")
+                own.write_text(other_text, encoding="utf-8")
                 return {"dir": dir_path, "action": "sync", "from": other_file, "to": own_file}
         except OSError:
             return None
@@ -47,7 +51,7 @@ def find_doc_dirs() -> list[str]:
     """Find all directories containing CLAUDE.md or AGENTS.md."""
     dirs = set()
     for root, subdirs, files in os.walk("."):
-        subdirs[:] = [d for d in subdirs if d not in SKIP_DIRS and not d.startswith(".")]
+        subdirs[:] = [d for d in subdirs if not should_skip(d)]
         if "CLAUDE.md" in files or "AGENTS.md" in files:
             dirs.add(root)
     return sorted(dirs)
@@ -72,9 +76,12 @@ def main():
     os.chdir(project_dir)
     own_file, other_file = platform_files(platform)
 
-    dirs = explicit_dirs if explicit_dirs else find_doc_dirs()
-    if "." not in dirs:
-        dirs.insert(0, ".")
+    if explicit_dirs:
+        dirs = explicit_dirs
+    else:
+        dirs = find_doc_dirs()
+        if "." not in dirs:
+            dirs.insert(0, ".")
 
     results = []
     for d in dirs:

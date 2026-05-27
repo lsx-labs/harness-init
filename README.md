@@ -47,7 +47,7 @@ install.py 自动检测依赖，一键安装 GitNexus（可选）。
 ```
 harness-init/
 ├── scripts/
-│   ├── shared.py                ← 公共常量和工具函数
+│   ├── harness_shared.py         ← 公共常量和工具函数
 │   ├── harness_init.py          ← 项目诊断（JSON 输出）
 │   ├── harness_plan.py          ← 执行计划生成（JSON action plan）
 │   ├── sync_docs.py             ← 跨平台文档同步

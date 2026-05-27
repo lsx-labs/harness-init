@@ -58,10 +58,11 @@ def main():
     rm_file(HOME / ".local" / "bin" / "harness-init.sh")  # legacy
     rm_file(HOME / ".local" / "bin" / "harness-plan.py")
     rm_file(HOME / ".local" / "bin" / "sync-docs.py")
-    rm_file(HOME / ".local" / "bin" / "shared.py")
+    rm_file(HOME / ".local" / "bin" / "harness_shared.py")
+    rm_file(HOME / ".local" / "bin" / "shared.py")  # legacy
 
     share = HOME / ".local" / "share" / "harness-hooks"
-    for f in ["shared.py", "harness_monitor.py", "harness-monitor.py",
+    for f in ["harness_shared.py", "shared.py", "harness_monitor.py", "harness-monitor.py",
               "generate_descriptions.py", "generate-descriptions.sh",
               "session_context.py", "session-context.sh", "VERSION"]:
         rm_file(share / f)

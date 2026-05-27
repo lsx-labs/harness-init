@@ -25,8 +25,8 @@ from pathlib import Path
 if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-from shared import (SKIP_DIRS, STALE_THRESHOLD, SOURCE_EXTS, MAIN_BRANCHES,
-                    should_skip, parse_codemap_entry)
+from harness_shared import (SKIP_DIRS, STALE_THRESHOLD, SOURCE_EXTS, MAIN_BRANCHES,
+                    should_skip, parse_codemap_entry, parse_codemap)
 
 # ── Config ──
 
@@ -190,8 +190,7 @@ def save_state(state_file, state):
 # ══════════════════════════════════════════════════════════
 
 def parse_existing_codemap(codemap_path):
-    from shared import parse_codemap as _parse
-    entries = _parse(codemap_path)
+    entries = parse_codemap(codemap_path)
     descs = {e["dir"]: e["desc"] for e in entries if e["desc"] and not e["desc"].startswith("⚠️")}
     counts = {e["dir"]: e["symbols"] for e in entries if e["symbols"] is not None}
     return descs, counts

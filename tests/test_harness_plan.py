@@ -8,7 +8,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 import harness_plan as hp
-import shared
+import harness_shared
 
 
 class TestPlatformFiles:
@@ -39,7 +39,7 @@ class TestPlanRootDoc:
 class TestParseCodemap:
     def test_empty(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        assert shared.parse_codemap(tmp_path / "CODE_MAP.md") == []
+        assert harness_shared.parse_codemap(tmp_path / "CODE_MAP.md") == []
 
     def test_with_entries(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -50,7 +50,7 @@ class TestParseCodemap:
             "### tests/ — Test suite\n",
             encoding="utf-8"
         )
-        entries = shared.parse_codemap(tmp_path / "CODE_MAP.md")
+        entries = harness_shared.parse_codemap(tmp_path / "CODE_MAP.md")
         assert len(entries) == 3
         assert entries[0]["dir"] == "src"
         assert entries[0]["symbols"] == 200

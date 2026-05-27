@@ -157,7 +157,7 @@ def main():
     local_share = HOME / ".local" / "share" / "harness-hooks"
     local_bin.mkdir(parents=True, exist_ok=True)
 
-    install_file(SCRIPT_DIR / "scripts" / "shared.py", local_bin / "shared.py")
+    install_file(SCRIPT_DIR / "scripts" / "harness_shared.py", local_bin / "harness_shared.py")
     install_file(SCRIPT_DIR / "scripts" / "harness_init.py", local_bin / "harness-init.py")
     install_file(SCRIPT_DIR / "scripts" / "harness_plan.py", local_bin / "harness-plan.py")
     install_file(SCRIPT_DIR / "scripts" / "sync_docs.py", local_bin / "sync-docs.py")
@@ -165,13 +165,13 @@ def main():
     if USE_LINK:
         monitor_path = str(SCRIPT_DIR / "scripts" / "harness_monitor.py")
         context_path = str(SCRIPT_DIR / "scripts" / "session_context.py")
-        # Clean up stale copy-mode files
-        for stale in ["harness-monitor.py", "harness_monitor.py",
-                       "generate_descriptions.py", "session_context.py"]:
+        # Clean up stale copy-mode files (current + legacy names)
+        for stale in ["harness-monitor.py", "harness_monitor.py", "shared.py",
+                       "harness_shared.py", "generate_descriptions.py", "session_context.py"]:
             (local_share / stale).unlink(missing_ok=True)
     else:
         local_share.mkdir(parents=True, exist_ok=True)
-        install_file(SCRIPT_DIR / "scripts" / "shared.py", local_share / "shared.py")
+        install_file(SCRIPT_DIR / "scripts" / "harness_shared.py", local_share / "harness_shared.py")
         install_file(SCRIPT_DIR / "scripts" / "harness_monitor.py", local_share / "harness_monitor.py")
         install_file(SCRIPT_DIR / "scripts" / "generate_descriptions.py", local_share / "generate_descriptions.py")
         install_file(SCRIPT_DIR / "scripts" / "session_context.py", local_share / "session_context.py")
@@ -221,7 +221,7 @@ def main():
     log("=== Installation verification ===")
     errors = 0
 
-    for script_name in ["harness-init.py", "harness-plan.py", "sync-docs.py"]:
+    for script_name in ["harness_shared.py", "harness-init.py", "harness-plan.py", "sync-docs.py"]:
         p = local_bin / script_name
         if p.exists() or p.is_symlink():
             log(f"  ✅ {script_name} ({'symlink' if p.is_symlink() else 'copy'})")

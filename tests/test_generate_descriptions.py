@@ -8,24 +8,29 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 from generate_descriptions import (
-    extract_desc, parse_codemap, write_descriptions,
+    parse_codemap, write_descriptions,
     get_ai_cmd, fallback_generate, get_docstring, get_keywords,
     gitnexus_query, MANUAL_MARKER
 )
+from harness_shared import parse_codemap_entry
 
 
 class TestExtractDesc:
     def test_with_desc(self):
-        assert extract_desc("(100 symbols) — Core module") == "Core module"
+        desc, _ = parse_codemap_entry("(100 symbols) — Core module")
+        assert desc == "Core module"
 
     def test_without_desc(self):
-        assert extract_desc("(100 symbols)") == ""
+        desc, _ = parse_codemap_entry("(100 symbols)")
+        assert desc == ""
 
     def test_with_stale(self):
-        assert extract_desc("— ⚠️ 描述可能过期").startswith("⚠️")
+        desc, _ = parse_codemap_entry("— ⚠️ 描述可能过期")
+        assert desc.startswith("⚠️")
 
     def test_with_pin(self):
-        assert extract_desc(f"— {MANUAL_MARKER} My desc").startswith(MANUAL_MARKER)
+        desc, _ = parse_codemap_entry(f"— {MANUAL_MARKER} My desc")
+        assert desc.startswith(MANUAL_MARKER)
 
 
 class TestParseCodemap:

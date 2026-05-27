@@ -19,7 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from shared import (MANUAL_MARKER, STALE_THRESHOLD, SYMBOL_THRESHOLD,
+from harness_shared import (MANUAL_MARKER, STALE_THRESHOLD, SYMBOL_THRESHOLD,
                     parse_codemap, platform_files)
 
 
@@ -33,18 +33,30 @@ def plan_root_doc(own_file: str, other_file: str) -> dict:
     return {"action": "generate"}
 
 
-def plan_codemap(entries: list[dict], old_counts: dict) -> dict:
+def plan_codemap(entries: list[dict], live_counts: dict) -> dict:
+    """Decide which CODE_MAP entries need description refresh.
+
+    entries: parsed from CODE_MAP.md (recorded state)
+    live_counts: fresh symbol counts from GitNexus/filesystem (current state)
+    """
     if not entries:
         return {"action": "skip", "dirs_needing": []}
     needing = []
     for e in entries:
-        if e["desc"].startswith(MANUAL_MARKER):
+        desc = e.get("desc") or ""
+        if desc.startswith(MANUAL_MARKER):
             continue
-        if not e["desc"]:
+        if not desc:
             needing.append(e["dir"])
             continue
-        old = old_counts.get(e["dir"], 0)
-        if e["symbols"] and old > 0 and abs(e["symbols"] - old) / old >= STALE_THRESHOLD:
+        recorded = e["symbols"]
+        live = live_counts.get(e["dir"])
+        if recorded is None or live is None:
+            continue
+        if recorded == 0 and live == 0:
+            continue
+        denom = recorded if recorded != 0 else live
+        if abs(live - recorded) / denom >= STALE_THRESHOLD:
             needing.append(e["dir"])
     if not needing:
         return {"action": "skip", "dirs_needing": []}
@@ -100,6 +112,22 @@ def plan_subdirs(complex_dirs: list[str], own_file: str, other_file: str) -> dic
     }
 
 
+def _get_live_symbol_counts() -> dict[str, int]:
+    """Get current symbol counts by scanning source files per top-level directory."""
+    from harness_shared import SOURCE_EXTS, should_skip
+    counts: dict[str, int] = {}
+    for entry in Path(".").iterdir():
+        if not entry.is_dir() or should_skip(entry.name):
+            continue
+        count = 0
+        for root, dirs, files in os.walk(entry):
+            dirs[:] = [d for d in dirs if not should_skip(d)]
+            count += sum(1 for f in files if Path(f).suffix.lower() in SOURCE_EXTS)
+        if count > 0:
+            counts[entry.name] = count
+    return counts
+
+
 def plan_lsp(diagnostic: dict) -> list[dict]:
     result = []
     for a in diagnostic.get("lsp_assessment", []):
@@ -114,11 +142,16 @@ def plan_lsp(diagnostic: dict) -> list[dict]:
 def main():
     project_dir = sys.argv[1] if len(sys.argv) > 1 else "."
     platform = "claude"
-    for i, arg in enumerate(sys.argv[2:], start=2):
-        if arg == "--platform" and i + 1 < len(sys.argv):
+    i = 2
+    while i < len(sys.argv):
+        if sys.argv[i] == "--platform" and i + 1 < len(sys.argv):
             platform = sys.argv[i + 1]
-        elif arg.startswith("--platform="):
-            platform = arg.split("=", 1)[1]
+            i += 2
+        elif sys.argv[i].startswith("--platform="):
+            platform = sys.argv[i].split("=", 1)[1]
+            i += 1
+        else:
+            i += 1
 
     os.chdir(project_dir)
     own_file, other_file = platform_files(platform)
@@ -135,7 +168,7 @@ def main():
             pass
 
     entries = parse_codemap(Path("CODE_MAP.md"))
-    old_counts = {e["dir"]: e["symbols"] for e in entries if e["symbols"] is not None}
+    live_counts = _get_live_symbol_counts()
     complex_dirs = find_complex_dirs(entries)
 
     plan = {
@@ -143,7 +176,7 @@ def main():
         "doc_file": own_file,
         "other_doc_file": other_file,
         "root_doc": plan_root_doc(own_file, other_file),
-        "codemap": plan_codemap(entries, old_counts),
+        "codemap": plan_codemap(entries, live_counts),
         "gitnexus": plan_gitnexus(diagnostic),
         "subdirs": plan_subdirs(complex_dirs, own_file, other_file),
         "lsp": plan_lsp(diagnostic),
