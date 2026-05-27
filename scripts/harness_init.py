@@ -36,14 +36,14 @@ LANG_MAP = {
 STRONG_TYPED = {"TypeScript", "Go", "Rust", "Java", "Kotlin", "C#", "Swift"}
 WEAK_TYPED = {"JavaScript", "Ruby", "PHP"}
 LSP_PLUGIN_MAP = {
-    "Python": "code-intelligence-python",
-    "TypeScript": "code-intelligence-typescript",
-    "Go": "code-intelligence-go",
-    "Rust": "code-intelligence-rust",
-    "Java": "code-intelligence-java", "Kotlin": "code-intelligence-java",
-    "C#": "code-intelligence-csharp",
-    "Swift": "code-intelligence-swift",
-    "C": "code-intelligence-cpp", "C++": "code-intelligence-cpp",
+    "Python": ["code-intelligence-python", "pyright-lsp"],
+    "TypeScript": ["code-intelligence-typescript", "typescript-lsp"],
+    "Go": ["code-intelligence-go", "gopls-lsp"],
+    "Rust": ["code-intelligence-rust", "rust-analyzer-lsp"],
+    "Java": ["code-intelligence-java"], "Kotlin": ["code-intelligence-java"],
+    "C#": ["code-intelligence-csharp"],
+    "Swift": ["code-intelligence-swift"],
+    "C": ["code-intelligence-cpp"], "C++": ["code-intelligence-cpp"],
 }
 
 
@@ -191,15 +191,19 @@ def check_existing() -> dict:
 # ── 5. LSP assessment ──
 
 def check_lsp_installed(lang: str) -> bool:
-    plugin = LSP_PLUGIN_MAP.get(lang, "")
-    if not plugin:
+    aliases = LSP_PLUGIN_MAP.get(lang, [])
+    if not aliases:
         return False
     claude_plugins = Path.home() / ".claude" / "plugins"
-    if claude_plugins.is_dir() and any(claude_plugins.glob(f"*{plugin}*")):
-        return True
+    if claude_plugins.is_dir():
+        for alias in aliases:
+            if any(claude_plugins.glob(f"*{alias}*")):
+                return True
     for cfg in [Path.home() / ".claude" / "settings.json", Path.home() / ".claude.json"]:
-        if cfg.exists() and plugin in cfg.read_text(encoding="utf-8"):
-            return True
+        if cfg.exists():
+            text = cfg.read_text(encoding="utf-8")
+            if any(alias in text for alias in aliases):
+                return True
     return False
 
 
@@ -209,7 +213,7 @@ def assess_lsp(languages: list[dict], type_coverage: dict) -> list[dict]:
         lang, files = li["language"], li["files"]
         installed = check_lsp_installed(lang)
         a = {"language": lang, "files": files, "recommend": False,
-             "installed": installed, "plugin": LSP_PLUGIN_MAP.get(lang, ""), "reason": ""}
+             "installed": installed, "plugin": LSP_PLUGIN_MAP.get(lang, [""])[0], "reason": ""}
         if installed:
             a["reason"] = "✅ 已安装"
         elif lang in STRONG_TYPED:
