@@ -26,6 +26,7 @@ from pathlib import Path
 CHECK_EVERY_N_FILES = 20
 STALE_THRESHOLD = 0.2
 COUNTER_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "counters"
+LOCK_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "locks"
 DIAG_SCRIPT = Path.home() / ".local" / "bin" / "harness-init.py"
 DESC_SCRIPT = Path.home() / ".local" / "bin" / "generate-descriptions.py"
 HOOK_TIMEOUT = 15
@@ -410,6 +411,29 @@ def update_subdir_docs(stale_dirs):
 # Main update handler
 # ══════════════════════════════════════════════════════════
 
+def acquire_lock(project_id):
+    """Try to acquire a lock file. Returns True if acquired, False if already locked."""
+    LOCK_DIR.mkdir(parents=True, exist_ok=True)
+    lock_file = LOCK_DIR / f"{project_id}.lock"
+    if lock_file.exists():
+        try:
+            pid = int(lock_file.read_text().strip())
+            try:
+                os.kill(pid, 0)
+                return False
+            except OSError:
+                pass  # stale lock, process dead
+        except (ValueError, OSError):
+            pass
+    lock_file.write_text(str(os.getpid()))
+    return True
+
+
+def release_lock(project_id):
+    lock_file = LOCK_DIR / f"{project_id}.lock"
+    lock_file.unlink(missing_ok=True)
+
+
 def ensure_gitnexus_fresh():
     """If GitNexus is indexed but stale, run incremental analyze first."""
     if not Path(".gitnexus").is_dir():
@@ -420,13 +444,26 @@ def ensure_gitnexus_fresh():
         output = (r.stdout + r.stderr).lower()
         if "stale" in output:
             subprocess.run(["npx", "gitnexus", "analyze"],
-                           capture_output=True, text=True, timeout=HOOK_TIMEOUT)
+                           capture_output=True, text=True, timeout=120)
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
 
 
-def handle_main_branch_update(project_id):
-    """Full update on main branch: reindex → CODE_MAP → descriptions → sub-dir docs."""
+def do_main_branch_update(project_id):
+    """Heavy work: reindex → CODE_MAP → descriptions → sub-dir docs.
+
+    Runs as a background process (spawned by handle_main_branch_update).
+    No timeout pressure — takes as long as it needs.
+    """
+    if not acquire_lock(project_id):
+        return
+    try:
+        _do_main_branch_update_inner()
+    finally:
+        release_lock(project_id)
+
+
+def _do_main_branch_update_inner():
     # Step 0: Ensure GitNexus index is fresh before reading community data
     ensure_gitnexus_fresh()
 
@@ -439,15 +476,14 @@ def handle_main_branch_update(project_id):
     if communities:
         new_content, stale_dirs = build_codemap_structure(communities, existing_descs, old_counts)
     else:
-        return  # No GitNexus, skip
+        return
 
     if new_content == old_content and not stale_dirs:
-        return  # Nothing changed
+        return
 
     codemap_file.write_text(new_content)
 
     # Step 2: Generate/refresh descriptions
-    # Fallback chain: ~/.local/bin/ (symlink) → ~/.local/share/harness-hooks/ (copy) → repo sibling
     desc_script = None
     for candidate in [
         DESC_SCRIPT,
@@ -460,31 +496,39 @@ def handle_main_branch_update(project_id):
     if desc_script:
         try:
             subprocess.run([sys.executable, str(desc_script), ".", "--refresh"],
-                           capture_output=True, text=True, timeout=HOOK_TIMEOUT)
+                           capture_output=True, text=True, timeout=120)
         except (subprocess.TimeoutExpired, OSError):
             pass
 
     # Step 3: Update sub-directory CLAUDE.md/AGENTS.md for stale dirs
-    updated_subdirs = []
     if stale_dirs:
-        updated_subdirs = update_subdir_docs(stale_dirs)
+        update_subdir_docs(stale_dirs)
 
-    # Step 4: Output commit hint
-    affected = ["CODE_MAP.md"]
-    for d in updated_subdirs:
-        affected.extend([f"{d}/CLAUDE.md", f"{d}/AGENTS.md"])
 
-    final_content = codemap_file.read_text()
-    if final_content != old_content or updated_subdirs:
-        print(json.dumps({
-            "status": "updated",
-            "affected_files": affected,
-            "action": (
-                f"由于当前功能变动较大，以下文件需要同步更新：{', '.join(affected)}。"
-                f"请提交这些变更的文件：git add {' '.join(affected)} && "
-                f'git commit -m "docs: update harness files"'
-            )
-        }, ensure_ascii=False))
+def handle_main_branch_update(project_id):
+    """Spawn background process for heavy update work. Returns immediately."""
+    lock_file = LOCK_DIR / f"{project_id}.lock"
+    if lock_file.exists():
+        try:
+            pid = int(lock_file.read_text().strip())
+            try:
+                os.kill(pid, 0)
+                return  # already running
+            except OSError:
+                pass
+        except (ValueError, OSError):
+            pass
+
+    project_dir = str(Path(".").resolve())
+    subprocess.Popen(
+        [sys.executable, str(Path(__file__).resolve()), "--bg", project_id, project_dir],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    print(json.dumps({
+        "status": "background",
+        "action": "Harness 更新已在后台启动（GitNexus 索引 + CODE_MAP + 描述生成）"
+    }, ensure_ascii=False))
 
 
 # ══════════════════════════════════════════════════════════
@@ -589,4 +633,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) >= 4 and sys.argv[1] == "--bg":
+        # Background mode: harness-monitor.py --bg <project_id> <project_dir>
+        os.chdir(sys.argv[3])
+        do_main_branch_update(sys.argv[2])
+    else:
+        main()

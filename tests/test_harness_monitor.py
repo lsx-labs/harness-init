@@ -404,71 +404,122 @@ class TestUpdateSubdirDocs:
             assert result == []
 
 
-class TestHandleMainBranchUpdate:
-    """Cover lines 305-351: handle_main_branch_update."""
+class TestBackgroundDispatch:
+    """Cover handle_main_branch_update (dispatcher) + lock mechanism."""
 
-    def test_no_communities(self, tmp_path, monkeypatch, capsys):
+    def test_spawns_background_process(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
-        with patch.object(hm, 'get_gitnexus_communities', return_value=None):
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
+        with patch.object(hm.subprocess, 'Popen') as mock_popen:
             hm.handle_main_branch_update("test_project")
-        # Should return without output
+        mock_popen.assert_called_once()
+        args = mock_popen.call_args
+        assert "--bg" in args[0][0]
+        out = json.loads(capsys.readouterr().out)
+        assert out["status"] == "background"
+
+    def test_skips_if_already_running(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        lock_dir = tmp_path / "locks"
+        lock_dir.mkdir()
+        # Write current PID as lock (simulates running process)
+        (lock_dir / "test_project.lock").write_text(str(os.getpid()))
+        monkeypatch.setattr(hm, 'LOCK_DIR', lock_dir)
+        with patch.object(hm.subprocess, 'Popen') as mock_popen:
+            hm.handle_main_branch_update("test_project")
+        mock_popen.assert_not_called()
         assert capsys.readouterr().out == ""
 
-    def test_no_changes(self, tmp_path, monkeypatch, capsys):
+    def test_replaces_stale_lock(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
-        # Create existing CODE_MAP.md with same content as would be generated
+        lock_dir = tmp_path / "locks"
+        lock_dir.mkdir()
+        (lock_dir / "test_project.lock").write_text("999999999")  # dead PID
+        monkeypatch.setattr(hm, 'LOCK_DIR', lock_dir)
+        with patch.object(hm.subprocess, 'Popen'):
+            hm.handle_main_branch_update("test_project")
+        out = json.loads(capsys.readouterr().out)
+        assert out["status"] == "background"
+
+    def test_acquire_release_lock(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
+        assert hm.acquire_lock("proj1")
+        assert not hm.acquire_lock("proj1")  # same PID, still alive
+        hm.release_lock("proj1")
+        assert hm.acquire_lock("proj1")
+        hm.release_lock("proj1")
+
+
+class TestDoMainBranchUpdate:
+    """Cover do_main_branch_update (background worker)."""
+
+    def test_no_communities(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
+        with patch.object(hm, 'ensure_gitnexus_fresh'), \
+             patch.object(hm, 'get_gitnexus_communities', return_value=None):
+            hm.do_main_branch_update("test_project")
+        assert not (tmp_path / "CODE_MAP.md").exists()
+
+    def test_no_changes(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
         communities = {"scripts": {"symbols": 100, "clusters": 2}}
         area_to_dir = {"scripts": "scripts"}
         with patch.object(hm, 'build_area_to_dir', return_value=area_to_dir):
             expected_content, _ = hm.build_codemap_structure(communities, {}, {})
         (tmp_path / "CODE_MAP.md").write_text(expected_content)
 
-        with patch.object(hm, 'get_gitnexus_communities', return_value=communities), \
+        with patch.object(hm, 'ensure_gitnexus_fresh'), \
+             patch.object(hm, 'get_gitnexus_communities', return_value=communities), \
              patch.object(hm, 'build_codemap_structure', return_value=(expected_content, [])):
-            hm.handle_main_branch_update("test_project")
-        assert capsys.readouterr().out == ""
+            hm.do_main_branch_update("test_project")
 
-    def test_full_update_with_descriptions(self, tmp_path, monkeypatch, capsys):
+    def test_full_update_with_descriptions(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
         old_content = "# Old Code Map\n"
         (tmp_path / "CODE_MAP.md").write_text(old_content)
         communities = {"auth": {"symbols": 100, "clusters": 2}}
         new_content = "# Code Map\n\n### src/ (100 symbols)\n"
 
-        # Create a fake desc_script that exists
         desc_script = tmp_path / "generate_descriptions.py"
         desc_script.write_text("pass")
 
-        with patch.object(hm, 'get_gitnexus_communities', return_value=communities), \
+        with patch.object(hm, 'ensure_gitnexus_fresh'), \
+             patch.object(hm, 'get_gitnexus_communities', return_value=communities), \
              patch.object(hm, 'build_codemap_structure', return_value=(new_content, ["src"])), \
              patch.object(hm, 'update_subdir_docs', return_value=["src"]), \
              patch.object(hm, 'DESC_SCRIPT', desc_script), \
              patch.object(hm.subprocess, 'run', return_value=MagicMock(returncode=0)):
-            hm.handle_main_branch_update("test_project")
+            hm.do_main_branch_update("test_project")
 
-        out = capsys.readouterr().out
-        assert out  # Should have output
-        data = json.loads(out)
-        assert data["status"] == "updated"
-        assert "CODE_MAP.md" in data["affected_files"]
+        assert (tmp_path / "CODE_MAP.md").read_text() == new_content
 
-    def test_update_no_desc_script(self, tmp_path, monkeypatch, capsys):
+    def test_update_no_desc_script(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
         communities = {"auth": {"symbols": 100, "clusters": 2}}
         new_content = "# Code Map\n\n### src/ (100 symbols)\n"
-        old_content = "# Old Code Map"
-        (tmp_path / "CODE_MAP.md").write_text(old_content)
+        (tmp_path / "CODE_MAP.md").write_text("# Old Code Map")
 
-        with patch.object(hm, 'get_gitnexus_communities', return_value=communities), \
+        with patch.object(hm, 'ensure_gitnexus_fresh'), \
+             patch.object(hm, 'get_gitnexus_communities', return_value=communities), \
              patch.object(hm, 'build_codemap_structure', return_value=(new_content, [])), \
              patch.object(hm, 'update_subdir_docs', return_value=[]):
-            # Make all desc script candidates not exist
-            hm.handle_main_branch_update("test_project")
+            hm.do_main_branch_update("test_project")
 
-        out = capsys.readouterr().out
-        if out:
-            data = json.loads(out)
-            assert data["status"] == "updated"
+        assert (tmp_path / "CODE_MAP.md").read_text() == new_content
+
+    def test_lock_released_on_error(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
+        monkeypatch.chdir(tmp_path)
+        with patch.object(hm, 'ensure_gitnexus_fresh', side_effect=RuntimeError("boom")):
+            try:
+                hm.do_main_branch_update("test_project")
+            except RuntimeError:
+                pass
+        assert not (tmp_path / "locks" / "test_project.lock").exists()
 
 
 class TestCountSourceFiles:
