@@ -143,7 +143,7 @@ def check_existing() -> dict:
     existing = {}
     for name, fpath in [("claude_md", "CLAUDE.md"), ("agents_md", "AGENTS.md")]:
         p = Path(fpath)
-        txt = p.read_text() if p.exists() else ""
+        txt = p.read_text(encoding="utf-8") if p.exists() else ""
         existing[name] = {
             "exists": p.exists(),
             "has_codemap": "@CODE_MAP.md" in txt or "<!-- codemap:start -->" in txt,
@@ -161,14 +161,14 @@ def check_existing() -> dict:
     existing["gitnexus"] = {
         "indexed": gitnexus_indexed,
         "up_to_date": gitnexus_up_to_date,
-        "in_gitignore": ".gitnexus" in (Path(".gitignore").read_text() if Path(".gitignore").exists() else ""),
+        "in_gitignore": ".gitnexus" in (Path(".gitignore").read_text(encoding="utf-8") if Path(".gitignore").exists() else ""),
     }
     existing["gitnexus_hook_reachable"] = (Path.home() / ".claude" / "hooks" / "gitnexus" / "gitnexus-hook.cjs").exists()
 
     def check_hooks_multi(path, keys):
         """Like check_hooks but supports multiple match strings per key."""
         try:
-            hooks = json.loads(Path(path).read_text()).get("hooks", {})
+            hooks = json.loads(Path(path).read_text(encoding="utf-8")).get("hooks", {})
             result = {}
             for k, patterns in keys.items():
                 if isinstance(patterns, str):
@@ -188,9 +188,9 @@ def check_existing() -> dict:
         Path.home() / ".codex" / "hooks.json",
         {"gitnexus": "gitnexus", "harness_monitor": ["harness_monitor", "harness-monitor"]})
     existing["mcp_claude"] = "gitnexus" in (
-        (Path.home() / ".claude.json").read_text() if (Path.home() / ".claude.json").exists() else "")
+        (Path.home() / ".claude.json").read_text(encoding="utf-8") if (Path.home() / ".claude.json").exists() else "")
     existing["mcp_codex"] = "gitnexus" in (
-        (Path.home() / ".codex" / "config.toml").read_text() if (Path.home() / ".codex" / "config.toml").exists() else "")
+        (Path.home() / ".codex" / "config.toml").read_text(encoding="utf-8") if (Path.home() / ".codex" / "config.toml").exists() else "")
     return existing
 
 
@@ -204,7 +204,7 @@ def check_lsp_installed(lang: str) -> bool:
     if claude_plugins.is_dir() and any(claude_plugins.glob(f"*{plugin}*")):
         return True
     for cfg in [Path.home() / ".claude" / "settings.json", Path.home() / ".claude.json"]:
-        if cfg.exists() and plugin in cfg.read_text():
+        if cfg.exists() and plugin in cfg.read_text(encoding="utf-8"):
             return True
     return False
 
@@ -243,7 +243,7 @@ def get_version() -> str:
         Path.home() / ".local" / "share" / "harness-hooks" / "VERSION",
     ]:
         if candidate.exists():
-            return candidate.read_text().strip()
+            return candidate.read_text(encoding="utf-8").strip()
     return "unknown"
 
 

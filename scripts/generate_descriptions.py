@@ -39,7 +39,7 @@ def parse_codemap(mode: str) -> list[str]:
         return []
     dirs = []
     current = ""
-    for line in codemap.read_text().split("\n"):
+    for line in codemap.read_text(encoding="utf-8").split("\n"):
         m = re.match(r'^###\s+(\S+)/?(.*)$', line)
         if m:
             current = m.group(1).rstrip("/")
@@ -65,7 +65,7 @@ def parse_codemap(mode: str) -> list[str]:
 def write_descriptions(descriptions: dict[str, str]) -> list[dict]:
     """Write descriptions to CODE_MAP.md, return list of changes."""
     codemap = Path("CODE_MAP.md")
-    content = codemap.read_text()
+    content = codemap.read_text(encoding="utf-8")
     changes = []
     for dir_path, desc in descriptions.items():
         if not desc or not isinstance(desc, str):
@@ -86,7 +86,7 @@ def write_descriptions(descriptions: dict[str, str]) -> list[dict]:
             content = content[:m.start()] + f"{m.group(1)} — {desc} {m.group(3)}" + content[m.end():]
             changes.append({"dir": dir_path, "desc": desc})
     if changes:
-        codemap.write_text(content)
+        codemap.write_text(content, encoding="utf-8")
     return changes
 
 
@@ -193,7 +193,7 @@ def get_docstring(dir_path: str) -> str:
         fpath = Path(dir_path) / fname
         if fpath.exists():
             try:
-                ds = ast.get_docstring(ast.parse(fpath.read_text()))
+                ds = ast.get_docstring(ast.parse(fpath.read_text(encoding="utf-8")))
                 if ds:
                     line = ds.strip().split("\n")[0]
                     for sep in ("—", "–", "-"):

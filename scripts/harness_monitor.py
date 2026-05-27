@@ -13,6 +13,7 @@ Triggered via PostToolUse [Bash], only on git operations:
 All heavy work runs as detached background processes. Hook returns in <500ms.
 """
 
+import io
 import json
 import os
 import re
@@ -20,6 +21,9 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 # ── Config ──
 
@@ -178,7 +182,7 @@ def is_on_main_branch():
 def load_state(state_file):
     if state_file.exists():
         try:
-            return json.loads(state_file.read_text())
+            return json.loads(state_file.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             pass
     return {"file_count": 0, "gitnexus_recommended": False,
@@ -187,7 +191,7 @@ def load_state(state_file):
 
 def save_state(state_file, state):
     state_file.parent.mkdir(parents=True, exist_ok=True)
-    state_file.write_text(json.dumps(state, indent=2))
+    state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
 # ══════════════════════════════════════════════════════════
@@ -211,7 +215,7 @@ def parse_existing_codemap(codemap_path):
     if not codemap_path.exists():
         return descs, counts
     current_section = ""
-    for line in codemap_path.read_text().split("\n"):
+    for line in codemap_path.read_text(encoding="utf-8").split("\n"):
         m = re.match(r'^###\s+(\S+)/?(.*)$', line)
         if m:
             current_section = m.group(1).rstrip("/")
@@ -418,7 +422,7 @@ def acquire_lock(project_id):
     lock_file = LOCK_DIR / f"{project_id}.lock"
     if lock_file.exists():
         try:
-            pid = int(lock_file.read_text().strip())
+            pid = int(lock_file.read_text(encoding="utf-8").strip())
             try:
                 os.kill(pid, 0)
                 return False
@@ -474,7 +478,7 @@ def _do_main_branch_update_inner():
     ensure_gitnexus_fresh()
 
     codemap_file = Path("CODE_MAP.md")
-    old_content = codemap_file.read_text() if codemap_file.exists() else ""
+    old_content = codemap_file.read_text(encoding="utf-8") if codemap_file.exists() else ""
     existing_descs, old_counts = parse_existing_codemap(codemap_file)
 
     # Step 1: Update CODE_MAP.md structure (now with fresh index)
@@ -487,7 +491,7 @@ def _do_main_branch_update_inner():
     if new_content == old_content and not stale_dirs:
         return
 
-    codemap_file.write_text(new_content)
+    codemap_file.write_text(new_content, encoding="utf-8")
 
     # Step 2: Generate/refresh descriptions
     desc_script = None
@@ -515,7 +519,7 @@ def handle_main_branch_update(project_id):
     lock_file = LOCK_DIR / f"{project_id}.lock"
     if lock_file.exists():
         try:
-            pid = int(lock_file.read_text().strip())
+            pid = int(lock_file.read_text(encoding="utf-8").strip())
             try:
                 os.kill(pid, 0)
                 return
@@ -633,7 +637,7 @@ def _do_growth_check_inner(state_file_path, project_dir):
         project_id = Path(project_dir).name
         NOTIFY_DIR.mkdir(parents=True, exist_ok=True)
         (NOTIFY_DIR / f"{project_id}.json").write_text(
-            json.dumps(messages, ensure_ascii=False))
+            json.dumps(messages, ensure_ascii=False), encoding="utf-8")
 
 
 # ══════════════════════════════════════════════════════════

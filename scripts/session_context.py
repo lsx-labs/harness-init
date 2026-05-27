@@ -5,10 +5,14 @@ Outputs git state + module mapping + harness health.
 Designed to be fast (< 3s) and compact (< 15 lines output).
 """
 
+import io
 import json
 import subprocess
 import sys
 from pathlib import Path
+
+if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 NOTIFY_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "notifications"
 
@@ -86,7 +90,7 @@ def read_pending_notifications() -> list[str]:
     if not notify_file.exists():
         return []
     try:
-        messages = json.loads(notify_file.read_text())
+        messages = json.loads(notify_file.read_text(encoding="utf-8"))
         notify_file.unlink()
         return messages if isinstance(messages, list) else []
     except (json.JSONDecodeError, OSError):
@@ -98,7 +102,7 @@ def check_codemap_stale() -> str | None:
     if not codemap.exists():
         return None
     try:
-        count = codemap.read_text().count("⚠️ 描述可能过期")
+        count = codemap.read_text(encoding="utf-8").count("⚠️ 描述可能过期")
         if count > 0:
             return f"⚠️ CODE_MAP.md: {count} 个目录描述待更新"
     except OSError:
