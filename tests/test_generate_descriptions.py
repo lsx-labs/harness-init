@@ -165,3 +165,286 @@ class TestFallbackGenerate:
         result = fallback_generate(["mymod"])
         assert "mymod" in result
         assert "My module description" in result["mymod"]
+
+
+# ── Additional coverage tests ──
+
+import subprocess
+from generate_descriptions import ai_generate, main as gd_main
+
+
+class TestParseCodemapSubLevelPinned:
+    """Cover lines 58, 60: sub-level entries with pin/existing desc in generate mode."""
+
+    def test_generate_mode_skips_sub_with_desc(self, tmp_path, monkeypatch):
+        """Line 60: sub-level with existing desc skipped in --generate mode."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text(
+            "### src/ (100 symbols)\n"
+            "- **api/** — Existing sub desc (50 symbols)\n"
+            "- **core/** (30 symbols)\n"
+        )
+        dirs = parse_codemap("--generate")
+        assert "src" in dirs
+        assert "src/api" not in dirs
+        assert "src/core" in dirs
+
+    def test_generate_mode_skips_sub_with_pin(self, tmp_path, monkeypatch):
+        """Line 58: sub-level with pin marker skipped."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text(
+            "### src/ (100 symbols)\n"
+            f"- **api/** — {MANUAL_MARKER} Protected sub (50 symbols)\n"
+        )
+        dirs = parse_codemap("--refresh")
+        assert "src" in dirs
+        assert "src/api" not in dirs
+
+
+class TestAiGenerate:
+    """Cover lines 103, 109-161: ai_generate function."""
+
+    def test_no_ai_cmd(self, tmp_path, monkeypatch):
+        """Line 110: no AI command → None."""
+        monkeypatch.chdir(tmp_path)
+        with patch('generate_descriptions.get_ai_cmd', return_value=""):
+            assert ai_generate(["src"]) is None
+
+    def test_no_gitnexus_dir(self, tmp_path, monkeypatch):
+        """Line 110: no .gitnexus dir → None."""
+        monkeypatch.chdir(tmp_path)
+        with patch('generate_descriptions.get_ai_cmd', return_value="claude"):
+            assert ai_generate(["src"]) is None
+
+    def test_claude_path_with_stream_json(self, tmp_path, monkeypatch):
+        """Lines 125-141: claude path parsing stream-json output."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".gitnexus").mkdir()
+        stream_lines = (
+            '{"type": "text", "content": "{\\"src\\": \\"Core module\\"}"}\n'
+            '{"type": "other", "content": "ignored"}\n'
+        )
+        mock_result = MagicMock(returncode=0, stdout=stream_lines)
+        with patch('generate_descriptions.get_ai_cmd', return_value="claude"), \
+             patch('generate_descriptions.subprocess.run', return_value=mock_result):
+            result = ai_generate(["src"])
+            assert result == {"src": "Core module"}
+
+    def test_claude_path_empty_stream(self, tmp_path, monkeypatch):
+        """Lines 134, 149: empty stream-json lines and empty raw."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".gitnexus").mkdir()
+        mock_result = MagicMock(returncode=0, stdout="\n\n")
+        with patch('generate_descriptions.get_ai_cmd', return_value="claude"), \
+             patch('generate_descriptions.subprocess.run', return_value=mock_result):
+            result = ai_generate(["src"])
+            assert result is None
+
+    def test_claude_path_invalid_json_in_stream(self, tmp_path, monkeypatch):
+        """Line 139: invalid JSON in stream line → skipped."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".gitnexus").mkdir()
+        stream_lines = 'not-json\n{"type": "text", "content": "{\\"src\\": \\"OK\\"}"}\n'
+        mock_result = MagicMock(returncode=0, stdout=stream_lines)
+        with patch('generate_descriptions.get_ai_cmd', return_value="claude"), \
+             patch('generate_descriptions.subprocess.run', return_value=mock_result):
+            result = ai_generate(["src"])
+            assert result == {"src": "OK"}
+
+    def test_codex_path(self, tmp_path, monkeypatch):
+        """Lines 143-145: codex exec path."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".gitnexus").mkdir()
+        mock_result = MagicMock(returncode=0, stdout='{"src": "Core logic"}')
+        with patch('generate_descriptions.get_ai_cmd', return_value="codex"), \
+             patch('generate_descriptions.subprocess.run', return_value=mock_result):
+            result = ai_generate(["src"])
+            assert result == {"src": "Core logic"}
+
+    def test_timeout(self, tmp_path, monkeypatch):
+        """Line 146-147: subprocess timeout → None."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".gitnexus").mkdir()
+        with patch('generate_descriptions.get_ai_cmd', return_value="claude"), \
+             patch('generate_descriptions.subprocess.run',
+                   side_effect=subprocess.TimeoutExpired("claude", 20)):
+            result = ai_generate(["src"])
+            assert result is None
+
+    def test_no_json_in_response(self, tmp_path, monkeypatch):
+        """Lines 153-157: AI response with no JSON → None."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".gitnexus").mkdir()
+        mock_result = MagicMock(returncode=0, stdout='just plain text no json')
+        with patch('generate_descriptions.get_ai_cmd', return_value="codex"), \
+             patch('generate_descriptions.subprocess.run', return_value=mock_result):
+            result = ai_generate(["src"])
+            assert result is None
+
+    def test_invalid_json_in_response(self, tmp_path, monkeypatch):
+        """Lines 159-161: regex matches but JSON is invalid → None."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".gitnexus").mkdir()
+        # This has braces and colon but invalid JSON
+        mock_result = MagicMock(returncode=0, stdout='{"src": undefined}')
+        with patch('generate_descriptions.get_ai_cmd', return_value="codex"), \
+             patch('generate_descriptions.subprocess.run', return_value=mock_result):
+            result = ai_generate(["src"])
+            assert result is None
+
+
+class TestGetAiCmdCodexApp:
+    """Cover line 103: Codex.app fallback path."""
+
+    def test_finds_codex_app(self):
+        with patch('generate_descriptions.shutil.which', return_value=None):
+            with patch('generate_descriptions.os.path.isfile', return_value=True):
+                result = get_ai_cmd()
+                assert result == "/Applications/Codex.app/Contents/Resources/codex"
+
+
+class TestGitnexusQuery:
+    """Cover lines 169-182: gitnexus_query function."""
+
+    def test_successful_query(self):
+        md_output = json.dumps({
+            "markdown": "| f.name |\n| --- |\n| authenticate_user |\n| create_session |"
+        })
+        mock_result = MagicMock(returncode=0, stdout=md_output, stderr="")
+        with patch('generate_descriptions.subprocess.run', return_value=mock_result):
+            rows = gitnexus_query("MATCH (f:Function) RETURN f.name")
+            assert len(rows) == 2
+            assert rows[0] == ["authenticate_user"]
+
+    def test_empty_output(self):
+        mock_result = MagicMock(returncode=0, stdout="", stderr="")
+        with patch('generate_descriptions.subprocess.run', return_value=mock_result):
+            rows = gitnexus_query("MATCH (f:Function) RETURN f.name")
+            assert rows == []
+
+    def test_too_few_lines(self):
+        md_output = json.dumps({"markdown": "| f.name |\n| --- |"})
+        mock_result = MagicMock(returncode=0, stdout=md_output, stderr="")
+        with patch('generate_descriptions.subprocess.run', return_value=mock_result):
+            rows = gitnexus_query("MATCH (f:Function) RETURN f.name")
+            assert rows == []
+
+    def test_timeout(self):
+        with patch('generate_descriptions.subprocess.run',
+                   side_effect=subprocess.TimeoutExpired("npx", 10)):
+            rows = gitnexus_query("MATCH (f:Function) RETURN f.name")
+            assert rows == []
+
+    def test_invalid_json(self):
+        mock_result = MagicMock(returncode=0, stdout="not json", stderr="")
+        with patch('generate_descriptions.subprocess.run', return_value=mock_result):
+            rows = gitnexus_query("MATCH (f:Function) RETURN f.name")
+            assert rows == []
+
+    def test_stderr_fallback(self):
+        """Cover output = r.stdout.strip() or r.stderr.strip()."""
+        md_output = json.dumps({
+            "markdown": "| f.name |\n| --- |\n| func_one |"
+        })
+        mock_result = MagicMock(returncode=0, stdout="", stderr=md_output)
+        with patch('generate_descriptions.subprocess.run', return_value=mock_result):
+            rows = gitnexus_query("MATCH (f:Function) RETURN f.name")
+            assert len(rows) == 1
+
+
+class TestGetDocstringSyntaxError:
+    """Cover lines 198-199: SyntaxError in docstring extraction."""
+
+    def test_syntax_error(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        d = tmp_path / "badmod"
+        d.mkdir()
+        (d / "__init__.py").write_text("def broken(:\n")
+        assert get_docstring("badmod") == ""
+
+
+class TestWriteDescriptionsSubLevel:
+    """Cover sub-level write path more thoroughly."""
+
+    def test_write_sub_with_existing_desc(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text(
+            "### src/ (100 symbols) — Old desc\n"
+            "- **api/** — Old sub desc (50 symbols)\n"
+        )
+        changes = write_descriptions({"src/api": "New sub desc"})
+        assert len(changes) == 1
+        content = (tmp_path / "CODE_MAP.md").read_text()
+        assert "New sub desc" in content
+
+    def test_skip_non_string_desc(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text("### src/ (100 symbols)\n")
+        changes = write_descriptions({"src": None})
+        assert len(changes) == 0
+
+
+class TestMainFunction:
+    """Cover lines 229-257, 261: main() in different modes."""
+
+    def test_main_all_described(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text("### src/ (100 symbols) — Described\n")
+        monkeypatch.setattr('sys.argv', ['generate_descriptions.py', str(tmp_path), '--generate'])
+        gd_main()
+        out = capsys.readouterr().out
+        assert '"status": "all_described"' in out
+
+    def test_main_dry_run(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text("### src/ (100 symbols)\n")
+        monkeypatch.setattr('sys.argv', ['generate_descriptions.py', str(tmp_path), '--dry-run'])
+        gd_main()
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert data["status"] == "dry_run"
+        assert "src" in data["dirs_needing"]
+
+    def test_main_ai_success(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text("### src/ (100 symbols)\n")
+        monkeypatch.setattr('sys.argv', ['generate_descriptions.py', str(tmp_path), '--generate'])
+        with patch('generate_descriptions.ai_generate', return_value={"src": "Core module"}):
+            gd_main()
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert data["status"] == "updated"
+        assert data["source"] == "ai+gitnexus"
+
+    def test_main_fallback_success(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        d = tmp_path / "mymod"
+        d.mkdir()
+        (d / "__init__.py").write_text('"""My module description."""\n')
+        (tmp_path / "CODE_MAP.md").write_text("### mymod/ (50 symbols)\n")
+        monkeypatch.setattr('sys.argv', ['generate_descriptions.py', str(tmp_path), '--generate'])
+        with patch('generate_descriptions.ai_generate', return_value=None):
+            gd_main()
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert data["status"] == "updated"
+        assert data["source"] == "fallback"
+
+    def test_main_no_changes(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text("### src/ (100 symbols)\n")
+        monkeypatch.setattr('sys.argv', ['generate_descriptions.py', str(tmp_path), '--generate'])
+        with patch('generate_descriptions.ai_generate', return_value=None), \
+             patch('generate_descriptions.fallback_generate', return_value={}):
+            gd_main()
+        out = capsys.readouterr().out
+        assert '"status": "no_changes"' in out
+
+    def test_main_default_args(self, tmp_path, monkeypatch, capsys):
+        """Line 229-230: default project_dir and mode."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text("### src/ (100 symbols) — Described\n")
+        monkeypatch.setattr('sys.argv', ['generate_descriptions.py'])
+        gd_main()
+        out = capsys.readouterr().out
+        assert "all_described" in out
