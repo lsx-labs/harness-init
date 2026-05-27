@@ -26,13 +26,13 @@
 
 ```bash
 # 普通用户（复制模式）
-bash install.sh
+python3 install.py
 
 # 开发者（符号链接模式 — 改源码立即生效）
-bash install.sh --link
+python3 install.py --link
 ```
 
-install.sh 自动检测依赖，一键安装 GitNexus（可选）。
+install.py 自动检测依赖，一键安装 GitNexus（可选）。
 
 ## 使用
 
@@ -47,15 +47,15 @@ install.sh 自动检测依赖，一键安装 GitNexus（可选）。
 ```
 harness-init/
 ├── scripts/
-│   ├── harness-init.sh          ← 诊断脚本（JSON, schema_version: 1）
+│   ├── harness-init.py          ← 诊断脚本（JSON, schema_version: 1）
 │   ├── harness-monitor.py       ← PostToolUse Hook（AI CLI + GitNexus）
-│   ├── generate-descriptions.sh ← CODE_MAP 描述生成
-│   └── session-context.sh       ← SessionStart Hook
+│   ├── generate_descriptions.py ← CODE_MAP 描述生成
+│   └── session_context.py       ← SessionStart Hook
 ├── skills/
 │   ├── claude/SKILL.md          ← Claude Code 完整规范
 │   └── codex/SKILL.md           ← Codex 完整规范
-├── install.sh                   ← 安装（--link 开发者模式）
-├── uninstall.sh                 ← 卸载
+├── install.py                   ← 安装（--link 开发者模式）
+├── uninstall.py                 ← 卸载
 ├── VERSION                      ← 版本号
 └── LICENSE                      ← MIT
 ```
@@ -65,11 +65,11 @@ harness-init/
 | Hook | 事件 | 功能 |
 |---|---|---|
 | harness-monitor.py | PostToolUse [Bash] | main 分支 git 操作后：CODE_MAP + 子目录 + 成长检测 |
-| session-context.sh | SessionStart [startup\|clear] | 注入 git 状态 + 模块映射 |
+| session_context.py | SessionStart [startup\|clear] | 注入 git 状态 + 模块映射 |
 | gitnexus-hook.cjs | PreToolUse [Grep\|Glob\|Bash] | GitNexus 搜索增强（第三方） |
 
 ## 卸载
 
 ```bash
-bash uninstall.sh
+python3 uninstall.py
 ```
