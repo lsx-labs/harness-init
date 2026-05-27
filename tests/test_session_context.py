@@ -10,7 +10,8 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 from session_context import (
     run_git, get_branch, get_ahead_behind, get_dirty_files,
-    get_recent_commits, check_gitnexus_stale, check_codemap_stale
+    get_recent_commits, check_gitnexus_stale, check_codemap_stale,
+    read_pending_notifications
 )
 
 
@@ -216,8 +217,40 @@ class TestCheckCodemapStaleOSError:
             assert result is None
 
 
+class TestReadPendingNotifications:
+    """Cover read_pending_notifications."""
+
+    def test_no_notification_file(self, tmp_path, monkeypatch):
+        import session_context as sc
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(sc, 'NOTIFY_DIR', tmp_path / "notifications")
+        assert read_pending_notifications() == []
+
+    def test_reads_and_deletes(self, tmp_path, monkeypatch):
+        import session_context as sc
+        monkeypatch.chdir(tmp_path)
+        notify_dir = tmp_path / "notifications"
+        notify_dir.mkdir()
+        notify_file = notify_dir / f"{tmp_path.name}.json"
+        messages = ["📊 GitNexus 建议", "📊 LSP 建议"]
+        notify_file.write_text(json.dumps(messages))
+        monkeypatch.setattr(sc, 'NOTIFY_DIR', notify_dir)
+        result = read_pending_notifications()
+        assert result == messages
+        assert not notify_file.exists()
+
+    def test_corrupted_file(self, tmp_path, monkeypatch):
+        import session_context as sc
+        monkeypatch.chdir(tmp_path)
+        notify_dir = tmp_path / "notifications"
+        notify_dir.mkdir()
+        (notify_dir / f"{tmp_path.name}.json").write_text("not json{")
+        monkeypatch.setattr(sc, 'NOTIFY_DIR', notify_dir)
+        assert read_pending_notifications() == []
+
+
 class TestMainFunction:
-    """Cover lines 93-113, 117: main() output."""
+    """Cover main() output."""
 
     def test_main_clean_workspace(self, capsys):
         with patch('session_context.get_branch', return_value="main"), \
@@ -225,7 +258,8 @@ class TestMainFunction:
              patch('session_context.get_dirty_files', return_value=(0, "")), \
              patch('session_context.get_recent_commits', return_value=[]), \
              patch('session_context.check_gitnexus_stale', return_value=None), \
-             patch('session_context.check_codemap_stale', return_value=None):
+             patch('session_context.check_codemap_stale', return_value=None), \
+             patch('session_context.read_pending_notifications', return_value=[]):
             sc_main()
         out = capsys.readouterr().out
         assert "main" in out
@@ -242,7 +276,8 @@ class TestMainFunction:
              patch('session_context.get_dirty_files', return_value=(3, "src auth")), \
              patch('session_context.get_recent_commits', return_value=commits), \
              patch('session_context.check_gitnexus_stale', return_value="⚠️ GitNexus 索引过期"), \
-             patch('session_context.check_codemap_stale', return_value="⚠️ CODE_MAP.md: 2 个目录描述待更新"):
+             patch('session_context.check_codemap_stale', return_value="⚠️ CODE_MAP.md: 2 个目录描述待更新"), \
+             patch('session_context.read_pending_notifications', return_value=[]):
             sc_main()
         out = capsys.readouterr().out
         assert "feature/auth" in out
@@ -252,6 +287,19 @@ class TestMainFunction:
         assert "GitNexus 索引过期" in out
         assert "CODE_MAP.md" in out
 
+    def test_main_with_pending_notifications(self, capsys):
+        with patch('session_context.get_branch', return_value="main"), \
+             patch('session_context.get_ahead_behind', return_value=""), \
+             patch('session_context.get_dirty_files', return_value=(0, "")), \
+             patch('session_context.get_recent_commits', return_value=[]), \
+             patch('session_context.check_gitnexus_stale', return_value=None), \
+             patch('session_context.check_codemap_stale', return_value=None), \
+             patch('session_context.read_pending_notifications',
+                   return_value=["📊 建议安装 GitNexus"]):
+            sc_main()
+        out = capsys.readouterr().out
+        assert "建议安装 GitNexus" in out
+
     def test_main_no_warnings(self, capsys):
         with patch('session_context.get_branch', return_value="develop"), \
              patch('session_context.get_ahead_behind', return_value=""), \
@@ -260,7 +308,8 @@ class TestMainFunction:
                  {"hash": "aaa1111", "ago": "1 min", "msg": "docs: update", "module": "root"}
              ]), \
              patch('session_context.check_gitnexus_stale', return_value=None), \
-             patch('session_context.check_codemap_stale', return_value=None):
+             patch('session_context.check_codemap_stale', return_value=None), \
+             patch('session_context.read_pending_notifications', return_value=[]):
             sc_main()
         out = capsys.readouterr().out
         assert "develop" in out

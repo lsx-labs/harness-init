@@ -27,6 +27,7 @@ CHECK_EVERY_N_FILES = 20
 STALE_THRESHOLD = 0.2
 COUNTER_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "counters"
 LOCK_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "locks"
+NOTIFY_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "notifications"
 DIAG_SCRIPT = Path.home() / ".local" / "bin" / "harness-init.py"
 DESC_SCRIPT = Path.home() / ".local" / "bin" / "generate-descriptions.py"
 HOOK_TIMEOUT = 15
@@ -549,6 +550,7 @@ def count_source_files():
 
 
 def handle_growth_check(state, state_file):
+    """Fast path: count files + threshold check (sync). Heavy path: spawn background."""
     if state.get("retired"):
         return
 
@@ -564,15 +566,29 @@ def handle_growth_check(state, state_file):
         save_state(state_file, state)
         return
 
+    save_state(state_file, state)
+    project_dir = str(Path(".").resolve())
+    subprocess.Popen(
+        [sys.executable, str(Path(__file__).resolve()),
+         "--bg-growth", str(state_file), project_dir],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def do_growth_check(state_file_path, project_dir):
+    """Background worker: run diagnostic + save notifications."""
+    os.chdir(project_dir)
+    state_file = Path(state_file_path)
+    state = load_state(state_file)
+
     try:
         r = subprocess.run([sys.executable, str(DIAG_SCRIPT), "."],
-                           capture_output=True, text=True, timeout=HOOK_TIMEOUT)
+                           capture_output=True, text=True, timeout=60)
         if r.returncode != 0 or not r.stdout.strip():
-            save_state(state_file, state)
             return
         diag = json.loads(r.stdout)
     except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
-        save_state(state_file, state)
         return
 
     messages = []
@@ -598,8 +614,12 @@ def handle_growth_check(state, state_file):
         state["retired"] = True
 
     save_state(state_file, state)
+
     if messages:
-        print(json.dumps({"decision": "warn", "reason": "\n".join(messages)}))
+        project_id = Path(project_dir).name
+        NOTIFY_DIR.mkdir(parents=True, exist_ok=True)
+        (NOTIFY_DIR / f"{project_id}.json").write_text(
+            json.dumps(messages, ensure_ascii=False))
 
 
 # ══════════════════════════════════════════════════════════
@@ -637,5 +657,8 @@ if __name__ == "__main__":
         # Background mode: harness-monitor.py --bg <project_id> <project_dir>
         os.chdir(sys.argv[3])
         do_main_branch_update(sys.argv[2])
+    elif len(sys.argv) >= 4 and sys.argv[1] == "--bg-growth":
+        # Background growth check: --bg-growth <state_file> <project_dir>
+        do_growth_check(sys.argv[2], sys.argv[3])
     else:
         main()

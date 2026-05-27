@@ -5,9 +5,12 @@ Outputs git state + module mapping + harness health.
 Designed to be fast (< 3s) and compact (< 15 lines output).
 """
 
+import json
 import subprocess
 import sys
 from pathlib import Path
+
+NOTIFY_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "notifications"
 
 
 def run_git(*args, default="") -> str:
@@ -67,13 +70,27 @@ def check_gitnexus_stale() -> str | None:
         return "💡 GitNexus 未索引此项目"
     try:
         r = subprocess.run(["npx", "gitnexus", "status"],
-                           capture_output=True, text=True, timeout=5)
+                           capture_output=True, text=True, timeout=2)
         output = r.stdout + r.stderr
         if "stale" in output.lower():
             return "⚠️ GitNexus 索引过期，建议运行 npx gitnexus analyze"
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
     return None
+
+
+def read_pending_notifications() -> list[str]:
+    """Read and consume pending notifications from background processes."""
+    project_name = Path(".").resolve().name
+    notify_file = NOTIFY_DIR / f"{project_name}.json"
+    if not notify_file.exists():
+        return []
+    try:
+        messages = json.loads(notify_file.read_text())
+        notify_file.unlink()
+        return messages if isinstance(messages, list) else []
+    except (json.JSONDecodeError, OSError):
+        return []
 
 
 def check_codemap_stale() -> str | None:
@@ -111,6 +128,9 @@ def main():
     warnings = [w for w in [check_gitnexus_stale(), check_codemap_stale()] if w]
     for w in warnings:
         print(w)
+
+    for msg in read_pending_notifications():
+        print(msg)
 
 
 if __name__ == "__main__":

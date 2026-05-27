@@ -546,13 +546,12 @@ class TestCountSourceFiles:
 
 
 class TestHandleGrowthCheck:
-    """Cover lines 380-430: handle_growth_check."""
+    """Cover handle_growth_check (dispatcher — fast path only)."""
 
     def test_retired_state(self, tmp_path):
         state_file = tmp_path / "state.json"
         state = {"retired": True, "file_count": 100}
         hm.handle_growth_check(state, state_file)
-        # Should return immediately — no state file written
         assert not state_file.exists()
 
     def test_below_threshold(self, tmp_path, monkeypatch):
@@ -561,13 +560,11 @@ class TestHandleGrowthCheck:
         state_file = tmp_path / "state.json"
         state = {"file_count": 0, "retired": False}
         hm.handle_growth_check(state, state_file)
-        # 1 file - 0 prev < 20 threshold → just save state
         saved = json.loads(state_file.read_text())
         assert saved["file_count"] == 1
 
     def test_no_diag_script(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        # Create enough files to exceed threshold
         for i in range(25):
             (tmp_path / f"mod{i}.py").write_text("x = 1")
         state_file = tmp_path / "state.json"
@@ -577,24 +574,7 @@ class TestHandleGrowthCheck:
         saved = json.loads(state_file.read_text())
         assert saved["file_count"] == 25
 
-    def test_diag_script_failure(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        src = tmp_path / "src"
-        src.mkdir()
-        for i in range(25):
-            (src / f"mod{i}.py").write_text("x = 1")
-        state_file = tmp_path / "state.json"
-        state = {"file_count": 0, "retired": False}
-        diag_script = tmp_path / "diag.sh"  # non-.py to avoid counting
-        diag_script.write_text("pass")
-        mock_result = MagicMock(returncode=1, stdout="")
-        with patch.object(hm, 'DIAG_SCRIPT', diag_script), \
-             patch.object(hm.subprocess, 'run', return_value=mock_result):
-            hm.handle_growth_check(state, state_file)
-        saved = json.loads(state_file.read_text())
-        assert saved["file_count"] == 25
-
-    def test_diag_script_timeout(self, tmp_path, monkeypatch):
+    def test_spawns_background_when_threshold_exceeded(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         state_file = tmp_path / "state.json"
         state = {"file_count": 0, "retired": False}
@@ -602,63 +582,102 @@ class TestHandleGrowthCheck:
         diag_script.write_text("pass")
         with patch.object(hm, 'count_source_files', return_value=25), \
              patch.object(hm, 'DIAG_SCRIPT', diag_script), \
-             patch.object(hm.subprocess, 'run',
-                          side_effect=subprocess.TimeoutExpired("python", 15)):
+             patch.object(hm.subprocess, 'Popen') as mock_popen:
             hm.handle_growth_check(state, state_file)
-        saved = json.loads(state_file.read_text())
-        assert saved["file_count"] == 25
+        mock_popen.assert_called_once()
+        args = mock_popen.call_args[0][0]
+        assert "--bg-growth" in args
 
-    def test_gitnexus_recommendation(self, tmp_path, monkeypatch, capsys):
+
+class TestDoGrowthCheck:
+    """Cover do_growth_check (background worker)."""
+
+    def test_diag_script_failure(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         state_file = tmp_path / "state.json"
-        state = {"file_count": 0, "retired": False, "gitnexus_recommended": False, "lsp_recommended": []}
+        state = {"file_count": 25, "retired": False}
+        state_file.write_text(json.dumps(state))
+        mock_result = MagicMock(returncode=1, stdout="")
+        with patch.object(hm, 'DIAG_SCRIPT', tmp_path / "diag.sh"), \
+             patch.object(hm.subprocess, 'run', return_value=mock_result):
+            hm.do_growth_check(str(state_file), str(tmp_path))
+
+    def test_diag_script_timeout(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        state_file = tmp_path / "state.json"
+        state = {"file_count": 25, "retired": False}
+        state_file.write_text(json.dumps(state))
+        with patch.object(hm, 'DIAG_SCRIPT', tmp_path / "diag.sh"), \
+             patch.object(hm.subprocess, 'run',
+                          side_effect=subprocess.TimeoutExpired("python", 60)):
+            hm.do_growth_check(str(state_file), str(tmp_path))
+
+    def test_empty_diag_stdout(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        state_file = tmp_path / "state.json"
+        state = {"file_count": 25, "retired": False}
+        state_file.write_text(json.dumps(state))
+        mock_result = MagicMock(returncode=0, stdout="")
+        with patch.object(hm, 'DIAG_SCRIPT', tmp_path / "diag.sh"), \
+             patch.object(hm.subprocess, 'run', return_value=mock_result):
+            hm.do_growth_check(str(state_file), str(tmp_path))
+
+    def test_gitnexus_recommendation(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        notify_dir = tmp_path / "notifications"
+        monkeypatch.setattr(hm, 'NOTIFY_DIR', notify_dir)
+        state_file = tmp_path / "state.json"
+        state = {"file_count": 25, "retired": False,
+                 "gitnexus_recommended": False, "lsp_recommended": []}
+        state_file.write_text(json.dumps(state))
         diag = {
             "grep_noise": {"grep_noise_files": 30, "most_imported": "auth_module"},
             "existing": {"gitnexus": {"indexed": False}},
             "lsp_assessment": [],
         }
-        diag_script = tmp_path / "diag.sh"
-        diag_script.write_text("pass")
         mock_result = MagicMock(returncode=0, stdout=json.dumps(diag))
-        with patch.object(hm, 'count_source_files', return_value=25), \
-             patch.object(hm, 'DIAG_SCRIPT', diag_script), \
+        with patch.object(hm, 'DIAG_SCRIPT', tmp_path / "diag.sh"), \
              patch.object(hm.subprocess, 'run', return_value=mock_result):
-            hm.handle_growth_check(state, state_file)
-        out = capsys.readouterr().out
-        data = json.loads(out)
-        assert data["decision"] == "warn"
-        assert "GitNexus" in data["reason"]
+            hm.do_growth_check(str(state_file), str(tmp_path))
         saved = json.loads(state_file.read_text())
         assert saved["gitnexus_recommended"] is True
+        notify_file = notify_dir / f"{tmp_path.name}.json"
+        assert notify_file.exists()
+        messages = json.loads(notify_file.read_text())
+        assert any("GitNexus" in m for m in messages)
 
-    def test_lsp_recommendation(self, tmp_path, monkeypatch, capsys):
+    def test_lsp_recommendation(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
+        notify_dir = tmp_path / "notifications"
+        monkeypatch.setattr(hm, 'NOTIFY_DIR', notify_dir)
         state_file = tmp_path / "state.json"
-        state = {"file_count": 0, "retired": False, "gitnexus_recommended": True, "lsp_recommended": []}
+        state = {"file_count": 25, "retired": False,
+                 "gitnexus_recommended": True, "lsp_recommended": []}
+        state_file.write_text(json.dumps(state))
         diag = {
             "grep_noise": {"grep_noise_files": 5, "most_imported": ""},
             "existing": {"gitnexus": {"indexed": True}},
             "lsp_assessment": [
-                {"language": "Python", "recommend": True, "reason": "类型覆盖 50%，LSP 有效"}
+                {"language": "Python", "recommend": True, "reason": "类型覆盖 50%"}
             ],
         }
-        diag_script = tmp_path / "diag.sh"
-        diag_script.write_text("pass")
         mock_result = MagicMock(returncode=0, stdout=json.dumps(diag))
-        with patch.object(hm, 'count_source_files', return_value=25), \
-             patch.object(hm, 'DIAG_SCRIPT', diag_script), \
+        with patch.object(hm, 'DIAG_SCRIPT', tmp_path / "diag.sh"), \
              patch.object(hm.subprocess, 'run', return_value=mock_result):
-            hm.handle_growth_check(state, state_file)
-        out = capsys.readouterr().out
-        data = json.loads(out)
-        assert "Python" in data["reason"]
+            hm.do_growth_check(str(state_file), str(tmp_path))
+        notify_file = notify_dir / f"{tmp_path.name}.json"
+        assert notify_file.exists()
+        messages = json.loads(notify_file.read_text())
+        assert any("Python" in m for m in messages)
 
-    def test_retirement(self, tmp_path, monkeypatch, capsys):
-        """State retires when all recommendations are done and no new messages."""
+    def test_retirement(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
+        notify_dir = tmp_path / "notifications"
+        monkeypatch.setattr(hm, 'NOTIFY_DIR', notify_dir)
         state_file = tmp_path / "state.json"
-        state = {"file_count": 0, "retired": False, "gitnexus_recommended": True,
-                 "lsp_recommended": ["Python"]}
+        state = {"file_count": 25, "retired": False,
+                 "gitnexus_recommended": True, "lsp_recommended": ["Python"]}
+        state_file.write_text(json.dumps(state))
         diag = {
             "grep_noise": {"grep_noise_files": 5, "most_imported": ""},
             "existing": {"gitnexus": {"indexed": True}},
@@ -666,32 +685,14 @@ class TestHandleGrowthCheck:
                 {"language": "Python", "recommend": True, "reason": "already recommended"}
             ],
         }
-        diag_script = tmp_path / "diag.sh"
-        diag_script.write_text("pass")
         mock_result = MagicMock(returncode=0, stdout=json.dumps(diag))
-        with patch.object(hm, 'count_source_files', return_value=25), \
-             patch.object(hm, 'DIAG_SCRIPT', diag_script), \
+        with patch.object(hm, 'DIAG_SCRIPT', tmp_path / "diag.sh"), \
              patch.object(hm.subprocess, 'run', return_value=mock_result):
-            hm.handle_growth_check(state, state_file)
+            hm.do_growth_check(str(state_file), str(tmp_path))
         saved = json.loads(state_file.read_text())
         assert saved["retired"] is True
-        # No messages → no output
-        assert capsys.readouterr().out == ""
-
-    def test_empty_diag_stdout(self, tmp_path, monkeypatch):
-        """Line 398-399: empty stdout from diag script."""
-        monkeypatch.chdir(tmp_path)
-        state_file = tmp_path / "state.json"
-        state = {"file_count": 0, "retired": False}
-        diag_script = tmp_path / "diag.sh"
-        diag_script.write_text("pass")
-        mock_result = MagicMock(returncode=0, stdout="")
-        with patch.object(hm, 'count_source_files', return_value=25), \
-             patch.object(hm, 'DIAG_SCRIPT', diag_script), \
-             patch.object(hm.subprocess, 'run', return_value=mock_result):
-            hm.handle_growth_check(state, state_file)
-        saved = json.loads(state_file.read_text())
-        assert saved["file_count"] == 25
+        notify_file = notify_dir / f"{tmp_path.name}.json"
+        assert not notify_file.exists()  # no messages → no notification
 
 
 class TestMainFunction:
