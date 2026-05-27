@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
-"""Harness monitor — CODE_MAP.md updates + project growth detection.
+"""Harness monitor — automated project harness maintenance.
 
-Triggered via PostToolUse [Bash]:
-  1. Update CODE_MAP.md (GitNexus or docstring fallback) + detect stale descriptions
-  2. Check project growth (file count delta) + periodic diagnostic (GitNexus/LSP recommendations)
+Triggered via PostToolUse [Bash], only on git operations:
+  - Non-git commands (pytest, profile, etc.) → immediate return, zero overhead
+  - Git on feature branch → growth check only (notify, no file writes)
+  - Git on main/master → full update:
+    1. CODE_MAP.md structure + descriptions (via generate-descriptions.sh)
+    2. Sub-directory CLAUDE.md/AGENTS.md harness regions (via AI CLI + GitNexus)
+    3. Growth check (GitNexus/LSP recommendations)
 
-State persisted per-project in ~/.local/share/harness-hooks/counters/{project}.json
+All file modifications use AI CLI (claude -p / codex exec) + GitNexus MCP
+for fact-grounded generation. No hope-based action messages.
 """
 
-import ast
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -21,29 +26,60 @@ from pathlib import Path
 CHECK_EVERY_N_FILES = 20
 STALE_THRESHOLD = 0.2
 COUNTER_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "counters"
-STALE_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "stale-pending"
 DIAG_SCRIPT = Path.home() / ".local" / "bin" / "harness-init.sh"
-HOOK_TIMEOUT = 15  # seconds — subprocess timeouts within the hook must be less than hook's own timeout
+DESC_SCRIPT = Path.home() / ".local" / "bin" / "generate-descriptions.sh"
+HOOK_TIMEOUT = 15
 
-SOURCE_EXTS = {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".kt", ".rb", ".c", ".h", ".cpp", ".cs", ".swift", ".php"}
-SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".gitnexus", ".claude", ".codex",
-             "dist", "build", "vendor", "third_party", "sdk", ".worktrees", ".tox"}
+SOURCE_EXTS = {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".kt",
+               ".rb", ".c", ".h", ".cpp", ".cs", ".swift", ".php"}
+SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".gitnexus",
+             ".claude", ".codex", "dist", "build", "vendor", "third_party", "sdk",
+             ".worktrees", ".tox"}
+GIT_COMMANDS = re.compile(r'\bgit\s+(commit|merge|rebase|pull|checkout|switch|cherry-pick)\b')
+MAIN_BRANCHES = {"main", "master"}
 
 
-def should_skip(name: str) -> bool:
+def should_skip(name):
     return name in SKIP_DIRS or name.endswith(".egg-info") or (name.startswith(".") and name != ".")
 
 
-def has_source(d: Path) -> bool:
+# ── Platform detection ──
+
+def get_ai_cmd():
+    """Find available AI CLI for non-interactive invocation."""
+    for cmd in ["claude", "codex"]:
+        if shutil.which(cmd):
+            return cmd
+    # Codex app binary
+    codex_app = "/Applications/Codex.app/Contents/Resources/codex"
+    if os.path.isfile(codex_app):
+        return codex_app
+    return ""
+
+
+def ai_invoke(prompt, timeout=60):
+    """Invoke AI CLI non-interactively, return output text."""
+    cmd = get_ai_cmd()
+    if not cmd:
+        return ""
     try:
-        return any(d.rglob(f"*{e}") for e in SOURCE_EXTS)
-    except Exception:
-        return False
+        if "claude" in cmd:
+            r = subprocess.run(
+                [cmd, "-p", prompt, "--allowedTools", "mcp__gitnexus*,Bash,Read"],
+                capture_output=True, text=True, timeout=timeout)
+            return r.stdout.strip()
+        else:
+            r = subprocess.run(
+                [cmd, "exec", prompt],
+                capture_output=True, text=True, timeout=timeout)
+            return r.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return ""
 
 
-# ── Project identity ──
+# ── Git state ──
 
-def get_project_id() -> str:
+def get_project_id():
     try:
         r = subprocess.run(["git", "rev-parse", "--show-toplevel"],
                            capture_output=True, text=True, timeout=3)
@@ -54,36 +90,42 @@ def get_project_id() -> str:
     return ""
 
 
-def get_stale_track_file(project_id: str) -> Path:
-    return STALE_DIR / f"{project_id}.json"
+def is_git_operation(ctx):
+    cmd = ctx.get("tool_input", {}).get("command", "")
+    return bool(GIT_COMMANDS.search(cmd))
+
+
+def is_on_main_branch():
+    try:
+        r = subprocess.run(["git", "branch", "--show-current"],
+                           capture_output=True, text=True, timeout=3)
+        return r.returncode == 0 and r.stdout.strip() in MAIN_BRANCHES
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
 
 
 # ── State management ──
 
-def load_state(state_file: Path) -> dict:
+def load_state(state_file):
     if state_file.exists():
         try:
             return json.loads(state_file.read_text())
         except (json.JSONDecodeError, OSError):
             pass
-    return {
-        "file_count": 0, "last_check_count": 0,
-        "gitnexus_recommended": False, "lsp_recommended": [],
-        "retired": False, "last_symbol_counts": {},
-    }
+    return {"file_count": 0, "gitnexus_recommended": False,
+            "lsp_recommended": [], "retired": False}
 
 
-def save_state(state_file: Path, state: dict):
+def save_state(state_file, state):
     state_file.parent.mkdir(parents=True, exist_ok=True)
     state_file.write_text(json.dumps(state, indent=2))
 
 
 # ══════════════════════════════════════════════════════════
-# CODE_MAP.md update
+# CODE_MAP.md update (structure + descriptions)
 # ══════════════════════════════════════════════════════════
 
-def _extract_desc_and_count(text: str) -> tuple[str, int | None]:
-    """Parse description and symbol count, tolerating both orders."""
+def _extract_desc_and_count(text):
     desc, count = "", None
     cm = re.search(r'\((\d+)\s*symbols?\)', text)
     if cm:
@@ -95,7 +137,7 @@ def _extract_desc_and_count(text: str) -> tuple[str, int | None]:
     return desc, count
 
 
-def parse_existing_codemap(codemap_path: Path) -> tuple[dict[str, str], dict[str, int]]:
+def parse_existing_codemap(codemap_path):
     descs, counts = {}, {}
     if not codemap_path.exists():
         return descs, counts
@@ -112,25 +154,13 @@ def parse_existing_codemap(codemap_path: Path) -> tuple[dict[str, str], dict[str
             continue
         m = re.match(r'^-\s+\*\*(\S+)/?\*\*(.*)$', line)
         if m:
-            sub = f"{current_section}/{m.group(1)}"
+            sub = f"{current_section}/{m.group(1).rstrip('/')}"
             desc, count = _extract_desc_and_count(m.group(2))
             if desc and not desc.startswith("⚠️"):
                 descs[sub] = desc
             if count is not None:
                 counts[sub] = count
     return descs, counts
-
-
-def check_staleness(key, new_syms, old_counts, descs):
-    if key not in descs or key not in old_counts:
-        return None
-    old = old_counts[key]
-    if old == 0:
-        return None
-    change = abs(new_syms - old) / old
-    if change >= STALE_THRESHOLD:
-        return f"⚠️ 描述可能过期（符号数 {old}→{new_syms}，变化 {change:.0%}）请运行 /harness-init 更新"
-    return None
 
 
 def get_gitnexus_communities():
@@ -143,10 +173,8 @@ def get_gitnexus_communities():
              "count(*) AS clusters RETURN area, syms, clusters ORDER BY syms DESC LIMIT 25",
              "-r", Path(".").resolve().name],
             capture_output=True, text=True, timeout=HOOK_TIMEOUT)
-        if r.returncode != 0:
-            return None
         output = r.stdout.strip() or r.stderr.strip()
-        if not output:
+        if not output or r.returncode != 0:
             return None
         md = json.loads(output).get("markdown", "")
         lines = [l.strip() for l in md.split("\n") if l.strip()]
@@ -163,7 +191,7 @@ def get_gitnexus_communities():
                 else:
                     result[area] = {"symbols": syms, "clusters": clusters}
         return result or None
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError, KeyError):
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
         return None
 
 
@@ -177,12 +205,12 @@ def build_area_to_dir(communities):
             capture_output=True, text=True, timeout=HOOK_TIMEOUT)
         output = r.stdout.strip() or r.stderr.strip()
         md = json.loads(output).get("markdown", "")
-        folders = []
-        for line in [l.strip() for l in md.split("\n") if l.strip()][2:]:
-            cols = [c.strip() for c in line.split("|") if c.strip()]
-            if cols:
-                folders.append(cols[0])
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
+        folders = [
+            [c.strip() for c in l.split("|") if c.strip()][0]
+            for l in [x.strip() for x in md.split("\n") if x.strip()][2:]
+            if [c.strip() for c in l.split("|") if c.strip()]
+        ]
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError, IndexError):
         folders = []
     for area in communities:
         area_lower = area.lower().lstrip("_")
@@ -193,11 +221,13 @@ def build_area_to_dir(communities):
     return mapping
 
 
-def build_gitnexus_codemap(communities, existing_descs, old_counts):
+def build_codemap_structure(communities, existing_descs, old_counts):
+    """Build CODE_MAP.md with structure + preserved descriptions."""
     area_to_dir = build_area_to_dir(communities)
     lines = ["# Code Map", "",
-             "> Auto-generated structure from GitNexus knowledge graph. Descriptions are human-maintained.", ""]
+             "> Auto-generated from GitNexus. Descriptions maintained by AI + GitNexus or 📌 manual.", ""]
 
+    stale_dirs = []
     top_dirs = {}
     for area, info in sorted(communities.items(), key=lambda x: -x[1]["symbols"]):
         dir_path = area_to_dir.get(area)
@@ -211,192 +241,119 @@ def build_gitnexus_codemap(communities, existing_descs, old_counts):
         entries = top_dirs[top_dir]
         total_syms = sum(e[1] for e in entries)
         desc = existing_descs.get(top_dir, "")
-        stale = check_staleness(top_dir, total_syms, old_counts, existing_descs)
-        if stale:
-            lines.append(f"### {top_dir}/ ({total_syms} symbols) — {stale}")
-        elif desc:
+
+        # Check staleness
+        old = old_counts.get(top_dir, 0)
+        if desc and old > 0 and abs(total_syms - old) / old >= STALE_THRESHOLD:
+            stale_dirs.append(top_dir)
+
+        if desc:
             lines.append(f"### {top_dir}/ ({total_syms} symbols) — {desc}")
         else:
             lines.append(f"### {top_dir}/ ({total_syms} symbols)")
+
         for sub, syms, area in sorted(entries, key=lambda x: -x[1]):
             if sub:
                 sub_key = f"{top_dir}/{sub}"
                 sub_desc = existing_descs.get(sub_key, "")
-                sub_stale = check_staleness(sub_key, syms, old_counts, existing_descs)
-                if sub_stale:
-                    lines.append(f"- **{sub}/** — {sub_stale} ({syms} symbols)")
-                elif sub_desc:
+                sub_old = old_counts.get(sub_key, 0)
+                if sub_desc and sub_old > 0 and abs(syms - sub_old) / sub_old >= STALE_THRESHOLD:
+                    stale_dirs.append(sub_key)
+                if sub_desc:
                     lines.append(f"- **{sub}/** — {sub_desc} ({syms} symbols)")
                 else:
                     lines.append(f"- **{sub}/** ({syms} symbols)")
         lines.append("")
-    return "\n".join(lines) + "\n"
+
+    return "\n".join(lines) + "\n", stale_dirs
 
 
-def extract_doc(fp):
-    try:
-        src = fp.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return ""
-    ext = fp.suffix.lower()
-    if ext == ".py":
-        try:
-            ds = ast.get_docstring(ast.parse(src))
-            if ds:
-                line = ds.strip().split("\n")[0]
-                for sep in ("—", "–", "-"):
-                    if sep in line:
-                        line = line.split(sep, 1)[1].strip()
-                        break
-                return line[:100]
-        except SyntaxError:
-            pass
-    elif ext in (".js", ".ts", ".jsx", ".tsx", ".java", ".kt"):
-        m = re.search(r'/\*\*\s*\n?\s*\*?\s*(.+?)[\n*]', src[:2000])
-        if m:
-            return m.group(1).strip().rstrip("*/").strip()[:100]
-    elif ext == ".go":
-        ls = src.split("\n")
-        for i, l in enumerate(ls):
-            if l.strip().startswith("package "):
-                for j in range(max(0, i - 5), i):
-                    cl = ls[j].strip()
-                    if cl.startswith("//") and not cl.startswith("//go:"):
-                        return cl.lstrip("/").strip()[:100]
-                break
-    elif ext == ".rs":
-        for l in src.split("\n")[:10]:
-            if l.strip().startswith("//!"):
-                return l.strip().lstrip("/!").strip()[:100]
-    return ""
+# ══════════════════════════════════════════════════════════
+# Sub-directory CLAUDE.md/AGENTS.md update via AI CLI
+# ══════════════════════════════════════════════════════════
+
+def update_subdir_docs(stale_dirs):
+    """Update harness:start/end regions in sub-directory docs via AI CLI."""
+    dirs_with_docs = [d for d in stale_dirs
+                      if Path(d, "CLAUDE.md").exists() or Path(d, "AGENTS.md").exists()]
+    if not dirs_with_docs:
+        return []
+
+    project_name = Path(".").resolve().name
+    prompt = (
+        f"你在项目 {project_name} 中。以下 {len(dirs_with_docs)} 个目录的代码发生了较大变动，"
+        f"需要更新其 CLAUDE.md 和 AGENTS.md 中 <!-- harness:start --> 到 <!-- harness:end --> 之间的内容。\n\n"
+        f"规则：\n"
+        f"1. 对每个目录，调用 gitnexus_context 查询其核心函数\n"
+        f"2. 基于 GitNexus 返回的事实更新约束和危险操作\n"
+        f"3. 只改 harness:start/end 之间的内容，其他部分不动\n"
+        f"4. CLAUDE.md 和 AGENTS.md 内容保持一致\n\n"
+        f"目录：{', '.join(dirs_with_docs)}"
+    )
+
+    result = ai_invoke(prompt, timeout=90)
+    return dirs_with_docs if result else []
 
 
-def build_docstring_codemap(existing_descs):
-    root = Path(".")
-    lines = ["# Code Map", ""]
-    for d in sorted(root.iterdir()):
-        if not d.is_dir() or should_skip(d.name) or not has_source(d):
-            continue
-        desc = existing_descs.get(d.name, "")
-        if not desc:
-            for entry in ("__init__.py", "index.ts", "index.js", "mod.rs", "lib.rs"):
-                f = d / entry
-                if f.exists():
-                    desc = extract_doc(f)
-                    if desc:
-                        break
-        lines.append(f"### {d.name}/" + (f" — {desc}" if desc else ""))
-        for sub in sorted(d.iterdir()):
-            if sub.is_dir() and not should_skip(sub.name) and not sub.name.startswith("_"):
-                sub_key = f"{d.name}/{sub.name}"
-                sub_desc = existing_descs.get(sub_key, "")
-                if not sub_desc:
-                    for entry in ("__init__.py", "index.ts", "index.js", "mod.rs", "lib.rs"):
-                        f = sub / entry
-                        if f.exists():
-                            sub_desc = extract_doc(f)
-                            if sub_desc:
-                                break
-                lines.append(f"  - **{sub.name}/**" + (f" — {sub_desc}" if sub_desc else ""))
-        lines.append("")
-    return "\n".join(lines) + "\n"
+# ══════════════════════════════════════════════════════════
+# Main update handler
+# ══════════════════════════════════════════════════════════
 
-
-def handle_codemap_update(project_id: str):
-    """Update CODE_MAP.md — called on Bash triggers."""
+def handle_main_branch_update(project_id):
+    """Full update on main branch: CODE_MAP + descriptions + sub-dir docs."""
     codemap_file = Path("CODE_MAP.md")
-    stale_track = get_stale_track_file(project_id)
-
-    # Fallback check: previous stale markers not resolved → escalate
-    if stale_track.exists() and codemap_file.exists():
-        try:
-            pending = json.loads(stale_track.read_text())
-            codemap_text = codemap_file.read_text()
-            still_stale = [d for d in pending.get("dirs", [])
-                           if any("⚠️ 描述可能过期" in l for l in codemap_text.split("\n") if d in l)]
-            if still_stale:
-                print(json.dumps({
-                    "decision": "warn",
-                    "reason": (
-                        f"⚠️ 以下目录的描述在上次标记后仍未更新：{', '.join(still_stale)}。"
-                        f"请手动运行 /harness-init 更新这些目录的 CODE_MAP.md 描述"
-                        + (f"和子目录 CLAUDE.md/AGENTS.md" if any(
-                            Path(d, "CLAUDE.md").exists() for d in still_stale) else "")
-                        + "。"
-                    )
-                }, ensure_ascii=False))
-                stale_track.unlink(missing_ok=True)
-        except (json.JSONDecodeError, OSError):
-            stale_track.unlink(missing_ok=True)
-
+    old_content = codemap_file.read_text() if codemap_file.exists() else ""
     existing_descs, old_counts = parse_existing_codemap(codemap_file)
 
+    # Step 1: Update CODE_MAP.md structure
     communities = get_gitnexus_communities()
     if communities:
-        new_content = build_gitnexus_codemap(communities, existing_descs, old_counts)
-        source = "gitnexus"
+        new_content, stale_dirs = build_codemap_structure(communities, existing_descs, old_counts)
     else:
-        new_content = build_docstring_codemap(existing_descs)
-        source = "docstring"
+        return  # No GitNexus, skip
 
-    if not new_content.strip() or new_content.strip() == "# Code Map":
-        return
+    if new_content == old_content and not stale_dirs:
+        return  # Nothing changed
 
-    old_content = codemap_file.read_text() if codemap_file.exists() else ""
+    codemap_file.write_text(new_content)
 
-    stale_dirs = []
-    for line in new_content.split("\n"):
-        if "⚠️ 描述可能过期" in line:
-            m = re.match(r'^(?:###\s+|.*\*\*)(\S+?)/?', line)
-            if m:
-                stale_dirs.append(m.group(1))
-
-    if new_content != old_content:
-        codemap_file.write_text(new_content)
-
-        # Auto-generate descriptions for entries that are empty or stale
-        # Uses generate-descriptions.sh --refresh (deterministic, no AI needed)
-        desc_script = Path.home() / ".local" / "bin" / "generate-descriptions.sh"
-        if desc_script.exists() or Path(__file__).resolve().parent.joinpath("generate-descriptions.sh").exists():
-            script = str(desc_script) if desc_script.exists() else str(Path(__file__).resolve().parent / "generate-descriptions.sh")
-            try:
-                subprocess.run(["bash", script, ".", "--refresh"],
-                               capture_output=True, text=True, timeout=HOOK_TIMEOUT)
-            except (subprocess.TimeoutExpired, OSError):
-                pass
-
-        result = {"status": "codemap_updated", "source": source}
-
-        # Check if CODE_MAP.md changed after description refresh
-        final_content = codemap_file.read_text()
-        if final_content != old_content:
-            result["action"] = (
-                f"CODE_MAP.md 已更新（结构 + 描述）。"
-                f"请提交：git add CODE_MAP.md && git commit -m \"docs: refresh CODE_MAP.md\""
-            )
-        stale_track.unlink(missing_ok=True)
-        print(json.dumps(result, ensure_ascii=False))
-
-
-# ══════════════════════════════════════════════════════════
-# Project growth detection (piggybacks on Bash triggers)
-# ══════════════════════════════════════════════════════════
-
-def run_diagnostic():
-    if not DIAG_SCRIPT.exists():
-        return None
-    try:
-        r = subprocess.run(["bash", str(DIAG_SCRIPT), "."],
+    # Step 2: Generate/refresh descriptions
+    desc_script = DESC_SCRIPT if DESC_SCRIPT.exists() else Path(__file__).resolve().parent / "generate-descriptions.sh"
+    if desc_script.exists():
+        try:
+            subprocess.run(["bash", str(desc_script), ".", "--refresh"],
                            capture_output=True, text=True, timeout=HOOK_TIMEOUT)
-        if r.returncode == 0 and r.stdout.strip():
-            return json.loads(r.stdout)
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
-        pass
-    return None
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+    # Step 3: Update sub-directory CLAUDE.md/AGENTS.md for stale dirs
+    updated_subdirs = []
+    if stale_dirs:
+        updated_subdirs = update_subdir_docs(stale_dirs)
+
+    # Step 4: Output commit hint
+    affected = ["CODE_MAP.md"]
+    for d in updated_subdirs:
+        affected.extend([f"{d}/CLAUDE.md", f"{d}/AGENTS.md"])
+
+    final_content = codemap_file.read_text()
+    if final_content != old_content or updated_subdirs:
+        print(json.dumps({
+            "status": "updated",
+            "affected_files": affected,
+            "action": (
+                f"由于当前功能变动较大，以下文件需要同步更新：{', '.join(affected)}。"
+                f"请提交这些变更的文件：git add {' '.join(affected)} && "
+                f'git commit -m "docs: update harness files"'
+            )
+        }, ensure_ascii=False))
 
 
-def count_source_files() -> int:
-    """Quick count of source files for growth detection."""
+# ══════════════════════════════════════════════════════════
+# Growth detection
+# ══════════════════════════════════════════════════════════
+
+def count_source_files():
     count = 0
     try:
         for root, dirs, files in os.walk("."):
@@ -410,7 +367,6 @@ def count_source_files() -> int:
 
 
 def handle_growth_check(state, state_file):
-    """Check project growth on Bash triggers."""
     if state.get("retired"):
         return
 
@@ -422,14 +378,22 @@ def handle_growth_check(state, state_file):
         save_state(state_file, state)
         return
 
-    diag = run_diagnostic()
-    if not diag:
+    if not DIAG_SCRIPT.exists():
         save_state(state_file, state)
         return
 
-    state["last_check_count"] = state["file_count"]
-    messages = []
+    try:
+        r = subprocess.run(["bash", str(DIAG_SCRIPT), "."],
+                           capture_output=True, text=True, timeout=HOOK_TIMEOUT)
+        if r.returncode != 0 or not r.stdout.strip():
+            save_state(state_file, state)
+            return
+        diag = json.loads(r.stdout)
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
+        save_state(state_file, state)
+        return
 
+    messages = []
     grep_noise = diag.get("grep_noise", {}).get("grep_noise_files", 0)
     most_imported = diag.get("grep_noise", {}).get("most_imported", "")
     gitnexus_indexed = diag.get("existing", {}).get("gitnexus", {}).get("indexed", False)
@@ -437,57 +401,23 @@ def handle_growth_check(state, state_file):
     if grep_noise > 20 and not gitnexus_indexed and not state.get("gitnexus_recommended"):
         state["gitnexus_recommended"] = True
         messages.append(
-            f"📊 项目复杂度增长提醒：最热模块 `{most_imported}` 的 grep 噪声已达 {grep_noise} 个文件，"
-            f"建议安装 GitNexus 知识图谱索引。运行 /harness-init 查看详情。")
+            f"📊 项目复杂度增长：`{most_imported}` grep 噪声 {grep_noise} 文件，建议安装 GitNexus。")
 
-    already_recommended = set(state.get("lsp_recommended", []))
-    for assessment in diag.get("lsp_assessment", []):
-        lang = assessment["language"]
-        if assessment["recommend"] and lang not in already_recommended:
-            already_recommended.add(lang)
-            messages.append(f"📊 {lang} LSP 建议：{assessment['reason']}。运行 /harness-init 查看详情。")
-    state["lsp_recommended"] = list(already_recommended)
+    already = set(state.get("lsp_recommended", []))
+    for a in diag.get("lsp_assessment", []):
+        if a["recommend"] and a["language"] not in already:
+            already.add(a["language"])
+            messages.append(f"📊 {a['language']} LSP 建议：{a['reason']}")
+    state["lsp_recommended"] = list(already)
 
     gitnexus_done = gitnexus_indexed or grep_noise <= 20
     lsp_needed = {a["language"] for a in diag.get("lsp_assessment", []) if a["recommend"]}
-    if gitnexus_done and (lsp_needed.issubset(already_recommended) or not lsp_needed) and not messages:
+    if gitnexus_done and (lsp_needed.issubset(already) or not lsp_needed) and not messages:
         state["retired"] = True
 
     save_state(state_file, state)
-
     if messages:
         print(json.dumps({"decision": "warn", "reason": "\n".join(messages)}))
-
-
-# ══════════════════════════════════════════════════════════
-# Git state detection
-# ══════════════════════════════════════════════════════════
-
-GIT_COMMANDS = re.compile(r'\bgit\s+(commit|merge|rebase|pull|checkout|switch|cherry-pick)\b')
-MAIN_BRANCHES = {"main", "master"}
-
-
-def is_git_operation(ctx: dict) -> bool:
-    """Check if the Bash command was a git operation."""
-    cmd = ctx.get("tool_input", {}).get("command", "")
-    return bool(GIT_COMMANDS.search(cmd))
-
-
-def is_on_main_branch() -> bool:
-    """Check if current HEAD is on main/master branch."""
-    try:
-        r = subprocess.run(["git", "branch", "--show-current"],
-                           capture_output=True, text=True, timeout=3)
-        return r.returncode == 0 and r.stdout.strip() in MAIN_BRANCHES
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return False
-
-
-def is_merge_to_main(ctx: dict) -> bool:
-    """Check if this is a merge/checkout to main branch."""
-    if not is_git_operation(ctx):
-        return False
-    return is_on_main_branch()
 
 
 # ══════════════════════════════════════════════════════════
@@ -500,14 +430,9 @@ def main():
     except (json.JSONDecodeError, ValueError):
         return
 
-    if not isinstance(ctx, dict) or "tool_name" not in ctx:
+    if not isinstance(ctx, dict) or ctx.get("tool_name") != "Bash":
         return
 
-    tool = ctx.get("tool_name", "")
-    if tool != "Bash":
-        return
-
-    # Fast exit: not a git operation → skip entirely (zero overhead for pytest/profile/etc.)
     if not is_git_operation(ctx):
         return
 
@@ -519,11 +444,9 @@ def main():
     state = load_state(state_file)
 
     if is_on_main_branch():
-        # On main: full processing — update CODE_MAP.md + growth check
-        handle_codemap_update(project_id)
+        handle_main_branch_update(project_id)
         handle_growth_check(state, state_file)
     else:
-        # Feature branch: growth check only (notify, never write files)
         handle_growth_check(state, state_file)
 
 
