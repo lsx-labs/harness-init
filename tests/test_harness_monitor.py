@@ -12,6 +12,12 @@ import harness_monitor as hm
 import harness_shared
 
 
+def test_monitor_uses_postponed_annotations_for_python39() -> None:
+    source = Path(hm.__file__).read_text(encoding="utf-8")
+    assert "from __future__ import annotations" in source
+    assert source.index("from __future__ import annotations") < source.index("import io")
+
+
 class TestShouldSkip:
     def test_skip_git(self):
         assert hm.should_skip(".git") is True
@@ -118,6 +124,17 @@ class TestParseExistingCodemap:
         monkeypatch.chdir(tmp_path)
         descs, counts = hm.parse_existing_codemap(Path("CODE_MAP.md"))
         assert descs == {}
+
+    def test_drops_low_quality_existing_descriptions(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text(
+            "### engine/ (100 symbols) — run_combo / load_market_tensors / nav_to_metrics\n"
+            "### good/ (10 symbols) — 回测核心内核：rank 输入校验、持仓撮合、NAV/指标计算\n"
+        )
+        descs, counts = hm.parse_existing_codemap(Path("CODE_MAP.md"))
+        assert "engine" not in descs
+        assert descs["good"].startswith("回测核心内核")
+        assert counts["engine"] == 100
 
 
 class TestLoadSaveState:
@@ -425,6 +442,7 @@ class TestBackgroundDispatch:
     def test_spawns_background_process(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
+        monkeypatch.setattr(hm, 'JOB_DIR', tmp_path / "jobs")
         with patch.object(hm.subprocess, 'Popen') as mock_popen:
             hm.handle_main_branch_update("test_project")
         mock_popen.assert_called_once()
@@ -432,6 +450,12 @@ class TestBackgroundDispatch:
         assert "--bg" in args[0][0]
         out = json.loads(capsys.readouterr().out)
         assert out["status"] == "background"
+        assert out["job_id"].startswith("test_project-")
+        job = tmp_path / "jobs" / f"{out['job_id']}.json"
+        assert job.exists()
+        payload = json.loads(job.read_text(encoding="utf-8"))
+        assert payload["status"] == "queued"
+        assert payload["project_id"] == "test_project"
 
     def test_skips_if_already_running(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
@@ -440,10 +464,12 @@ class TestBackgroundDispatch:
         # Write current PID as lock (simulates running process)
         (lock_dir / "test_project.lock").write_text(str(os.getpid()))
         monkeypatch.setattr(hm, 'LOCK_DIR', lock_dir)
+        monkeypatch.setattr(hm, 'JOB_DIR', tmp_path / "jobs")
         with patch.object(hm.subprocess, 'Popen') as mock_popen:
             hm.handle_main_branch_update("test_project")
         mock_popen.assert_not_called()
-        assert capsys.readouterr().out == ""
+        out = json.loads(capsys.readouterr().out)
+        assert out["status"] == "skipped_locked"
 
     def test_replaces_stale_lock(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
@@ -451,6 +477,7 @@ class TestBackgroundDispatch:
         lock_dir.mkdir()
         (lock_dir / "test_project.lock").write_text("999999999")  # dead PID
         monkeypatch.setattr(hm, 'LOCK_DIR', lock_dir)
+        monkeypatch.setattr(hm, 'JOB_DIR', tmp_path / "jobs")
         with patch.object(hm.subprocess, 'Popen'):
             hm.handle_main_branch_update("test_project")
         out = json.loads(capsys.readouterr().out)
@@ -510,6 +537,7 @@ class TestDoMainBranchUpdate:
             hm.do_main_branch_update("test_project")
 
         assert (tmp_path / "CODE_MAP.md").read_text() == new_content
+        assert not (tmp_path / "CODE_MAP.md.tmp").exists()
 
     def test_update_no_desc_script(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -535,6 +563,19 @@ class TestDoMainBranchUpdate:
             except RuntimeError:
                 pass
         assert not (tmp_path / "locks" / "test_project.lock").exists()
+
+    def test_job_status_records_failure(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
+        monkeypatch.setattr(hm, 'JOB_DIR', tmp_path / "jobs")
+        monkeypatch.chdir(tmp_path)
+        with patch.object(hm, 'ensure_gitnexus_fresh', side_effect=RuntimeError("boom")):
+            try:
+                hm.do_main_branch_update("test_project", job_id="job-1")
+            except RuntimeError:
+                pass
+        payload = json.loads((tmp_path / "jobs" / "job-1.json").read_text(encoding="utf-8"))
+        assert payload["status"] == "failed"
+        assert payload["error"] == "boom"
 
 
 class TestCountSourceFiles:

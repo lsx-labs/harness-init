@@ -18,7 +18,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-from harness_shared import MANUAL_MARKER, parse_codemap as _parse_codemap
+from harness_shared import (
+    LOW_CONFIDENCE_MARKER,
+    MANUAL_MARKER,
+    is_acceptable_description,
+    is_low_confidence_description,
+    is_low_quality_description,
+    needs_description_refresh,
+    parse_codemap as _parse_codemap,
+)
 
 HOOK_TIMEOUT = 10
 GENERIC = {"main", "init", "run", "start", "stop", "get", "set", "test", "setup", "parse",
@@ -38,10 +46,36 @@ def parse_codemap(mode: str) -> list[str]:
         desc = e.get("desc") or ""
         if desc.startswith(MANUAL_MARKER):
             continue
-        if mode == "--generate" and desc and not desc.startswith("⚠️"):
+        if mode in {"--generate", "--dry-run"} and not needs_description_refresh(desc):
             continue
         dirs.append(e["dir"])
     return dirs
+
+
+def filter_generated_descriptions(
+    descriptions: dict[str, str],
+    *,
+    allow_low_confidence: bool = False,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Reject low-signal generated descriptions before writing CODE_MAP.md."""
+    accepted: dict[str, str] = {}
+    rejected: dict[str, str] = {}
+    for dir_path, desc in descriptions.items():
+        if not isinstance(desc, str) or not desc.strip():
+            rejected[dir_path] = "empty"
+            continue
+        desc = desc.strip()
+        if is_low_confidence_description(desc):
+            if allow_low_confidence:
+                accepted[dir_path] = desc
+            else:
+                rejected[dir_path] = "low_confidence"
+            continue
+        if not is_acceptable_description(desc):
+            rejected[dir_path] = "low_quality"
+            continue
+        accepted[dir_path] = desc
+    return accepted, rejected
 
 
 def write_descriptions(descriptions: dict[str, str]) -> list[dict]:
@@ -79,7 +113,9 @@ def write_descriptions(descriptions: dict[str, str]) -> list[dict]:
                     content = content[:abs_start] + f"{m.group(1)} — {desc} {m.group(3)}" + content[abs_end:]
                     changes.append({"dir": dir_path, "desc": desc})
     if changes:
-        codemap.write_text(content, encoding="utf-8")
+        tmp = codemap.with_suffix(codemap.suffix + ".tmp")
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, codemap)
     return changes
 
 
@@ -215,18 +251,25 @@ def fallback_generate(dirs: list[str]) -> dict[str, str]:
     docstring (from __init__.py) is trusted; keyword joins are marked ⚠️
     low-confidence so the AI path retries them on the next run.
     """
-    empty = set(parse_codemap("--generate"))  # empty + ⚠️ entries only
+    entries = {e["dir"]: e.get("desc") or "" for e in _parse_codemap(Path("CODE_MAP.md"))}
+    refreshable = set(parse_codemap("--generate"))  # empty + low-confidence + low-quality entries
     result = {}
     for d in dirs:
-        if d not in empty:
+        if d not in refreshable:
             continue
         docstring = get_docstring(d)
-        if docstring:
+        if docstring and not is_low_quality_description(docstring):
             result[d] = docstring
+            continue
+        if (
+            entries.get(d)
+            and not is_low_confidence_description(entries[d])
+            and not is_low_quality_description(entries[d])
+        ):
             continue
         keywords = get_keywords(d)
         if keywords:
-            result[d] = f"⚠️ {keywords}"
+            result[d] = f"{LOW_CONFIDENCE_MARKER} {keywords}"
     return result
 
 
@@ -251,17 +294,22 @@ def main():
     # Try AI + GitNexus first
     descriptions = ai_generate(dirs)
     if descriptions:
-        changes = write_descriptions(descriptions)
-        print(json.dumps({"status": "updated", "source": "ai+gitnexus",
-                          "count": len(changes), "changes": changes}, indent=2, ensure_ascii=False))
-        return
+        descriptions, rejected = filter_generated_descriptions(descriptions)
+        if descriptions:
+            changes = write_descriptions(descriptions)
+            print(json.dumps({"status": "updated", "source": "ai+gitnexus",
+                              "count": len(changes), "changes": changes,
+                              "rejected": rejected}, indent=2, ensure_ascii=False))
+            return
 
     # Fallback
     descriptions = fallback_generate(dirs)
     if descriptions:
+        descriptions, rejected = filter_generated_descriptions(descriptions, allow_low_confidence=True)
         changes = write_descriptions(descriptions)
         print(json.dumps({"status": "updated", "source": "fallback",
-                          "count": len(changes), "changes": changes}, indent=2, ensure_ascii=False))
+                          "count": len(changes), "changes": changes,
+                          "rejected": rejected}, indent=2, ensure_ascii=False))
     else:
         print(json.dumps({"status": "no_changes"}, ensure_ascii=False))
 

@@ -14,6 +14,7 @@ SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".gitnexus"
 STALE_THRESHOLD = 0.2
 SYMBOL_THRESHOLD = 100
 MANUAL_MARKER = "📌"
+LOW_CONFIDENCE_MARKER = "⚠️"
 
 SOURCE_EXTS = {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".kt",
                ".rb", ".c", ".h", ".cpp", ".cs", ".swift", ".php"}
@@ -73,3 +74,60 @@ def parse_codemap(codemap_path: Path) -> list[dict]:
             desc, count = parse_codemap_entry(m.group(2))
             entries.append({"dir": sub, "desc": desc, "symbols": count})
     return entries
+
+
+# ── CODE_MAP.md description quality ──
+
+_LOW_QUALITY_FRAGMENTS = (
+    "load_module",
+    "getFactor",
+    "option_value",
+    "dict_or_empty",
+    "Tests for ",
+    "based backtest engine",
+    "only staging area",
+)
+
+
+def is_manual_description(desc: str) -> bool:
+    return desc.strip().startswith(MANUAL_MARKER)
+
+
+def is_low_confidence_description(desc: str) -> bool:
+    return desc.strip().startswith(LOW_CONFIDENCE_MARKER)
+
+
+def is_low_quality_description(desc: str) -> bool:
+    """Return True for generated descriptions that are navigation noise.
+
+    This deliberately targets known fallback failure modes rather than trying
+    to score prose quality generally.
+    """
+    desc = (desc or "").strip()
+    if not desc or is_manual_description(desc):
+        return False
+    if is_low_confidence_description(desc):
+        return True
+    if any(fragment in desc for fragment in _LOW_QUALITY_FRAGMENTS):
+        return True
+    if " / " in desc:
+        return True
+    if re.search(r'\b[A-Za-z]+_$', desc):
+        return True
+    if re.search(r'\b(build|resolve|run|load|parse|validate)_[A-Za-z0-9_]+', desc):
+        return True
+    return False
+
+
+def is_acceptable_description(desc: str) -> bool:
+    desc = (desc or "").strip()
+    return bool(desc) and not is_low_quality_description(desc)
+
+
+def needs_description_refresh(desc: str) -> bool:
+    desc = (desc or "").strip()
+    if not desc:
+        return True
+    if is_manual_description(desc):
+        return False
+    return is_low_quality_description(desc)

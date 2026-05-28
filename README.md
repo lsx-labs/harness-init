@@ -4,7 +4,7 @@
 
 ## 功能
 
-- **CODE_MAP.md 自动维护**：GitNexus 知识图谱结构 + AI 语义描述，Hook 自动更新
+- **CODE_MAP.md 自动维护**：GitNexus 知识图谱结构 + AI 语义描述，后台 job 原子更新
 - **CLAUDE.md / AGENTS.md 生成**：项目约束 + `@CODE_MAP.md` 引用
 - **子目录约束文件**：自底向上生成，`<!-- harness:start/end -->` 增量更新
 - **SessionStart Hook**：新会话自动注入 git 状态 + 模块映射
@@ -67,7 +67,12 @@ harness-init/
 
 | Hook | 事件 | 功能 |
 |---|---|---|
-| harness_monitor.py | PostToolUse [Bash] | main 分支 git 操作后：CODE_MAP + 子目录 + 成长检测 |
+| harness_monitor.py | PostToolUse [Bash] | main 分支 git 操作后：后台调度 CODE_MAP + 子目录 + 成长检测 |
+
+CODE_MAP 描述生成带质量门禁：`📌` 描述永不覆盖；函数名列表、截断 token、
+`load_module / load_module`、`Tests for ... package` 等低质量描述会进入待刷新队列。
+fallback 只写可信 docstring；关键词 fallback 必须带 `⚠️` 低置信度标记。
+后台任务状态写入 `~/.local/share/harness-hooks/jobs/*.json`。
 | session_context.py | SessionStart [startup\|clear] | 注入 git 状态 + 模块映射 |
 | gitnexus-hook.cjs | PreToolUse [Grep\|Glob\|Bash] | GitNexus 搜索增强（第三方） |
 

@@ -13,6 +13,8 @@ Triggered via PostToolUse [Bash], only on git operations:
 All heavy work runs as detached background processes. Hook returns in <500ms.
 """
 
+from __future__ import annotations
+
 import io
 import json
 import os
@@ -20,13 +22,15 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 from harness_shared import (SKIP_DIRS, STALE_THRESHOLD, SOURCE_EXTS, MAIN_BRANCHES,
-                    should_skip, parse_codemap_entry, parse_codemap)
+                    should_skip, parse_codemap_entry, parse_codemap,
+                    is_acceptable_description)
 
 # ── Config ──
 
@@ -34,6 +38,7 @@ CHECK_EVERY_N_FILES = 20
 COUNTER_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "counters"
 LOCK_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "locks"
 NOTIFY_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "notifications"
+JOB_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "jobs"
 DIAG_SCRIPT = Path.home() / ".local" / "bin" / "harness-init.py"
 DESC_SCRIPT = Path.home() / ".local" / "share" / "harness-hooks" / "generate_descriptions.py"
 GITNEXUS_TIMEOUT = 15
@@ -190,7 +195,7 @@ def load_state(state_file):
 
 def save_state(state_file, state):
     state_file.parent.mkdir(parents=True, exist_ok=True)
-    state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    atomic_write_text(state_file, json.dumps(state, indent=2))
 
 
 # ══════════════════════════════════════════════════════════
@@ -199,9 +204,15 @@ def save_state(state_file, state):
 
 def parse_existing_codemap(codemap_path):
     entries = parse_codemap(codemap_path)
-    descs = {e["dir"]: e["desc"] for e in entries if e["desc"] and not e["desc"].startswith("⚠️")}
+    descs = {e["dir"]: e["desc"] for e in entries if is_acceptable_description(e["desc"])}
     counts = {e["dir"]: e["symbols"] for e in entries if e["symbols"] is not None}
     return descs, counts
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def get_gitnexus_communities():
@@ -429,6 +440,29 @@ def release_lock(project_id):
     lock_file.unlink(missing_ok=True)
 
 
+def make_job_id(project_id: str) -> str:
+    safe = re.sub(r'[^A-Za-z0-9_.-]+', "_", project_id).strip("_") or "project"
+    return f"{safe}-{int(time.time() * 1000)}"
+
+
+def write_job_status(job_id: str | None, payload: dict) -> None:
+    if not job_id:
+        return
+    JOB_DIR.mkdir(parents=True, exist_ok=True)
+    path = JOB_DIR / f"{job_id}.json"
+    current = {}
+    if path.exists():
+        try:
+            current = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            current = {}
+    current.update(payload)
+    current.setdefault("job_id", job_id)
+    current.setdefault("updated_at", time.time())
+    current["updated_at"] = time.time()
+    atomic_write_text(path, json.dumps(current, indent=2, ensure_ascii=False))
+
+
 def ensure_gitnexus_fresh():
     """If GitNexus is indexed but stale, run incremental analyze first."""
     if not Path(".gitnexus").is_dir():
@@ -444,16 +478,39 @@ def ensure_gitnexus_fresh():
         pass
 
 
-def do_main_branch_update(project_id):
+def do_main_branch_update(project_id, job_id=None):
     """Heavy work: reindex → CODE_MAP → descriptions → sub-dir docs.
 
     Runs as a background process (spawned by handle_main_branch_update).
     No timeout pressure — takes as long as it needs.
     """
     if not acquire_lock(project_id):
+        write_job_status(job_id, {
+            "status": "skipped_locked",
+            "project_id": project_id,
+        })
         return
+    write_job_status(job_id, {
+        "status": "running",
+        "project_id": project_id,
+        "pid": os.getpid(),
+        "started_at": time.time(),
+    })
     try:
         _do_main_branch_update_inner()
+        write_job_status(job_id, {
+            "status": "completed",
+            "project_id": project_id,
+            "finished_at": time.time(),
+        })
+    except Exception as exc:
+        write_job_status(job_id, {
+            "status": "failed",
+            "project_id": project_id,
+            "finished_at": time.time(),
+            "error": str(exc),
+        })
+        raise
     finally:
         release_lock(project_id)
 
@@ -476,7 +533,7 @@ def _do_main_branch_update_inner():
     if new_content == old_content and not stale_dirs:
         return
 
-    codemap_file.write_text(new_content, encoding="utf-8")
+    atomic_write_text(codemap_file, new_content)
 
     # Step 2: Generate/refresh descriptions
     desc_script = None
@@ -510,6 +567,10 @@ def handle_main_branch_update(project_id):
             pid = int(lock_file.read_text(encoding="utf-8").strip())
             try:
                 os.kill(pid, 0)
+                print(json.dumps({
+                    "status": "skipped_locked",
+                    "action": "Harness 更新已在后台运行，跳过重复启动"
+                }, ensure_ascii=False))
                 return
             except OSError:
                 pass
@@ -517,13 +578,21 @@ def handle_main_branch_update(project_id):
             pass
 
     project_dir = str(Path(".").resolve())
+    job_id = make_job_id(project_id)
+    write_job_status(job_id, {
+        "status": "queued",
+        "project_id": project_id,
+        "project_dir": project_dir,
+        "queued_at": time.time(),
+    })
     subprocess.Popen(
-        [sys.executable, str(Path(__file__).resolve()), "--bg", project_id, project_dir],
+        [sys.executable, str(Path(__file__).resolve()), "--bg", project_id, project_dir, job_id],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
     print(json.dumps({
         "status": "background",
+        "job_id": job_id,
         "action": "Harness 更新已在后台启动（GitNexus 索引 + CODE_MAP + 描述生成）"
     }, ensure_ascii=False))
 
@@ -660,9 +729,9 @@ def main():
 
 if __name__ == "__main__":
     if len(sys.argv) >= 4 and sys.argv[1] == "--bg":
-        # Background mode: harness_monitor.py --bg <project_id> <project_dir>
+        # Background mode: harness_monitor.py --bg <project_id> <project_dir> [job_id]
         os.chdir(sys.argv[3])
-        do_main_branch_update(sys.argv[2])
+        do_main_branch_update(sys.argv[2], sys.argv[4] if len(sys.argv) >= 5 else None)
     elif len(sys.argv) >= 4 and sys.argv[1] == "--bg-growth":
         # Background growth check: --bg-growth <state_file> <project_dir>
         do_growth_check(sys.argv[2], sys.argv[3])

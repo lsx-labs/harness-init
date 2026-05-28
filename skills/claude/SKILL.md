@@ -98,6 +98,18 @@ python3 ~/.local/bin/harness-plan.py . --platform claude
 2. 只基于 GitNexus 返回的数据写描述，不自行推测
 3. 格式：`{核心职责}：{2-3 个关键功能}`，中文 ≤ 50 字
 
+质量规则：
+- `📌` 手工描述永不覆盖
+- 已有高质量描述在未过期时保留
+- `load_module / load_module`、函数名列表、截断 token、`Tests for ... package` 等低质量描述视为待刷新
+- AI 输出必须通过质量门禁才写入
+- fallback 只能写可信 docstring；关键词 fallback 必须带 `⚠️` 低置信度标记，后续继续尝试刷新
+
+执行规则：
+- Hook 只调度后台 CODE_MAP job，不同步等待 GitNexus/AI
+- 后台 job 状态写入 `~/.local/share/harness-hooks/jobs/*.json`
+- CODE_MAP 写入使用临时文件 + 原子替换，失败时保留旧文件
+
 #### 2.4 子目录文档（plan.subdirs）
 
 **先 copy，再 generate，不暂停。**

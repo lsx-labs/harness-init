@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 from harness_shared import (MANUAL_MARKER, STALE_THRESHOLD, SYMBOL_THRESHOLD,
-                    parse_codemap, platform_files)
+                    needs_description_refresh, parse_codemap, platform_files)
 
 
 def plan_root_doc(own_file: str, other_file: str) -> dict:
@@ -46,7 +46,7 @@ def plan_codemap(entries: list[dict], live_counts: dict) -> dict:
         desc = e.get("desc") or ""
         if desc.startswith(MANUAL_MARKER):
             continue
-        if not desc:
+        if needs_description_refresh(desc):
             needing.append(e["dir"])
             continue
         recorded = e["symbols"]

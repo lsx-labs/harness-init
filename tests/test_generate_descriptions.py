@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 from generate_descriptions import (
     parse_codemap, write_descriptions,
     get_ai_cmd, fallback_generate, get_docstring, get_keywords,
-    gitnexus_query, MANUAL_MARKER
+    gitnexus_query, MANUAL_MARKER, filter_generated_descriptions,
 )
 from harness_shared import parse_codemap_entry
 
@@ -65,6 +65,34 @@ class TestParseCodemap:
     def test_no_codemap(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         assert parse_codemap("--generate") == []
+
+    def test_generate_mode_includes_low_quality_descriptions(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text(
+            "### engine/ (100 symbols) — run_combo / load_market_tensors / nav_to_metrics\n"
+            "### scripts/ (50 symbols) — build_report / dict_or_empty\n"
+            "### good/ (10 symbols) — 回测核心内核：rank 输入校验、持仓撮合、NAV/指标计算\n"
+        )
+        dirs = parse_codemap("--generate")
+        assert "engine" in dirs
+        assert "scripts" in dirs
+        assert "good" not in dirs
+
+    def test_generate_mode_includes_low_confidence_descriptions(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text(
+            "### src/ (100 symbols) — ⚠️ run_combo / load_data\n"
+        )
+        assert parse_codemap("--generate") == ["src"]
+
+    def test_dry_run_uses_generate_scope(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text(
+            "### good/ (10 symbols) — 回测核心内核：rank 输入校验、持仓撮合、NAV/指标计算\n"
+            "### bad/ (10 symbols) — run_combo / load_data\n"
+            "### empty/ (10 symbols)\n"
+        )
+        assert parse_codemap("--dry-run") == ["bad", "empty"]
 
 
 class TestWriteDescriptions:
@@ -232,6 +260,50 @@ class TestFallbackGenerate:
             result = fallback_generate(["filled", "empty"])
         assert "filled" not in result
         assert "empty" in result
+
+    def test_low_quality_existing_can_be_replaced_by_docstring(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        d = tmp_path / "engine"
+        d.mkdir()
+        (d / "__init__.py").write_text(
+            '"""回测核心内核：rank 输入校验、持仓撮合、NAV/指标计算."""\n',
+        )
+        (tmp_path / "CODE_MAP.md").write_text(
+            "### engine/ (50 symbols) — run_combo / load_market_tensors / nav_to_metrics\n"
+        )
+        result = fallback_generate(["engine"])
+        assert result["engine"].startswith("回测核心内核")
+
+    def test_low_quality_existing_can_be_replaced_by_keyword_fallback(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        d = tmp_path / "engine"
+        d.mkdir()
+        (tmp_path / "CODE_MAP.md").write_text(
+            "### engine/ (50 symbols) — run_combo / load_market_tensors / nav_to_metrics\n"
+        )
+        with patch('generate_descriptions.get_keywords', return_value="run_combo / load_data"):
+            result = fallback_generate(["engine"])
+        assert result["engine"] == "⚠️ run_combo / load_data"
+
+
+class TestFilterGeneratedDescriptions:
+    def test_rejects_ai_function_name_lists(self):
+        result, rejected = filter_generated_descriptions(
+            {
+                "engine": "run_combo / load_market_tensors / nav_to_metrics",
+                "core": "回测核心内核：rank 输入校验、持仓撮合、NAV/指标计算",
+            },
+        )
+        assert result == {"core": "回测核心内核：rank 输入校验、持仓撮合、NAV/指标计算"}
+        assert rejected["engine"] == "low_quality"
+
+    def test_allows_low_confidence_only_when_requested(self):
+        result, rejected = filter_generated_descriptions(
+            {"engine": "⚠️ run_combo / load_data"},
+            allow_low_confidence=True,
+        )
+        assert result == {"engine": "⚠️ run_combo / load_data"}
+        assert rejected == {}
 
 
 # ── Additional coverage tests ──
@@ -479,6 +551,24 @@ class TestMainFunction:
         data = json.loads(out)
         assert data["status"] == "updated"
         assert data["source"] == "ai+gitnexus"
+
+    def test_main_ai_all_rejected_falls_back(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        d = tmp_path / "src"
+        d.mkdir()
+        (d / "__init__.py").write_text('"""语义清晰的目录描述."""\n')
+        (tmp_path / "CODE_MAP.md").write_text("### src/ (100 symbols)\n")
+        monkeypatch.setattr('sys.argv', ['generate_descriptions.py', str(tmp_path), '--generate'])
+        with patch(
+            'generate_descriptions.ai_generate',
+            return_value={"src": "run_combo / load_market_tensors / nav_to_metrics"},
+        ):
+            gd_main()
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert data["status"] == "updated"
+        assert data["source"] == "fallback"
+        assert data["count"] == 1
 
     def test_main_fallback_success(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)

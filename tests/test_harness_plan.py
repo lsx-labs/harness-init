@@ -71,6 +71,22 @@ class TestPlanCodemap:
         assert result["action"] == "refresh"
         assert "src" in result["dirs_needing"]
 
+    def test_low_quality_desc(self):
+        entries = [{
+            "dir": "engine",
+            "desc": "run_combo / load_market_tensors / nav_to_metrics",
+            "symbols": 100,
+        }]
+        result = hp.plan_codemap(entries, {"engine": 100})
+        assert result["action"] == "refresh"
+        assert result["dirs_needing"] == ["engine"]
+
+    def test_low_confidence_desc(self):
+        entries = [{"dir": "engine", "desc": "⚠️ run_combo / load_data", "symbols": 100}]
+        result = hp.plan_codemap(entries, {"engine": 100})
+        assert result["action"] == "refresh"
+        assert result["dirs_needing"] == ["engine"]
+
     def test_stale(self):
         entries = [{"dir": "src", "desc": "Old desc", "symbols": 200}]
         result = hp.plan_codemap(entries, {"src": 100})
