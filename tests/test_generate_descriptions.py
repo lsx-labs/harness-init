@@ -170,6 +170,43 @@ class TestFallbackGenerate:
         result = fallback_generate(["mymod"])
         assert "mymod" in result
         assert "My module description" in result["mymod"]
+        assert not result["mymod"].startswith("⚠️")  # docstring is trusted
+
+    def test_does_not_overwrite_existing(self, tmp_path, monkeypatch):
+        """fallback must never touch a dir that already has a good description."""
+        monkeypatch.chdir(tmp_path)
+        d = tmp_path / "mymod"
+        d.mkdir()
+        (d / "__init__.py").write_text('"""Fallback would write this."""\n')
+        (tmp_path / "CODE_MAP.md").write_text("### mymod/ (50 symbols) — Good existing desc\n")
+        result = fallback_generate(["mymod"])
+        assert "mymod" not in result  # has good desc → skipped
+
+    def test_keyword_fallback_marked_low_confidence(self, tmp_path, monkeypatch):
+        """Keyword joins (no docstring) get ⚠️ prefix."""
+        monkeypatch.chdir(tmp_path)
+        d = tmp_path / "mymod"
+        d.mkdir()  # no __init__.py → no docstring
+        (tmp_path / "CODE_MAP.md").write_text("### mymod/ (50 symbols)\n")
+        with patch('generate_descriptions.get_keywords', return_value="run_combo / load_data"):
+            result = fallback_generate(["mymod"])
+        assert result["mymod"].startswith("⚠️")
+        assert "run_combo" in result["mymod"]
+
+    def test_refresh_mode_still_only_fills_empty(self, tmp_path, monkeypatch):
+        """Even when called with all dirs (refresh), only empty ones are filled."""
+        monkeypatch.chdir(tmp_path)
+        for name in ("filled", "empty"):
+            (tmp_path / name).mkdir()
+        (tmp_path / "CODE_MAP.md").write_text(
+            "### filled/ (50 symbols) — Has desc\n"
+            "### empty/ (30 symbols)\n"
+        )
+        with patch('generate_descriptions.get_keywords',
+                   side_effect=lambda d: "kw_a / kw_b"):
+            result = fallback_generate(["filled", "empty"])
+        assert "filled" not in result
+        assert "empty" in result
 
 
 # ── Additional coverage tests ──
@@ -221,40 +258,37 @@ class TestAiGenerate:
         with patch('generate_descriptions.get_ai_cmd', return_value="claude"):
             assert ai_generate(["src"]) is None
 
-    def test_claude_path_with_stream_json(self, tmp_path, monkeypatch):
-        """Lines 125-141: claude path parsing stream-json output."""
+    def test_claude_path_json_output(self, tmp_path, monkeypatch):
+        """claude --output-format json: result field contains the JSON."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".gitnexus").mkdir()
-        stream_lines = (
-            '{"type": "text", "content": "{\\"src\\": \\"Core module\\"}"}\n'
-            '{"type": "other", "content": "ignored"}\n'
-        )
-        mock_result = MagicMock(returncode=0, stdout=stream_lines)
+        claude_json = json.dumps({"type": "result", "subtype": "success",
+                                  "result": '{"src": "Core module"}'})
+        mock_result = MagicMock(returncode=0, stdout=claude_json, stderr="")
         with patch('generate_descriptions.get_ai_cmd', return_value="claude"), \
              patch('generate_descriptions.subprocess.run', return_value=mock_result):
             result = ai_generate(["src"])
             assert result == {"src": "Core module"}
 
-    def test_claude_path_empty_stream(self, tmp_path, monkeypatch):
-        """Lines 134, 149: empty stream-json lines and empty raw."""
+    def test_claude_path_command_failed(self, tmp_path, monkeypatch):
+        """claude errors → stdout not valid JSON → None with stderr logged."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".gitnexus").mkdir()
-        mock_result = MagicMock(returncode=0, stdout="\n\n")
+        mock_result = MagicMock(returncode=1, stdout="", stderr="requires --verbose")
         with patch('generate_descriptions.get_ai_cmd', return_value="claude"), \
              patch('generate_descriptions.subprocess.run', return_value=mock_result):
             result = ai_generate(["src"])
             assert result is None
 
-    def test_claude_path_invalid_json_in_stream(self, tmp_path, monkeypatch):
-        """Line 139: invalid JSON in stream line → skipped."""
+    def test_claude_path_missing_result_key(self, tmp_path, monkeypatch):
+        """claude JSON without result key → None."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".gitnexus").mkdir()
-        stream_lines = 'not-json\n{"type": "text", "content": "{\\"src\\": \\"OK\\"}"}\n'
-        mock_result = MagicMock(returncode=0, stdout=stream_lines)
+        mock_result = MagicMock(returncode=0, stdout='{"type": "result"}', stderr="")
         with patch('generate_descriptions.get_ai_cmd', return_value="claude"), \
              patch('generate_descriptions.subprocess.run', return_value=mock_result):
             result = ai_generate(["src"])
-            assert result == {"src": "OK"}
+            assert result is None
 
     def test_codex_path(self, tmp_path, monkeypatch):
         """Lines 143-145: codex exec path."""

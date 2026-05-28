@@ -115,24 +115,17 @@ def ai_generate(dirs: list[str]) -> dict[str, str] | None:
     try:
         if "claude" in cmd:
             r = subprocess.run(
-                ["timeout", "30", cmd, "-p", prompt, "--output-format", "stream-json"],
-                capture_output=True, text=True, timeout=35)
-            # Parse stream-json
-            text = ""
-            for line in r.stdout.split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    d = json.loads(line)
-                    if d.get("type") == "text":
-                        text += d.get("content", "")
-                except (json.JSONDecodeError, KeyError):
-                    pass
-            raw = text
+                [cmd, "-p", prompt, "--allowedTools", "Read,mcp__gitnexus*",
+                 "--output-format", "json"],
+                capture_output=True, text=True, timeout=40)
+            try:
+                raw = json.loads(r.stdout)["result"]
+            except (json.JSONDecodeError, KeyError):
+                print(f"ai_generate: claude failed, stderr={r.stderr[:200]}", file=sys.stderr)
+                return None
         else:
             r = subprocess.run([cmd, "exec", prompt],
-                               capture_output=True, text=True, timeout=35)
+                               capture_output=True, text=True, timeout=40)
             raw = r.stdout.strip()
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
@@ -207,12 +200,23 @@ def get_keywords(dir_path: str) -> str:
 
 
 def fallback_generate(dirs: list[str]) -> dict[str, str]:
-    """Generate descriptions from docstrings or GitNexus keywords for given dirs."""
+    """Degraded path: fill ONLY genuinely-empty entries, never overwrite good ones.
+
+    docstring (from __init__.py) is trusted; keyword joins are marked ⚠️
+    low-confidence so the AI path retries them on the next run.
+    """
+    empty = set(parse_codemap("--generate"))  # empty + ⚠️ entries only
     result = {}
     for d in dirs:
-        desc = get_docstring(d) or get_keywords(d)
-        if desc:
-            result[d] = desc
+        if d not in empty:
+            continue
+        docstring = get_docstring(d)
+        if docstring:
+            result[d] = docstring
+            continue
+        keywords = get_keywords(d)
+        if keywords:
+            result[d] = f"⚠️ {keywords}"
     return result
 
 
