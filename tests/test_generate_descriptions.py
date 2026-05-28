@@ -11,6 +11,7 @@ from generate_descriptions import (
     parse_codemap, write_descriptions,
     get_ai_cmd, fallback_generate, get_docstring, get_keywords,
     gitnexus_query, MANUAL_MARKER, filter_generated_descriptions,
+    batch_dirs, ai_generate_batched, build_quality_report, _run_ai_command,
 )
 from harness_shared import parse_codemap_entry
 
@@ -123,6 +124,48 @@ class TestWriteDescriptions:
         (tmp_path / "CODE_MAP.md").write_text("### src/ (100 symbols)\n")
         changes = write_descriptions({"src": "x" * 100})
         assert len(changes[0]["desc"]) <= 60
+
+    def test_write_top_level_without_symbol_count(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text("### docs/\n")
+        changes = write_descriptions({"docs": "研究文档与运行手册"})
+        assert changes == [{"dir": "docs", "desc": "研究文档与运行手册"}]
+        assert "### docs/ — 研究文档与运行手册" in (tmp_path / "CODE_MAP.md").read_text()
+
+    def test_write_sub_level_without_symbol_count(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text("### docs/\n- **research/**\n")
+        changes = write_descriptions({"docs/research": "实验记录与性能报告"})
+        assert changes == [{"dir": "docs/research", "desc": "实验记录与性能报告"}]
+        assert "- **research/** — 实验记录与性能报告" in (tmp_path / "CODE_MAP.md").read_text()
+
+    def test_write_sub_without_count_preserves_next_section(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text(
+            "### autoresearch/ (10 symbols)\n"
+            "- **baseline_contracts/**\n"
+            "\n"
+            "### data/ (20 symbols)\n"
+            "- **research/** (20 symbols)\n"
+        )
+        changes = write_descriptions({"autoresearch/baseline_contracts": "基线合约归档"})
+        assert changes == [{"dir": "autoresearch/baseline_contracts", "desc": "基线合约归档"}]
+        content = (tmp_path / "CODE_MAP.md").read_text()
+        assert "- **baseline_contracts/** — 基线合约归档\n\n### data/" in content
+        parsed = parse_codemap("--refresh")
+        assert parsed == ["autoresearch", "autoresearch/baseline_contracts", "data", "data/research"]
+
+    def test_write_nested_sub_level(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text(
+            "### scripts/ (10 symbols)\n"
+            "- **research/quantile_mvp/** (2 symbols)\n"
+        )
+        changes = write_descriptions({"scripts/research/quantile_mvp": "分位数原型研究脚本"})
+        assert changes == [{"dir": "scripts/research/quantile_mvp", "desc": "分位数原型研究脚本"}]
+        assert "- **research/quantile_mvp/** — 分位数原型研究脚本 (2 symbols)" in (
+            tmp_path / "CODE_MAP.md"
+        ).read_text()
 
 
 class TestGetDocstring:
@@ -306,6 +349,61 @@ class TestFilterGeneratedDescriptions:
         assert rejected == {}
 
 
+class TestQualityReport:
+    def test_build_quality_report_counts_description_states(self, tmp_path):
+        codemap = tmp_path / "CODE_MAP.md"
+        codemap.write_text(
+            "### good/ (10 symbols) — 回测核心内核：rank 输入校验\n"
+            "### low/ (10 symbols) — run_combo / load_data\n"
+            "### warn/ (10 symbols) — ⚠️ run_combo / load_data\n"
+            "### empty/ (10 symbols)\n",
+        )
+        report = build_quality_report(codemap)
+        assert report == {
+            "total": 4,
+            "described": 3,
+            "acceptable": 1,
+            "low_quality": 2,
+            "low_confidence": 1,
+            "empty": 1,
+            "needs_refresh": 3,
+        }
+
+
+class TestBatchAiGenerate:
+    def test_batch_dirs_splits_in_order(self):
+        assert batch_dirs(["a", "b", "c", "d", "e"], 2) == [["a", "b"], ["c", "d"], ["e"]]
+        assert batch_dirs(["a"], 0) == [["a"]]
+
+    def test_ai_generate_batched_aggregates_success_and_failures(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".gitnexus").mkdir()
+
+        def fake_ai_generate(dirs, *, timeout):
+            assert timeout == 123
+            if dirs == ["c"]:
+                return None
+            return {d: f"{d} 语义描述" for d in dirs}
+
+        with patch("generate_descriptions.get_ai_cmd", return_value="codex"), \
+             patch("generate_descriptions.ai_generate", side_effect=fake_ai_generate):
+            descriptions, report = ai_generate_batched(
+                ["a", "b", "c"],
+                batch_size=2,
+                max_workers=1,
+                timeout=123,
+            )
+
+        assert descriptions == {"a": "a 语义描述", "b": "b 语义描述"}
+        assert report["attempted"] is True
+        assert report["batch_size"] == 2
+        assert report["max_workers"] == 1
+        assert report["timeout_seconds"] == 123
+        assert report["success_dirs"] == ["a", "b"]
+        assert report["failed_dirs"] == ["c"]
+        assert report["batches"][1]["status"] == "failed"
+
+
 # ── Additional coverage tests ──
 
 import subprocess
@@ -363,7 +461,7 @@ class TestAiGenerate:
                                   "result": '{"src": "Core module"}'})
         mock_result = MagicMock(returncode=0, stdout=claude_json, stderr="")
         with patch('generate_descriptions.get_ai_cmd', return_value="claude"), \
-             patch('generate_descriptions.subprocess.run', return_value=mock_result):
+             patch('generate_descriptions._run_ai_command', return_value=mock_result):
             result = ai_generate(["src"])
             assert result == {"src": "Core module"}
 
@@ -373,7 +471,7 @@ class TestAiGenerate:
         (tmp_path / ".gitnexus").mkdir()
         mock_result = MagicMock(returncode=1, stdout="", stderr="requires --verbose")
         with patch('generate_descriptions.get_ai_cmd', return_value="claude"), \
-             patch('generate_descriptions.subprocess.run', return_value=mock_result):
+             patch('generate_descriptions._run_ai_command', return_value=mock_result):
             result = ai_generate(["src"])
             assert result is None
 
@@ -383,7 +481,7 @@ class TestAiGenerate:
         (tmp_path / ".gitnexus").mkdir()
         mock_result = MagicMock(returncode=0, stdout='{"type": "result"}', stderr="")
         with patch('generate_descriptions.get_ai_cmd', return_value="claude"), \
-             patch('generate_descriptions.subprocess.run', return_value=mock_result):
+             patch('generate_descriptions._run_ai_command', return_value=mock_result):
             result = ai_generate(["src"])
             assert result is None
 
@@ -393,16 +491,26 @@ class TestAiGenerate:
         (tmp_path / ".gitnexus").mkdir()
         mock_result = MagicMock(returncode=0, stdout='{"src": "Core logic"}')
         with patch('generate_descriptions.get_ai_cmd', return_value="codex"), \
-             patch('generate_descriptions.subprocess.run', return_value=mock_result):
-            result = ai_generate(["src"])
+             patch('generate_descriptions._run_ai_command', return_value=mock_result):
+            result = ai_generate(["src"], timeout=77)
             assert result == {"src": "Core logic"}
+        assert mock_result is not None
+
+    def test_codex_path_uses_configured_timeout(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".gitnexus").mkdir()
+        mock_result = MagicMock(returncode=0, stdout='{"src": "Core logic"}')
+        with patch('generate_descriptions.get_ai_cmd', return_value="codex"), \
+             patch('generate_descriptions._run_ai_command', return_value=mock_result) as mock_run:
+            assert ai_generate(["src"], timeout=211) == {"src": "Core logic"}
+        assert mock_run.call_args.args[1] == 211
 
     def test_timeout(self, tmp_path, monkeypatch):
         """Line 146-147: subprocess timeout → None."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".gitnexus").mkdir()
         with patch('generate_descriptions.get_ai_cmd', return_value="claude"), \
-             patch('generate_descriptions.subprocess.run',
+             patch('generate_descriptions._run_ai_command',
                    side_effect=subprocess.TimeoutExpired("claude", 20)):
             result = ai_generate(["src"])
             assert result is None
@@ -413,7 +521,7 @@ class TestAiGenerate:
         (tmp_path / ".gitnexus").mkdir()
         mock_result = MagicMock(returncode=0, stdout='just plain text no json')
         with patch('generate_descriptions.get_ai_cmd', return_value="codex"), \
-             patch('generate_descriptions.subprocess.run', return_value=mock_result):
+             patch('generate_descriptions._run_ai_command', return_value=mock_result):
             result = ai_generate(["src"])
             assert result is None
 
@@ -424,9 +532,26 @@ class TestAiGenerate:
         # This has braces and colon but invalid JSON
         mock_result = MagicMock(returncode=0, stdout='{"src": undefined}')
         with patch('generate_descriptions.get_ai_cmd', return_value="codex"), \
-             patch('generate_descriptions.subprocess.run', return_value=mock_result):
+             patch('generate_descriptions._run_ai_command', return_value=mock_result):
             result = ai_generate(["src"])
             assert result is None
+
+    def test_run_ai_command_kills_process_group_on_timeout(self):
+        process = MagicMock()
+        process.pid = 1234
+        process.communicate.side_effect = subprocess.TimeoutExpired(["codex"], 5)
+        with patch('generate_descriptions.subprocess.Popen', return_value=process) as mock_popen, \
+             patch('generate_descriptions.os.getpgid', return_value=4321) as mock_getpgid, \
+             patch('generate_descriptions.os.killpg') as mock_killpg:
+            try:
+                _run_ai_command(["codex", "exec", "prompt"], 5)
+            except subprocess.TimeoutExpired:
+                pass
+
+        mock_popen.assert_called_once()
+        assert mock_popen.call_args.kwargs["start_new_session"] is True
+        mock_getpgid.assert_called_once_with(1234)
+        mock_killpg.assert_called()
 
 
 class TestGetAiCmdCodexApp:
@@ -544,15 +669,47 @@ class TestMainFunction:
     def test_main_ai_success(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "CODE_MAP.md").write_text("### src/ (100 symbols)\n")
-        monkeypatch.setattr('sys.argv', ['generate_descriptions.py', str(tmp_path), '--generate'])
-        with patch('generate_descriptions.ai_generate', return_value={"src": "Core module"}):
+        monkeypatch.setattr(
+            'sys.argv',
+            [
+                'generate_descriptions.py',
+                str(tmp_path),
+                '--generate',
+                '--batch-size',
+                '2',
+                '--max-workers',
+                '2',
+                '--ai-timeout',
+                '180',
+            ],
+        )
+        with patch(
+            'generate_descriptions.ai_generate_batched',
+            return_value=(
+                {"src": "Core module"},
+                {
+                    "attempted": True,
+                    "batch_size": 2,
+                    "max_workers": 2,
+                    "timeout_seconds": 180,
+                    "success_dirs": ["src"],
+                    "failed_dirs": [],
+                    "batches": [],
+                },
+            ),
+        ):
             gd_main()
         out = capsys.readouterr().out
         data = json.loads(out)
         assert data["status"] == "updated"
         assert data["source"] == "ai+gitnexus"
+        assert data["ai_report"]["batch_size"] == 2
+        assert data["ai_report"]["max_workers"] == 2
+        assert data["ai_report"]["timeout_seconds"] == 180
+        assert data["quality_before"]["acceptable"] == 0
+        assert data["quality_after"]["acceptable"] == 1
 
-    def test_main_ai_all_rejected_falls_back(self, tmp_path, monkeypatch, capsys):
+    def test_main_ai_all_rejected_uses_trusted_fallback(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
         d = tmp_path / "src"
         d.mkdir()
@@ -560,15 +717,39 @@ class TestMainFunction:
         (tmp_path / "CODE_MAP.md").write_text("### src/ (100 symbols)\n")
         monkeypatch.setattr('sys.argv', ['generate_descriptions.py', str(tmp_path), '--generate'])
         with patch(
-            'generate_descriptions.ai_generate',
-            return_value={"src": "run_combo / load_market_tensors / nav_to_metrics"},
+            'generate_descriptions.ai_generate_batched',
+            return_value=(
+                {"src": "run_combo / load_market_tensors / nav_to_metrics"},
+                {"attempted": True, "success_dirs": ["src"], "failed_dirs": [], "batches": []},
+            ),
         ):
             gd_main()
         out = capsys.readouterr().out
         data = json.loads(out)
         assert data["status"] == "updated"
-        assert data["source"] == "fallback"
+        assert data["source"] == "trusted_fallback"
         assert data["count"] == 1
+
+    def test_main_ai_failure_does_not_use_keyword_fallback(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        d = tmp_path / "src"
+        d.mkdir()
+        (tmp_path / "CODE_MAP.md").write_text("### src/ (100 symbols)\n")
+        monkeypatch.setattr('sys.argv', ['generate_descriptions.py', str(tmp_path), '--generate'])
+        with patch(
+            'generate_descriptions.ai_generate_batched',
+            return_value=(
+                {},
+                {"attempted": True, "success_dirs": [], "failed_dirs": ["src"], "batches": []},
+            ),
+        ), patch('generate_descriptions.get_keywords', return_value="run_combo / load_data"):
+            gd_main()
+        data = json.loads(capsys.readouterr().out)
+        assert data["status"] == "ai_failed"
+        assert data["source"] == "ai+gitnexus"
+        assert data["count"] == 0
+        assert data["ai_report"]["failed_dirs"] == ["src"]
+        assert "⚠️" not in (tmp_path / "CODE_MAP.md").read_text()
 
     def test_main_fallback_success(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
@@ -577,7 +758,10 @@ class TestMainFunction:
         (d / "__init__.py").write_text('"""My module description."""\n')
         (tmp_path / "CODE_MAP.md").write_text("### mymod/ (50 symbols)\n")
         monkeypatch.setattr('sys.argv', ['generate_descriptions.py', str(tmp_path), '--generate'])
-        with patch('generate_descriptions.ai_generate', return_value=None):
+        with patch(
+            'generate_descriptions.ai_generate_batched',
+            return_value=({}, {"attempted": False, "reason": "unavailable"}),
+        ):
             gd_main()
         out = capsys.readouterr().out
         data = json.loads(out)

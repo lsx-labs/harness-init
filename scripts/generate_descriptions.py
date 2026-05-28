@@ -10,9 +10,12 @@ Modes:
 from __future__ import annotations
 
 import ast
+import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import re
+import signal
 import shutil
 import subprocess
 import sys
@@ -29,6 +32,9 @@ from harness_shared import (
 )
 
 HOOK_TIMEOUT = 10
+DEFAULT_AI_TIMEOUT = 180
+DEFAULT_BATCH_SIZE = 2
+DEFAULT_MAX_WORKERS = 1
 GENERIC = {"main", "init", "run", "start", "stop", "get", "set", "test", "setup", "parse",
            "build", "create", "delete", "update", "load", "save", "read", "write", "open",
            "close", "validate", "check", "add", "all", "data", "config", "path", "name", "type"}
@@ -78,41 +84,73 @@ def filter_generated_descriptions(
     return accepted, rejected
 
 
+def build_quality_report(codemap_path: Path = Path("CODE_MAP.md")) -> dict[str, int]:
+    """Summarize CODE_MAP description quality for audit output."""
+    entries = _parse_codemap(codemap_path)
+    described = [e for e in entries if (e.get("desc") or "").strip()]
+    return {
+        "total": len(entries),
+        "described": len(described),
+        "acceptable": sum(1 for e in entries if is_acceptable_description(e.get("desc") or "")),
+        "low_quality": sum(1 for e in entries if is_low_quality_description(e.get("desc") or "")),
+        "low_confidence": sum(1 for e in entries if is_low_confidence_description(e.get("desc") or "")),
+        "empty": sum(1 for e in entries if not (e.get("desc") or "").strip()),
+        "needs_refresh": sum(1 for e in entries if needs_description_refresh(e.get("desc") or "")),
+    }
+
+
 def write_descriptions(descriptions: dict[str, str]) -> list[dict]:
     """Write descriptions to CODE_MAP.md, return list of changes."""
     codemap = Path("CODE_MAP.md")
-    content = codemap.read_text(encoding="utf-8")
+    lines = codemap.read_text(encoding="utf-8").splitlines(keepends=True)
     changes = []
-    for dir_path, desc in descriptions.items():
-        if not desc or not isinstance(desc, str):
+    normalized = {}
+    for dir_path, raw_desc in descriptions.items():
+        if not raw_desc or not isinstance(raw_desc, str):
             continue
-        desc = desc.strip()[:60]
-        # Top-level
-        p = re.compile(rf'^(###\s+{re.escape(dir_path)}/\s+\(\d+\s+symbols\))(.*)$', re.MULTILINE)
-        m = p.search(content)
-        if m:
-            content = content[:m.start()] + f"{m.group(1)} — {desc}" + content[m.end():]
-            changes.append({"dir": dir_path, "desc": desc})
-            continue
-        # Sub-level: search within the parent section to avoid ambiguous leaf names
-        parts = dir_path.split("/")
-        if len(parts) >= 2:
-            parent, sub_name = parts[0], parts[-1]
-            parent_pat = re.compile(rf'^###\s+{re.escape(parent)}/', re.MULTILINE)
-            parent_m = parent_pat.search(content)
-            if parent_m:
-                section_start = parent_m.start()
-                next_section = re.search(r'^### ', content[parent_m.end():], re.MULTILINE)
-                section_end = parent_m.end() + next_section.start() if next_section else len(content)
-                section = content[section_start:section_end]
-                p = re.compile(rf'^(-\s+\*\*{re.escape(sub_name)}/?\*\*)\s*(.*?)(\(\d+\s+symbols\))(.*)$', re.MULTILINE)
-                m = p.search(section)
-                if m:
-                    abs_start = section_start + m.start()
-                    abs_end = section_start + m.end()
-                    content = content[:abs_start] + f"{m.group(1)} — {desc} {m.group(3)}" + content[abs_end:]
-                    changes.append({"dir": dir_path, "desc": desc})
+        normalized[dir_path.strip("/")] = raw_desc.strip()[:60]
+    if not normalized:
+        return []
+
+    def split_newline(line: str) -> tuple[str, str]:
+        body = line.rstrip("\r\n")
+        return body, line[len(body):]
+
+    def rewrite_line(line: str, desc: str) -> str:
+        body, newline = split_newline(line)
+        count = ""
+        count_match = re.search(r'\s+(\(\d+\s+symbols?\))\s*$', body)
+        if count_match:
+            count = count_match.group(1)
+            body = body[:count_match.start()].rstrip()
+        base = body.split("—", 1)[0].rstrip()
+        suffix = f" {count}" if count else ""
+        return f"{base} — {desc}{suffix}{newline}"
+
+    current_top = ""
+    updated_lines = []
+    for line in lines:
+        top_match = re.match(r'^(###\s+)(\S+)/?(.*)$', line)
+        if top_match:
+            current_top = top_match.group(2).rstrip("/")
+            desc = normalized.get(current_top)
+            if desc is not None:
+                updated_lines.append(rewrite_line(line, desc))
+                changes.append({"dir": current_top, "desc": desc})
+                continue
+        sub_match = re.match(r'^-\s+\*\*(\S+?)/?\*\*', line)
+        if current_top and sub_match:
+            sub_path = sub_match.group(1).rstrip("/")
+            key = f"{current_top}/{sub_path}"
+            desc = normalized.get(key)
+            if desc is not None:
+                updated_lines.append(rewrite_line(line, desc))
+                changes.append({"dir": key, "desc": desc})
+                continue
+        updated_lines.append(line)
+
     if changes:
+        content = "".join(updated_lines)
         tmp = codemap.with_suffix(codemap.suffix + ".tmp")
         tmp.write_text(content, encoding="utf-8")
         os.replace(tmp, codemap)
@@ -141,7 +179,74 @@ def get_ai_cmd() -> str:
     return ""
 
 
-def ai_generate(dirs: list[str]) -> dict[str, str] | None:
+def _terminate_process_group(process: subprocess.Popen) -> None:
+    try:
+        pgid = os.getpgid(process.pid)
+    except OSError:
+        return
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+
+
+def _run_ai_command(args: list[str], timeout: int) -> subprocess.CompletedProcess:
+    """Run an AI CLI in its own process group so timeout cleans children too."""
+    process = subprocess.Popen(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _terminate_process_group(process)
+        raise
+    return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
+
+
+def batch_dirs(dirs: list[str], batch_size: int) -> list[list[str]]:
+    """Split directories into stable, bounded AI prompt batches."""
+    if not dirs:
+        return []
+    batch_size = max(1, int(batch_size or 1))
+    return [dirs[i:i + batch_size] for i in range(0, len(dirs), batch_size)]
+
+
+def _parse_ai_json(raw: str) -> dict[str, str] | None:
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except json.JSONDecodeError:
+        pass
+
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start < 0 or end <= start:
+        print(f"ai_generate: no JSON found in response ({len(raw)} chars)", file=sys.stderr)
+        return None
+    try:
+        data = json.loads(raw[start:end + 1])
+    except json.JSONDecodeError as e:
+        print(f"ai_generate: JSON parse failed: {e}", file=sys.stderr)
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def ai_generate(dirs: list[str], *, timeout: int = DEFAULT_AI_TIMEOUT) -> dict[str, str] | None:
     """Invoke AI CLI to generate descriptions via GitNexus. Returns {dir: desc} or None."""
     cmd = get_ai_cmd()
     if not cmd or not Path(".gitnexus").is_dir():
@@ -160,35 +265,110 @@ def ai_generate(dirs: list[str]) -> dict[str, str] | None:
 
     try:
         if "claude" in cmd:
-            r = subprocess.run(
+            r = _run_ai_command(
                 [cmd, "-p", prompt, "--allowedTools", "Read,mcp__gitnexus*",
                  "--output-format", "json"],
-                capture_output=True, text=True, timeout=40)
+                timeout)
             try:
                 raw = json.loads(r.stdout)["result"]
             except (json.JSONDecodeError, KeyError):
                 print(f"ai_generate: claude failed, stderr={r.stderr[:200]}", file=sys.stderr)
                 return None
         else:
-            r = subprocess.run([cmd, "exec", prompt],
-                               capture_output=True, text=True, timeout=40)
+            r = _run_ai_command([cmd, "exec", prompt], timeout)
             raw = r.stdout.strip()
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+    except subprocess.TimeoutExpired:
+        print(f"ai_generate: timed out after {timeout}s for dirs={dirs}", file=sys.stderr)
+        return None
+    except (FileNotFoundError, OSError):
         return None
 
-    if not raw:
-        return None
+    return _parse_ai_json(raw)
 
-    # Extract JSON from response
-    json_match = re.search(r'\{[^{}]*("[\w/]+":\s*"[^"]*"[,\s]*)+\}', raw, re.DOTALL)
-    if not json_match:
-        print(f"ai_generate: no JSON found in response ({len(raw)} chars)", file=sys.stderr)
-        return None
-    try:
-        return json.loads(json_match.group())
-    except json.JSONDecodeError as e:
-        print(f"ai_generate: JSON parse failed: {e}", file=sys.stderr)
-        return None
+
+def ai_generate_batched(
+    dirs: list[str],
+    *,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    max_workers: int = DEFAULT_MAX_WORKERS,
+    timeout: int = DEFAULT_AI_TIMEOUT,
+) -> tuple[dict[str, str], dict]:
+    """Generate descriptions in bounded AI batches and return audit metadata."""
+    cmd = get_ai_cmd()
+    if not cmd:
+        return {}, {"attempted": False, "reason": "no_ai_cmd"}
+    if not Path(".gitnexus").is_dir():
+        return {}, {"attempted": False, "reason": "no_gitnexus_index"}
+
+    batches = batch_dirs(dirs, batch_size)
+    worker_count = max(1, min(int(max_workers or 1), len(batches) or 1))
+    report = {
+        "attempted": True,
+        "batch_size": max(1, int(batch_size or 1)),
+        "max_workers": worker_count,
+        "timeout_seconds": timeout,
+        "success_dirs": [],
+        "failed_dirs": [],
+        "batches": [],
+    }
+    if not batches:
+        return {}, report
+
+    def run_batch(index: int, batch: list[str]) -> dict:
+        try:
+            result = ai_generate(batch, timeout=timeout)
+        except Exception as exc:  # defensive: keep one bad worker from hiding the audit trail
+            return {
+                "index": index,
+                "dirs": batch,
+                "status": "error",
+                "error": str(exc),
+                "descriptions": {},
+            }
+        return {
+            "index": index,
+            "dirs": batch,
+            "status": "success" if result else "failed",
+            "descriptions": result or {},
+        }
+
+    results: list[dict] = []
+    if worker_count == 1:
+        results = [run_batch(index, batch) for index, batch in enumerate(batches)]
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = {
+                executor.submit(run_batch, index, batch): index
+                for index, batch in enumerate(batches)
+            }
+            for future in as_completed(futures):
+                results.append(future.result())
+
+    descriptions: dict[str, str] = {}
+    for item in sorted(results, key=lambda row: row["index"]):
+        requested = item["dirs"]
+        returned = {
+            key: value
+            for key, value in item.get("descriptions", {}).items()
+            if key in requested
+        }
+        descriptions.update(returned)
+        success_dirs = [d for d in requested if d in returned]
+        failed_dirs = [d for d in requested if d not in returned]
+        report["success_dirs"].extend(success_dirs)
+        report["failed_dirs"].extend(failed_dirs)
+        status = item["status"]
+        if returned and failed_dirs:
+            status = "partial"
+        report["batches"].append({
+            "index": item["index"],
+            "dirs": requested,
+            "status": status,
+            "returned_dirs": success_dirs,
+            "failed_dirs": failed_dirs,
+            **({"error": item["error"]} if item.get("error") else {}),
+        })
+    return descriptions, report
 
 
 # ══════════════════════════════════════════════════════════
@@ -245,7 +425,7 @@ def get_keywords(dir_path: str) -> str:
     return " / ".join(kw[:3]) if kw else ""
 
 
-def fallback_generate(dirs: list[str]) -> dict[str, str]:
+def fallback_generate(dirs: list[str], *, allow_keyword: bool = True) -> dict[str, str]:
     """Degraded path: fill ONLY genuinely-empty entries, never overwrite good ones.
 
     docstring (from __init__.py) is trusted; keyword joins are marked ⚠️
@@ -267,6 +447,8 @@ def fallback_generate(dirs: list[str]) -> dict[str, str]:
             and not is_low_quality_description(entries[d])
         ):
             continue
+        if not allow_keyword:
+            continue
         keywords = get_keywords(d)
         if keywords:
             result[d] = f"{LOW_CONFIDENCE_MARKER} {keywords}"
@@ -277,41 +459,108 @@ def fallback_generate(dirs: list[str]) -> dict[str, str]:
 # Main
 # ══════════════════════════════════════════════════════════
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    args = list(argv)
+    project_dir = "."
+    mode = "--generate"
+    if args and not args[0].startswith("--"):
+        project_dir = args.pop(0)
+    if args and args[0] in {"--generate", "--refresh", "--dry-run"}:
+        mode = args.pop(0)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--batch-size", type=int, default=_env_int("HARNESS_CODEMAP_AI_BATCH_SIZE", DEFAULT_BATCH_SIZE))
+    parser.add_argument("--max-workers", type=int, default=_env_int("HARNESS_CODEMAP_AI_MAX_WORKERS", DEFAULT_MAX_WORKERS))
+    parser.add_argument("--ai-timeout", type=int, default=_env_int("HARNESS_CODEMAP_AI_TIMEOUT", DEFAULT_AI_TIMEOUT))
+    parsed = parser.parse_args(args)
+    parsed.project_dir = project_dir
+    parsed.mode = mode
+    return parsed
+
+
 def main():
-    project_dir = sys.argv[1] if len(sys.argv) > 1 else "."
-    mode = sys.argv[2] if len(sys.argv) > 2 else "--generate"
+    args = parse_args(sys.argv[1:])
+    project_dir = args.project_dir
+    mode = args.mode
     os.chdir(project_dir)
 
     dirs = parse_codemap(mode)
     if not dirs:
-        print(json.dumps({"status": "all_described"}, ensure_ascii=False))
+        quality = build_quality_report()
+        print(json.dumps({
+            "status": "all_described",
+            "quality_before": quality,
+            "quality_after": quality,
+        }, ensure_ascii=False))
         return
 
     if mode == "--dry-run":
-        print(json.dumps({"status": "dry_run", "dirs_needing": dirs}, indent=2, ensure_ascii=False))
+        quality = build_quality_report()
+        print(json.dumps({
+            "status": "dry_run",
+            "dirs_needing": dirs,
+            "quality_before": quality,
+            "quality_after": quality,
+        }, indent=2, ensure_ascii=False))
         return
 
+    quality_before = build_quality_report()
+
     # Try AI + GitNexus first
-    descriptions = ai_generate(dirs)
+    descriptions, ai_report = ai_generate_batched(
+        dirs,
+        batch_size=args.batch_size,
+        max_workers=args.max_workers,
+        timeout=args.ai_timeout,
+    )
     if descriptions:
         descriptions, rejected = filter_generated_descriptions(descriptions)
+        ai_report["rejected"] = rejected
         if descriptions:
             changes = write_descriptions(descriptions)
+            quality_after = build_quality_report()
             print(json.dumps({"status": "updated", "source": "ai+gitnexus",
                               "count": len(changes), "changes": changes,
+                              "ai_report": ai_report,
+                              "quality_before": quality_before,
+                              "quality_after": quality_after,
                               "rejected": rejected}, indent=2, ensure_ascii=False))
             return
 
     # Fallback
-    descriptions = fallback_generate(dirs)
+    if ai_report.get("attempted"):
+        descriptions = fallback_generate(dirs, allow_keyword=False)
+    else:
+        descriptions = fallback_generate(dirs)
     if descriptions:
         descriptions, rejected = filter_generated_descriptions(descriptions, allow_low_confidence=True)
         changes = write_descriptions(descriptions)
-        print(json.dumps({"status": "updated", "source": "fallback",
+        quality_after = build_quality_report()
+        source = "trusted_fallback" if ai_report.get("attempted") else "fallback"
+        print(json.dumps({"status": "updated", "source": source,
                           "count": len(changes), "changes": changes,
+                          "ai_report": ai_report,
+                          "quality_before": quality_before,
+                          "quality_after": quality_after,
                           "rejected": rejected}, indent=2, ensure_ascii=False))
     else:
-        print(json.dumps({"status": "no_changes"}, ensure_ascii=False))
+        status = "ai_failed" if ai_report.get("attempted") else "no_changes"
+        source = "ai+gitnexus" if ai_report.get("attempted") else "fallback"
+        quality_after = build_quality_report()
+        print(json.dumps({
+            "status": status,
+            "source": source,
+            "count": 0,
+            "ai_report": ai_report,
+            "quality_before": quality_before,
+            "quality_after": quality_after,
+        }, ensure_ascii=False))
 
 
 if __name__ == "__main__":

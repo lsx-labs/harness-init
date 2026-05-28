@@ -68,13 +68,16 @@ harness-init/
 | Hook | 事件 | 功能 |
 |---|---|---|
 | harness_monitor.py | PostToolUse [Bash] | main 分支 git 操作后：后台调度 CODE_MAP + 子目录 + 成长检测 |
+| session_context.py | SessionStart [startup\|clear] | 注入 git 状态 + 模块映射 |
+| gitnexus-hook.cjs | PreToolUse [Grep\|Glob\|Bash] | GitNexus 搜索增强（第三方） |
 
 CODE_MAP 描述生成带质量门禁：`📌` 描述永不覆盖；函数名列表、截断 token、
 `load_module / load_module`、`Tests for ... package` 等低质量描述会进入待刷新队列。
-fallback 只写可信 docstring；关键词 fallback 必须带 `⚠️` 低置信度标记。
+AI+GitNexus 按小批次运行，默认超时 180 秒；可用 `--batch-size`、`--max-workers`、
+`--ai-timeout` 或 `HARNESS_CODEMAP_AI_*` 环境变量调整。fallback 只在 AI 不可用时写
+可信 docstring/`⚠️` 关键词；AI 已尝试但失败时不会用函数名关键词覆盖结果。
+每次运行都会输出 `quality_before` / `quality_after` 质量报告。
 后台任务状态写入 `~/.local/share/harness-hooks/jobs/*.json`。
-| session_context.py | SessionStart [startup\|clear] | 注入 git 状态 + 模块映射 |
-| gitnexus-hook.cjs | PreToolUse [Grep\|Glob\|Bash] | GitNexus 搜索增强（第三方） |
 
 ## 卸载
 

@@ -109,6 +109,11 @@ python3 ~/.local/bin/harness-plan.py . --platform claude
 - Hook 只调度后台 CODE_MAP job，不同步等待 GitNexus/AI
 - 后台 job 状态写入 `~/.local/share/harness-hooks/jobs/*.json`
 - CODE_MAP 写入使用临时文件 + 原子替换，失败时保留旧文件
+- AI+GitNexus 描述生成按小批次执行，默认 `--batch-size 2 --ai-timeout 180 --max-workers 1`
+- 大项目可显式运行：`python3 ~/.local/share/harness-hooks/generate_descriptions.py . --refresh --batch-size 2 --max-workers 2 --ai-timeout 180`
+- 可用 `HARNESS_CODEMAP_AI_BATCH_SIZE`、`HARNESS_CODEMAP_AI_MAX_WORKERS`、`HARNESS_CODEMAP_AI_TIMEOUT` 调整后台默认值
+- AI 已尝试但失败时不写关键词 fallback，避免函数名列表冒充刷新结果
+- 运行输出包含 `ai_report` 与 `quality_before` / `quality_after`，用于审计刷新质量
 
 #### 2.4 子目录文档（plan.subdirs）
 
