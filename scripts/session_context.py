@@ -5,6 +5,8 @@ Outputs git state + module mapping + harness health.
 Designed to be fast (< 3s) and compact (< 15 lines output).
 """
 
+from __future__ import annotations
+
 import io
 import json
 import subprocess

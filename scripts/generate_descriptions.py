@@ -7,6 +7,8 @@ Modes:
   --dry-run   show what would change
 """
 
+from __future__ import annotations
+
 import ast
 import json
 import os

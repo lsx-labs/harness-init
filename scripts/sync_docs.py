@@ -9,6 +9,8 @@ Usage:
   python3 sync_docs.py . --dirs src/core src/api   # specific dirs only
 """
 
+from __future__ import annotations
+
 import json
 import os
 import sys

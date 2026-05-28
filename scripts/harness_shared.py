@@ -1,5 +1,7 @@
 """Shared constants and utilities for harness-init scripts."""
 
+from __future__ import annotations
+
 import re
 from pathlib import Path
 

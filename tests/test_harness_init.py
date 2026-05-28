@@ -14,6 +14,26 @@ from harness_init import (
 )
 
 
+def test_shared_scripts_import_under_system_python():
+    system_python = Path("/usr/bin/python3")
+    if not system_python.exists():
+        return
+    code = (
+        "import sys; "
+        "sys.path.insert(0, 'scripts'); "
+        "import harness_shared, generate_descriptions, sync_docs, session_context; "
+        "print('ok')"
+    )
+    result = subprocess.run(
+        [str(system_python), "-c", code],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 class TestShouldSkip:
     def test_skip_git(self):
         assert should_skip(".git") is True
