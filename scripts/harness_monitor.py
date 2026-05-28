@@ -108,9 +108,17 @@ def get_subdir_list(dir_path) -> str:
 
 # ── Platform detection ──
 
+def _is_codex_runtime():
+    platform = os.environ.get("HARNESS_PLATFORM", "").strip().lower()
+    if platform:
+        return platform == "codex"
+    return any(key.startswith("CODEX_") for key in os.environ)
+
+
 def get_ai_cmd():
     """Find available AI CLI for non-interactive invocation."""
-    for cmd in ["claude", "codex"]:
+    preferred = ["codex", "claude"] if _is_codex_runtime() else ["claude", "codex"]
+    for cmd in preferred:
         if shutil.which(cmd):
             return cmd
     # Codex app binary

@@ -85,8 +85,16 @@ def write_descriptions(descriptions: dict[str, str]) -> list[dict]:
 # AI + GitNexus (primary path)
 # ══════════════════════════════════════════════════════════
 
+def _is_codex_runtime() -> bool:
+    platform = os.environ.get("HARNESS_PLATFORM", "").strip().lower()
+    if platform:
+        return platform == "codex"
+    return any(key.startswith("CODEX_") for key in os.environ)
+
+
 def get_ai_cmd() -> str:
-    for cmd in ["claude", "codex"]:
+    preferred = ["codex", "claude"] if _is_codex_runtime() else ["claude", "codex"]
+    for cmd in preferred:
         if shutil.which(cmd):
             return cmd
     codex_app = "/Applications/Codex.app/Contents/Resources/codex"

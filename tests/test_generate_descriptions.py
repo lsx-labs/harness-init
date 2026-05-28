@@ -150,6 +150,31 @@ class TestGetAiCmd:
         with patch('generate_descriptions.shutil.which', side_effect=lambda x: "/usr/bin/claude" if x == "claude" else None):
             assert get_ai_cmd() == "claude"
 
+    def test_codex_environment_prefers_codex_over_claude(self, monkeypatch):
+        monkeypatch.setenv("CODEX_THREAD_ID", "thread-1")
+        with patch(
+            'generate_descriptions.shutil.which',
+            side_effect=lambda x: f"/usr/bin/{x}" if x in {"claude", "codex"} else None,
+        ):
+            assert get_ai_cmd() == "codex"
+
+    def test_explicit_codex_platform_prefers_codex_over_claude(self, monkeypatch):
+        monkeypatch.setenv("HARNESS_PLATFORM", "codex")
+        with patch(
+            'generate_descriptions.shutil.which',
+            side_effect=lambda x: f"/usr/bin/{x}" if x in {"claude", "codex"} else None,
+        ):
+            assert get_ai_cmd() == "codex"
+
+    def test_explicit_claude_platform_overrides_codex_environment(self, monkeypatch):
+        monkeypatch.setenv("HARNESS_PLATFORM", "claude")
+        monkeypatch.setenv("CODEX_THREAD_ID", "thread-1")
+        with patch(
+            'generate_descriptions.shutil.which',
+            side_effect=lambda x: f"/usr/bin/{x}" if x in {"claude", "codex"} else None,
+        ):
+            assert get_ai_cmd() == "claude"
+
     def test_finds_codex(self):
         with patch('generate_descriptions.shutil.which', side_effect=lambda x: "/usr/bin/codex" if x == "codex" else None):
             assert get_ai_cmd() == "codex"
