@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+import generate_descriptions as gd
 from generate_descriptions import (
     parse_codemap, write_descriptions,
     get_ai_cmd, fallback_generate, get_docstring, get_keywords,
@@ -368,6 +369,57 @@ class TestQualityReport:
             "empty": 1,
             "needs_refresh": 3,
         }
+
+
+class TestDirectoryEvidence:
+    def test_collect_evidence_counts_test_files(self, tmp_path, monkeypatch):
+        d = tmp_path / "tests" / "autoresearch"
+        d.mkdir(parents=True)
+        (d / "test_runner.py").write_text(
+            "def test_start_session():\n"
+            "    pass\n"
+            "\n"
+            "class TestRunner:\n"
+            "    def test_stop_session(self):\n"
+            "        pass\n",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        with patch("generate_descriptions.gitnexus_query", return_value=[]):
+            evidence = gd.collect_directory_evidence("tests/autoresearch/")
+
+        assert evidence.file_count == 1
+        assert evidence.py_count == 1
+        assert evidence.gitnexus_files == 0
+        assert evidence.gitnexus_functions == 0
+        assert "test_start_session" in evidence.test_names
+        assert "test_stop_session" in evidence.test_names
+
+    def test_collect_evidence_reads_markdown_titles(self, tmp_path, monkeypatch):
+        d = tmp_path / "docs" / "research"
+        d.mkdir(parents=True)
+        (d / "report.md").write_text("# Stage2 Profile\n\n## Summary\n")
+        monkeypatch.chdir(tmp_path)
+
+        with patch("generate_descriptions.gitnexus_query", return_value=[]):
+            evidence = gd.collect_directory_evidence("docs/research/")
+
+        assert evidence.md_count == 1
+        assert evidence.markdown_titles[:2] == ("Stage2 Profile", "Summary")
+
+    def test_collect_evidence_handles_gitnexus_query_failure(self, tmp_path, monkeypatch):
+        d = tmp_path / "src"
+        d.mkdir()
+        (d / "__init__.py").write_text('"""Core package."""\n')
+        monkeypatch.chdir(tmp_path)
+
+        with patch("generate_descriptions.gitnexus_query", side_effect=RuntimeError("boom")):
+            evidence = gd.collect_directory_evidence("src/")
+
+        assert evidence.file_count == 1
+        assert evidence.module_docstring == "Core package."
+        assert evidence.gitnexus_files == 0
+        assert evidence.gitnexus_processes == 0
 
 
 class TestBatchAiGenerate:

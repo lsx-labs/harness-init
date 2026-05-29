@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 import json
 import os
 import re
@@ -38,11 +39,213 @@ DEFAULT_MAX_WORKERS = 1
 GENERIC = {"main", "init", "run", "start", "stop", "get", "set", "test", "setup", "parse",
            "build", "create", "delete", "update", "load", "save", "read", "write", "open",
            "close", "validate", "check", "add", "all", "data", "config", "path", "name", "type"}
+ARTIFACT_PREFIXES = (
+    "data/backtest_artifacts/",
+    "data/bundle/",
+    "data/cache/",
+    "data/factor/",
+    "data/release_gate/",
+    "data/results/",
+)
+
+
+@dataclass(frozen=True)
+class DirectoryEvidence:
+    dir_path: str
+    file_count: int
+    py_count: int
+    md_count: int
+    json_count: int
+    gitignored: bool
+    gitnexus_files: int
+    gitnexus_functions: int
+    gitnexus_methods: int
+    gitnexus_classes: int
+    gitnexus_processes: int
+    readme_summary: str
+    module_docstring: str
+    markdown_titles: tuple[str, ...]
+    test_names: tuple[str, ...]
+    child_dirs: tuple[str, ...]
 
 
 # ══════════════════════════════════════════════════════════
 # CODE_MAP.md parsing
 # ══════════════════════════════════════════════════════════
+
+def normalize_dir_key(dir_path: str, *, trailing_slash: bool = False) -> str:
+    """Normalize CODE_MAP directory keys without touching filesystem state."""
+    normalized = str(dir_path or "").strip().replace("\\", "/")
+    normalized = re.sub(r"^\./+", "", normalized).strip("/")
+    if trailing_slash and normalized:
+        return f"{normalized}/"
+    return normalized
+
+
+def _list_dir_files(dir_path: str) -> list[Path]:
+    path = Path(normalize_dir_key(dir_path))
+    if not path.exists():
+        return []
+    if path.is_file():
+        return [path]
+
+    rg = shutil.which("rg")
+    if rg:
+        try:
+            result = subprocess.run(
+                [rg, "--files", str(path)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                return [Path(line) for line in result.stdout.splitlines() if line.strip()]
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return sorted(p for p in path.rglob("*") if p.is_file())
+
+
+def _is_gitignored_dir(dir_path: str) -> bool:
+    key = normalize_dir_key(dir_path, trailing_slash=True)
+    if key.startswith(ARTIFACT_PREFIXES):
+        return True
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", "-q", key],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _read_readme_summary(dir_path: str) -> str:
+    path = Path(normalize_dir_key(dir_path))
+    for name in ("README.md", "readme.md"):
+        readme = path / name
+        if not readme.is_file():
+            continue
+        try:
+            for line in readme.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip().lstrip("#").strip()
+                if stripped:
+                    return stripped[:80]
+        except OSError:
+            return ""
+    return ""
+
+
+def _markdown_titles(files: list[Path], *, limit: int = 12) -> tuple[str, ...]:
+    titles: list[str] = []
+    for path in files:
+        if path.suffix.lower() != ".md":
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            match = re.match(r"^\s{0,3}#{1,3}\s+(.+?)\s*$", line)
+            if not match:
+                continue
+            title = match.group(1).strip().strip("#").strip()
+            if title and title not in titles:
+                titles.append(title[:80])
+            if len(titles) >= limit:
+                return tuple(titles)
+    return tuple(titles)
+
+
+def _test_names(files: list[Path], *, limit: int = 40) -> tuple[str, ...]:
+    names: list[str] = []
+    for path in files:
+        if path.suffix != ".py":
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
+                if node.name not in names:
+                    names.append(node.name)
+            if len(names) >= limit:
+                return tuple(names)
+    return tuple(names)
+
+
+def _child_dirs(dir_path: str) -> tuple[str, ...]:
+    path = Path(normalize_dir_key(dir_path))
+    if not path.is_dir():
+        return ()
+    children = []
+    for child in sorted(path.iterdir()):
+        if child.is_dir() and not child.name.startswith("."):
+            children.append(child.name)
+    return tuple(children)
+
+
+def _gitnexus_count(cypher: str) -> int:
+    try:
+        rows = gitnexus_query(cypher)
+    except Exception:
+        return 0
+    if not rows or not rows[0]:
+        return 0
+    try:
+        return int(str(rows[0][0]).strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+def _gitnexus_counts(dir_path: str) -> dict[str, int]:
+    prefix = normalize_dir_key(dir_path, trailing_slash=True).replace("'", "\\'")
+    if not prefix:
+        return {"files": 0, "functions": 0, "methods": 0, "classes": 0, "processes": 0}
+    return {
+        "files": _gitnexus_count(f"MATCH (f:File) WHERE f.filePath STARTS WITH '{prefix}' RETURN count(f)"),
+        "functions": _gitnexus_count(
+            f"MATCH (n:Function) WHERE n.filePath STARTS WITH '{prefix}' RETURN count(n)"
+        ),
+        "methods": _gitnexus_count(
+            f"MATCH (n:Method) WHERE n.filePath STARTS WITH '{prefix}' RETURN count(n)"
+        ),
+        "classes": _gitnexus_count(
+            f"MATCH (n:Class) WHERE n.filePath STARTS WITH '{prefix}' RETURN count(n)"
+        ),
+        "processes": _gitnexus_count(
+            "MATCH (s)-[:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process) "
+            f"WHERE s.filePath STARTS WITH '{prefix}' RETURN count(DISTINCT p)"
+        ),
+    }
+
+
+def collect_directory_evidence(dir_path: str) -> DirectoryEvidence:
+    """Collect local and GitNexus evidence used by CODE_MAP description providers."""
+    key = normalize_dir_key(dir_path, trailing_slash=True)
+    files = _list_dir_files(key)
+    suffixes = [path.suffix.lower() for path in files]
+    counts = _gitnexus_counts(key)
+    return DirectoryEvidence(
+        dir_path=key,
+        file_count=len(files),
+        py_count=sum(1 for suffix in suffixes if suffix == ".py"),
+        md_count=sum(1 for suffix in suffixes if suffix == ".md"),
+        json_count=sum(1 for suffix in suffixes if suffix == ".json"),
+        gitignored=_is_gitignored_dir(key),
+        gitnexus_files=counts["files"],
+        gitnexus_functions=counts["functions"],
+        gitnexus_methods=counts["methods"],
+        gitnexus_classes=counts["classes"],
+        gitnexus_processes=counts["processes"],
+        readme_summary=_read_readme_summary(key),
+        module_docstring=get_docstring(key),
+        markdown_titles=_markdown_titles(files),
+        test_names=_test_names(files),
+        child_dirs=_child_dirs(key),
+    )
 
 def parse_codemap(mode: str) -> list[str]:
     """Return list of directories needing descriptions based on mode."""
