@@ -125,6 +125,12 @@ class TestCheckCodemapStale:
         result = check_codemap_stale()
         assert "待更新" in result
 
+    def test_low_confidence_description_counts_as_stale(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text("### src/ (100 symbols) — ⚠️ run_combo / load_data\n")
+        result = check_codemap_stale()
+        assert "待更新" in result
+
     def test_clean(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "CODE_MAP.md").write_text("### src/ (100 symbols) — Core module\n")

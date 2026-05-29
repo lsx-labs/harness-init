@@ -102,6 +102,33 @@ class TestPlanCodemap:
         assert result["action"] == "skip"
 
 
+class TestLiveSymbolCounts:
+    def test_uses_gitnexus_symbols_for_nested_directories(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".gitnexus").mkdir()
+
+        def fake_run(args, **kwargs):
+            cypher = args[3]
+            if "Community" in cypher:
+                return MagicMock(
+                    returncode=0,
+                    stdout=json.dumps({"markdown": "| area | syms |\n| --- | --- |\n| api | 30 |\n| core | 70 |"}),
+                    stderr="",
+                )
+            return MagicMock(
+                returncode=0,
+                stdout=json.dumps({"markdown": "| filePath |\n| --- |\n| src/api |\n| src/core |"}),
+                stderr="",
+            )
+
+        with patch.object(hp.subprocess, "run", side_effect=fake_run):
+            counts = hp._get_live_symbol_counts()
+
+        assert counts["src"] == 100
+        assert counts["src/api"] == 30
+        assert counts["src/core"] == 70
+
+
 class TestPlanGitnexus:
     def test_indexed_up_to_date(self):
         diag = {"existing": {"gitnexus": {"indexed": True, "up_to_date": True}}}
@@ -217,6 +244,18 @@ class TestMain:
         assert "root_doc" in out
         assert "codemap" in out
         assert "subdirs" in out
+
+    def test_main_does_not_compare_symbol_counts_to_source_file_counts(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text("x = 1\n", encoding="utf-8")
+        (tmp_path / "CODE_MAP.md").write_text(
+            "### src/ (200 symbols) — Core\n", encoding="utf-8")
+        monkeypatch.setattr('sys.argv', ['hp', str(tmp_path), '--platform', 'claude'])
+        with patch('pathlib.Path.home', return_value=tmp_path):
+            hp.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["codemap"]["action"] == "skip"
 
     def test_main_default_platform(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)

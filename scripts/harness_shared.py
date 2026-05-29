@@ -79,13 +79,7 @@ def parse_codemap(codemap_path: Path) -> list[dict]:
 # ── CODE_MAP.md description quality ──
 
 _LOW_QUALITY_FRAGMENTS = (
-    "load_module",
-    "getFactor",
-    "option_value",
-    "dict_or_empty",
     "Tests for ",
-    "based backtest engine",
-    "only staging area",
 )
 
 
@@ -113,6 +107,10 @@ def is_low_quality_description(desc: str) -> bool:
     if " / " in desc:
         return True
     if re.search(r'\b[A-Za-z]+_$', desc):
+        return True
+    if re.search(r'\b(get|set|load|build|run|parse|validate|create|update|delete)[A-Z][A-Za-z0-9]*', desc):
+        return True
+    if re.fullmatch(r'[A-Za-z0-9_./\s-]+', desc) and re.search(r'\b[A-Za-z]+_[A-Za-z0-9_]+\b', desc):
         return True
     if re.search(r'\b(build|resolve|run|load|parse|validate)_[A-Za-z0-9_]+', desc):
         return True

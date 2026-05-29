@@ -15,6 +15,7 @@ Usage:
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -112,19 +113,87 @@ def plan_subdirs(complex_dirs: list[str], own_file: str, other_file: str) -> dic
     }
 
 
+def _parse_gitnexus_markdown(output: str) -> str:
+    try:
+        data = json.loads(output)
+        if isinstance(data, dict):
+            return data.get("markdown", "")
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            return data[0].get("markdown", "")
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return ""
+
+
+def _markdown_rows(markdown: str) -> list[list[str]]:
+    lines = [line.strip() for line in markdown.splitlines() if line.strip()]
+    if len(lines) < 3:
+        return []
+    return [[col.strip() for col in line.split("|") if col.strip()] for line in lines[2:]]
+
+
+def _gitnexus_markdown_query(cypher: str) -> str:
+    try:
+        result = subprocess.run(
+            ["npx", "gitnexus", "cypher", cypher, "-r", Path(".").resolve().name],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return _parse_gitnexus_markdown(result.stdout.strip() or result.stderr.strip())
+
+
+def _get_gitnexus_communities() -> dict[str, int]:
+    markdown = _gitnexus_markdown_query(
+        "MATCH (c:Community) WITH c.label AS area, sum(c.symbolCount) AS syms "
+        "RETURN area, syms ORDER BY syms DESC"
+    )
+    communities: dict[str, int] = {}
+    for row in _markdown_rows(markdown):
+        if len(row) >= 2 and row[1].isdigit():
+            communities[row[0]] = communities.get(row[0], 0) + int(row[1])
+    return communities
+
+
+def _get_gitnexus_folders() -> list[str]:
+    markdown = _gitnexus_markdown_query(
+        "MATCH (f:Folder) RETURN f.filePath ORDER BY f.filePath"
+    )
+    return [row[0] for row in _markdown_rows(markdown) if row]
+
+
 def _get_live_symbol_counts() -> dict[str, int]:
-    """Get current symbol counts by scanning source files per top-level directory."""
-    from harness_shared import SOURCE_EXTS, should_skip
+    """Get current symbol counts from GitNexus, preserving CODE_MAP units."""
+    if not Path(".gitnexus").is_dir():
+        return {}
+    communities = _get_gitnexus_communities()
+    if not communities:
+        return {}
+    folders = _get_gitnexus_folders()
+    if not folders:
+        return {}
+
+    area_to_dir: dict[str, str] = {}
+    for area in communities:
+        area_lower = area.lower().lstrip("_")
+        for folder in folders:
+            if folder.split("/")[-1].lower().lstrip("_") == area_lower:
+                area_to_dir[area] = folder
+                break
+
     counts: dict[str, int] = {}
-    for entry in Path(".").iterdir():
-        if not entry.is_dir() or should_skip(entry.name):
+    for area, symbols in communities.items():
+        dir_path = area_to_dir.get(area)
+        if not dir_path:
             continue
-        count = 0
-        for root, dirs, files in os.walk(entry):
-            dirs[:] = [d for d in dirs if not should_skip(d)]
-            count += sum(1 for f in files if Path(f).suffix.lower() in SOURCE_EXTS)
-        if count > 0:
-            counts[entry.name] = count
+        parts = [part for part in re.split(r"/+", dir_path.strip("/")) if part]
+        for index in range(1, len(parts) + 1):
+            prefix = "/".join(parts[:index])
+            counts[prefix] = counts.get(prefix, 0) + symbols
     return counts
 
 

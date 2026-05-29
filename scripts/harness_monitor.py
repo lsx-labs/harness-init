@@ -42,7 +42,12 @@ JOB_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "jobs"
 DIAG_SCRIPT = Path.home() / ".local" / "bin" / "harness-init.py"
 DESC_SCRIPT = Path.home() / ".local" / "share" / "harness-hooks" / "generate_descriptions.py"
 GITNEXUS_TIMEOUT = 15
-GIT_COMMANDS = re.compile(r'\bgit\s+(commit|merge|rebase|pull|checkout|switch|cherry-pick)\b')
+GIT_COMMANDS = re.compile(
+    r'(?:^|(?:&&|\|\||[;|])\s*)'
+    r'git(?:\s+-[^\s;|&]+(?:\s+[^\s;|&]+)?)*\s+'
+    r'(commit|merge|rebase|pull|checkout|switch|cherry-pick)\b'
+)
+CODEX_EXEC_SANDBOX_ARGS = ["-s", "read-only", "-c", "approval_policy=never"]
 
 
 # ── Directory description helpers (deterministic, no AI) ──
@@ -147,7 +152,7 @@ def ai_invoke(prompt, timeout=15):
             return r.stdout.strip()
         else:
             r = subprocess.run(
-                [cmd, "exec", prompt],
+                [cmd, "exec", *CODEX_EXEC_SANDBOX_ARGS, prompt],
                 capture_output=True, text=True, timeout=timeout)
             return r.stdout.strip()
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
@@ -169,7 +174,8 @@ def get_project_id():
 
 def is_git_operation(ctx):
     cmd = ctx.get("tool_input", {}).get("command", "")
-    return bool(GIT_COMMANDS.search(cmd))
+    unquoted = re.sub(r"""(['"])(?:\\.|(?!\1).)*\1""", "", cmd)
+    return bool(GIT_COMMANDS.search(unquoted))
 
 
 def is_on_main_branch():
@@ -623,7 +629,11 @@ def handle_growth_check(state, state_file):
 
     current_count = count_source_files()
     prev_count = state.get("file_count", 0)
-    state["file_count"] = current_count
+
+    if current_count < prev_count:
+        state["file_count"] = current_count
+        save_state(state_file, state)
+        return
 
     if current_count - prev_count < CHECK_EVERY_N_FILES:
         save_state(state_file, state)
@@ -633,6 +643,7 @@ def handle_growth_check(state, state_file):
         save_state(state_file, state)
         return
 
+    state["file_count"] = current_count
     save_state(state_file, state)
     project_dir = str(Path(".").resolve())
     subprocess.Popen(

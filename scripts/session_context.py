@@ -16,6 +16,8 @@ from pathlib import Path
 if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
+from harness_shared import needs_description_refresh, parse_codemap
+
 NOTIFY_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "notifications"
 
 
@@ -104,7 +106,8 @@ def check_codemap_stale() -> str | None:
     if not codemap.exists():
         return None
     try:
-        count = codemap.read_text(encoding="utf-8").count("⚠️ 描述可能过期")
+        count = sum(1 for entry in parse_codemap(codemap)
+                    if needs_description_refresh(entry.get("desc") or ""))
         if count > 0:
             return f"⚠️ CODE_MAP.md: {count} 个目录描述待更新"
     except OSError:

@@ -37,16 +37,12 @@ HOOK_TIMEOUT = 10
 DEFAULT_AI_TIMEOUT = 180
 DEFAULT_BATCH_SIZE = 2
 DEFAULT_MAX_WORKERS = 1
+CODEX_EXEC_SANDBOX_ARGS = ["-s", "read-only", "-c", "approval_policy=never"]
 GENERIC = {"main", "init", "run", "start", "stop", "get", "set", "test", "setup", "parse",
            "build", "create", "delete", "update", "load", "save", "read", "write", "open",
            "close", "validate", "check", "add", "all", "data", "config", "path", "name", "type"}
 ARTIFACT_PREFIXES = (
-    "data/backtest_artifacts/",
-    "data/bundle/",
-    "data/cache/",
-    "data/factor/",
-    "data/release_gate/",
-    "data/results/",
+    "data/",
 )
 PROJECT_OVERRIDE_PATH = Path(".harness/codemap_descriptions.json")
 PROVIDER_BY_CATEGORY = {
@@ -363,7 +359,7 @@ def load_project_overrides(root: Path = Path(".")) -> tuple[dict[str, str], dict
 
 def _is_artifact_dir(dir_path: str) -> bool:
     key = normalize_dir_key(dir_path, trailing_slash=True)
-    return key == "data/" or key.startswith(ARTIFACT_PREFIXES)
+    return key.startswith(ARTIFACT_PREFIXES)
 
 
 def classify_directory(evidence: DirectoryEvidence, *, has_override: bool, existing_desc: str) -> str:
@@ -438,12 +434,15 @@ def _topic_from_tokens(tokens: list[str]) -> list[str]:
     topics: list[str] = []
     mapping = (
         ("session", "会话"),
-        ("release_gate", "release gate"),
-        ("weight_grid", "权重网格"),
+        ("release", "发布"),
+        ("gate", "门禁"),
         ("cache", "缓存"),
-        ("factor", "因子"),
-        ("strategy", "策略"),
-        ("vbt", "VBT"),
+        ("worker", "worker"),
+        ("config", "配置"),
+        ("auth", "认证"),
+        ("api", "API"),
+        ("database", "数据库"),
+        ("cli", "CLI"),
         ("distributed", "分布式"),
         ("doctor", "诊断"),
     )
@@ -456,53 +455,35 @@ def _topic_from_tokens(tokens: list[str]) -> list[str]:
 
 def summarize_test_dir(evidence: DirectoryEvidence) -> str:
     key = normalize_dir_key(evidence.dir_path)
-    label_by_dir = {
-        "tests/autoresearch": "AutoResearch",
-        "tests/engine_vbt": "VBT 引擎",
-        "tests/factors": "因子",
-        "tests/gmatrix_vbt_engine": "GMatrix VBT 引擎",
-        "tests/release": "发布门禁",
-        "tests/research": "研究脚本",
-        "tests/scripts": "脚本",
-        "tests/strategies": "策略",
-    }
-    label = label_by_dir.get(key, "测试套件")
+    leaf = key.rsplit("/", 1)[-1] if key and key != "tests" else ""
+    label = f"{leaf.replace('_', ' ')} 测试" if leaf else "测试套件"
     topics = _topic_from_tokens(list(evidence.test_names) + list(evidence.child_dirs) + [key])
     if topics:
-        return f"{label} 测试：{'、'.join(topics)}"
-    return f"{label} 测试：行为校验、边界条件与回归覆盖"
+        return f"{label}：{'、'.join(topics)}"
+    return f"{label}：行为校验、边界条件与回归覆盖"
 
 
 def summarize_docs_dir(evidence: DirectoryEvidence) -> str:
     key = normalize_dir_key(evidence.dir_path)
-    if key == "docs/research":
-        return "研究记录：性能验证、架构决策与实验报告"
-    if key == "docs/superpowers":
-        return "Superpowers 计划与规格：实现步骤、设计草案"
-    if key.startswith("doc/deepquantDemo"):
-        return "DeepQuant 示例文档：因子上传、数据获取与回调"
-    if key == "doc" or key.startswith("doc/"):
-        return "项目操作文档：缓存合约、部署说明与示例"
-    if key == "docs" or key.startswith("docs/"):
-        topics = _topic_from_tokens(list(evidence.markdown_titles) + [key])
-        if topics:
-            return f"项目文档：{'、'.join(topics)}"
-        return "项目文档：研究记录、计划规格与运行说明"
-    return "文档资料：说明、设计记录与操作参考"
+    topics = _topic_from_tokens(list(evidence.markdown_titles) + [key])
+    if topics:
+        return f"项目文档：{'、'.join(topics)}"
+    leaf = key.rsplit("/", 1)[-1] if key and key not in {"doc", "docs"} else "项目"
+    return f"{leaf.replace('_', ' ')} 文档：说明、设计记录与操作参考"
 
 
 def summarize_artifact_dir(evidence: DirectoryEvidence) -> str:
     key = normalize_dir_key(evidence.dir_path)
-    mapping = {
-        "data": "本地数据目录：研究产物、缓存与回测输出",
-        "data/backtest_artifacts": "回测中间产物：临时输出与执行记录",
-        "data/bundle": "数据 bundle 产物：快照打包与本地加载材料",
-        "data/cache": "本地缓存产物：计算中间结果与可复用运行状态",
-        "data/factor": "因子缓存产物：预计算因子值与本地材料",
-        "data/release_gate": "Release gate 产物：发布检查、判定与审计记录",
-        "data/results": "回测结果产物：best、summary、verdict 与实验输出",
-    }
-    return mapping.get(key, "生成产物目录：缓存、结果与运行审计文件")
+    parts = set(key.split("/"))
+    if key == "data":
+        return "本地数据目录：数据文件、缓存与生成产物"
+    if "cache" in parts:
+        return "本地缓存产物：计算中间结果与可复用运行状态"
+    if {"result", "results", "report", "reports"} & parts:
+        return "结果产物目录：运行输出、汇总与审计记录"
+    if {"release", "gate", "release_gate"} & parts:
+        return "发布检查产物：检查结果、判定与审计记录"
+    return "生成产物目录：缓存、结果与运行审计文件"
 
 
 def summarize_examples_dir(evidence: DirectoryEvidence) -> str:
@@ -893,6 +874,19 @@ def _parse_ai_json(raw: str) -> dict[str, str] | None:
     return data if isinstance(data, dict) else None
 
 
+def _normalize_ai_descriptions(data: dict[str, str] | None, requested_dirs: list[str]) -> dict[str, str] | None:
+    if not data:
+        return None
+    requested = {normalize_dir_key(d) for d in requested_dirs}
+    normalized: dict[str, str] = {}
+    for raw_key, raw_value in data.items():
+        key = normalize_dir_key(str(raw_key))
+        if key not in requested or not isinstance(raw_value, str):
+            continue
+        normalized[key] = raw_value
+    return normalized or None
+
+
 def _ai_evidence_payload(
     dirs: list[str],
     *,
@@ -965,7 +959,7 @@ def ai_generate(
                 print(f"ai_generate: claude failed, stderr={r.stderr[:200]}", file=sys.stderr)
                 return None
         else:
-            r = _run_ai_command([cmd, "exec", prompt], timeout)
+            r = _run_ai_command([cmd, "exec", *CODEX_EXEC_SANDBOX_ARGS, prompt], timeout)
             raw = r.stdout.strip()
     except subprocess.TimeoutExpired:
         print(f"ai_generate: timed out after {timeout}s for dirs={dirs}", file=sys.stderr)
@@ -973,7 +967,7 @@ def ai_generate(
     except (FileNotFoundError, OSError):
         return None
 
-    return _parse_ai_json(raw)
+    return _normalize_ai_descriptions(_parse_ai_json(raw), dirs)
 
 
 def ai_generate_batched(
@@ -1127,11 +1121,19 @@ def get_docstring(dir_path: str) -> str:
 
 
 def get_keywords(dir_path: str) -> str:
+    prefix = normalize_dir_key(dir_path, trailing_slash=True).replace("'", "\\'")
     rows = gitnexus_query(
-        f"MATCH (f:Function) WHERE f.filePath STARTS WITH '{dir_path}/' AND NOT f.name STARTS WITH '_' "
+        f"MATCH (f:Function) WHERE f.filePath STARTS WITH '{prefix}' AND NOT f.name STARTS WITH '_' "
         f"OPTIONAL MATCH (c)-[:CodeRelation {{type:'CALLS'}}]->(f) WITH f, count(c) AS refs "
         f"WHERE refs > 0 RETURN f.name ORDER BY refs DESC LIMIT 4")
-    kw = list(dict.fromkeys(r[0] for r in rows if r[0].lower() not in GENERIC and len(r[0]) > 3))
+    names = []
+    for row in rows:
+        if not row or not isinstance(row[0], str):
+            continue
+        name = row[0].strip()
+        if name and name.lower() not in GENERIC and len(name) > 3:
+            names.append(name)
+    kw = list(dict.fromkeys(names))
     return " / ".join(kw[:3]) if kw else ""
 
 

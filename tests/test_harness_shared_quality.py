@@ -22,6 +22,10 @@ def test_low_quality_detects_truncated_tokens() -> None:
     )
 
 
+def test_low_quality_detects_camel_case_function_names() -> None:
+    assert harness_shared.is_low_quality_description("getFactor option_value")
+
+
 def test_low_quality_detects_generic_test_descriptions() -> None:
     assert harness_shared.is_low_quality_description("Tests for engine_vbt package.")
 

@@ -43,6 +43,21 @@ class TestSyncOne:
         assert result["from"] == "AGENTS.md"
         assert (tmp_path / "CLAUDE.md").read_text(encoding="utf-8") == "new"
 
+    def test_equal_mtime_content_conflict_does_not_overwrite(self, tmp_path):
+        own = tmp_path / "CLAUDE.md"
+        other = tmp_path / "AGENTS.md"
+        own.write_text("claude content", encoding="utf-8")
+        other.write_text("codex content", encoding="utf-8")
+        timestamp = 1_700_000_000
+        os.utime(own, (timestamp, timestamp))
+        os.utime(other, (timestamp, timestamp))
+
+        result = sd.sync_one(str(tmp_path), "CLAUDE.md", "AGENTS.md")
+
+        assert result["action"] == "conflict"
+        assert own.read_text(encoding="utf-8") == "claude content"
+        assert other.read_text(encoding="utf-8") == "codex content"
+
     def test_neither_exists(self, tmp_path):
         assert sd.sync_one(str(tmp_path), "CLAUDE.md", "AGENTS.md") is None
 

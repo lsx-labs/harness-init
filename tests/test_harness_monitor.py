@@ -39,6 +39,12 @@ class TestIsGitOperation:
     def test_git_merge(self):
         assert hm.is_git_operation({"tool_input": {"command": "git merge feature"}}) is True
 
+    def test_git_after_command_separator(self):
+        assert hm.is_git_operation({"tool_input": {"command": "cd repo && git commit -m test"}}) is True
+
+    def test_quoted_git_text_is_not_git_operation(self):
+        assert hm.is_git_operation({"tool_input": {"command": 'echo "git commit"'}}) is False
+
     def test_not_git(self):
         assert hm.is_git_operation({"tool_input": {"command": "pytest tests/"}}) is False
 
@@ -202,6 +208,10 @@ class TestAiInvoke:
             args = mock_run.call_args[0][0]
             assert "codex" in args
             assert "exec" in args
+            assert "-s" in args
+            assert "read-only" in args
+            assert "-c" in args
+            assert "approval_policy=never" in args
 
     def test_timeout(self):
         """Lines 77-78: subprocess timeout → empty string."""
@@ -621,7 +631,28 @@ class TestHandleGrowthCheck:
         state = {"file_count": 0, "retired": False}
         hm.handle_growth_check(state, state_file)
         saved = json.loads(state_file.read_text())
-        assert saved["file_count"] == 1
+        assert saved["file_count"] == 0
+
+    def test_growth_accumulates_across_small_changes(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        state_file = tmp_path / "state.json"
+        state = {"file_count": 0, "retired": False}
+        diag_script = tmp_path / "diag.sh"
+        diag_script.write_text("pass")
+
+        with patch.object(hm, 'DIAG_SCRIPT', diag_script), \
+             patch.object(hm.subprocess, 'Popen') as mock_popen:
+            for i in range(19):
+                (tmp_path / f"mod{i}.py").write_text("x = 1")
+            hm.handle_growth_check(state, state_file)
+            assert json.loads(state_file.read_text())["file_count"] == 0
+            mock_popen.assert_not_called()
+
+            (tmp_path / "mod19.py").write_text("x = 1")
+            hm.handle_growth_check(json.loads(state_file.read_text()), state_file)
+
+        mock_popen.assert_called_once()
+        assert json.loads(state_file.read_text())["file_count"] == 20
 
     def test_no_diag_script(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -632,7 +663,7 @@ class TestHandleGrowthCheck:
         with patch.object(hm, 'DIAG_SCRIPT', Path("/nonexistent/harness-init.py")):
             hm.handle_growth_check(state, state_file)
         saved = json.loads(state_file.read_text())
-        assert saved["file_count"] == 25
+        assert saved["file_count"] == 0
 
     def test_spawns_background_when_threshold_exceeded(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)

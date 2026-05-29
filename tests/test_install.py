@@ -39,6 +39,16 @@ class TestInstallFile:
         assert dst.is_symlink()
         assert dst.read_text() == "old"
 
+    def test_copy_replaces_broken_symlink(self, tmp_path):
+        src = tmp_path / "source.txt"
+        dst = tmp_path / "dest.txt"
+        src.write_text("new")
+        dst.symlink_to(tmp_path / "missing.txt")
+        with patch('install.USE_LINK', False):
+            install_file(src, dst)
+        assert not dst.is_symlink()
+        assert dst.read_text() == "new"
+
 
 class TestInstallDir:
     def test_copy_dir(self, tmp_path):
@@ -57,6 +67,17 @@ class TestInstallDir:
         with patch('install.USE_LINK', True):
             install_dir(src, dst)
         assert dst.is_symlink()
+
+    def test_copy_replaces_broken_dir_symlink(self, tmp_path):
+        src = tmp_path / "srcdir"
+        src.mkdir()
+        (src / "file.txt").write_text("content")
+        dst = tmp_path / "dstdir"
+        dst.symlink_to(tmp_path / "missingdir")
+        with patch('install.USE_LINK', False):
+            install_dir(src, dst)
+        assert not dst.is_symlink()
+        assert (dst / "file.txt").read_text() == "content"
 
 
 class TestCheckCommand:

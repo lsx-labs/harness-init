@@ -19,9 +19,9 @@ def log(msg: str):
 
 
 def install_file(src: Path, dst: Path):
-    """Copy or symlink a file. Copy mode skips existing symlinks."""
+    """Copy or symlink a file. Copy mode skips live symlinks and repairs broken ones."""
     dst.parent.mkdir(parents=True, exist_ok=True)
-    if not USE_LINK and dst.is_symlink():
+    if not USE_LINK and dst.is_symlink() and dst.exists():
         log(f"  ⏭️  {dst.name} is a symlink (--link mode), skipping copy")
         return
     dst.unlink(missing_ok=True)
@@ -36,9 +36,9 @@ def install_file(src: Path, dst: Path):
 
 
 def install_dir(src: Path, dst: Path):
-    """Copy or symlink a directory. Copy mode skips existing symlinks."""
+    """Copy or symlink a directory. Copy mode skips live symlinks and repairs broken ones."""
     dst.parent.mkdir(parents=True, exist_ok=True)
-    if not USE_LINK and dst.is_symlink():
+    if not USE_LINK and dst.is_symlink() and dst.exists():
         log(f"  ⏭️  {dst.name} is a symlink (--link mode), skipping copy")
         return
     if dst.is_symlink():
@@ -117,8 +117,6 @@ def main():
     log(f"✅ Node.js {node_ver}")
 
     gitnexus_available = False
-    gitnexus_ver = check_command("npx gitnexus".split()[0])
-    # Better check
     try:
         r = subprocess.run(["npx", "gitnexus", "--version"], capture_output=True, text=True, timeout=10)
         if r.returncode == 0:
@@ -134,14 +132,23 @@ def main():
         log("   - PreToolUse search enrichment")
         log("   - PostToolUse stale index detection")
         log("")
-        answer = input("Install GitNexus now? (Y/n) ").strip().lower()
+        if not sys.stdin.isatty():
+            answer = "n"
+            log("⚠️  Non-interactive shell: skipping GitNexus auto-install prompt")
+        else:
+            answer = input("Install GitNexus now? (Y/n) ").strip().lower()
         if answer != "n":
             log("Installing GitNexus...")
-            subprocess.run(["npm", "install", "-g", "gitnexus"], check=False)
+            install_result = subprocess.run(["npm", "install", "-g", "gitnexus"], check=False)
             log("Running GitNexus setup...")
             subprocess.run(["npx", "gitnexus", "setup"], check=False)
-            gitnexus_available = True
-            log("✅ GitNexus installed")
+            try:
+                verify = subprocess.run(["npx", "gitnexus", "--version"],
+                                        capture_output=True, text=True, timeout=10)
+                gitnexus_available = install_result.returncode == 0 and verify.returncode == 0
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                gitnexus_available = False
+            log("✅ GitNexus installed" if gitnexus_available else "⚠️  GitNexus install did not verify")
         else:
             log("⚠️  Continuing without GitNexus (degraded mode)")
 
@@ -223,7 +230,7 @@ def main():
 
     for script_name in ["harness_shared.py", "harness-init.py", "harness-plan.py", "sync-docs.py"]:
         p = local_bin / script_name
-        if p.exists() or p.is_symlink():
+        if p.exists():
             log(f"  ✅ {script_name} ({'symlink' if p.is_symlink() else 'copy'})")
         else:
             log(f"  ❌ {script_name} missing")

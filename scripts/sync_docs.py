@@ -30,7 +30,13 @@ def sync_one(dir_path: str, own_file: str, other_file: str) -> dict | None:
             other_text = other.read_text(encoding="utf-8")
             if own_text == other_text:
                 return None
-            if own.stat().st_mtime > other.stat().st_mtime:
+            own_mtime = own.stat().st_mtime_ns
+            other_mtime = other.stat().st_mtime_ns
+            if own_mtime == other_mtime:
+                return {"dir": dir_path, "action": "conflict",
+                        "reason": "equal_mtime_content_differs",
+                        "files": [own_file, other_file]}
+            if own_mtime > other_mtime:
                 other.write_text(own_text, encoding="utf-8")
                 return {"dir": dir_path, "action": "sync", "from": own_file, "to": other_file}
             else:
@@ -91,7 +97,8 @@ def main():
         if r:
             results.append(r)
 
-    print(json.dumps({"synced": len(results), "actions": results}, indent=2, ensure_ascii=False))
+    synced = sum(1 for result in results if result.get("action") in {"copy", "sync"})
+    print(json.dumps({"synced": synced, "actions": results}, indent=2, ensure_ascii=False))
 
 
 if __name__ == "__main__":

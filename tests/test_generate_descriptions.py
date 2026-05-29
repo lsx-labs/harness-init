@@ -248,6 +248,11 @@ class TestGetKeywords:
         with patch('generate_descriptions.gitnexus_query', return_value=[]):
             assert get_keywords("empty") == ""
 
+    def test_ignores_empty_gitnexus_rows(self):
+        with patch('generate_descriptions.gitnexus_query') as mock:
+            mock.return_value = [[], [None], [""], ["authenticate_user"]]
+            assert get_keywords("src/auth") == "authenticate_user"
+
 
 class TestGetAiCmd:
     def test_finds_claude(self):
@@ -639,7 +644,7 @@ class TestDeterministicSummaries:
 
         desc = gd.summarize_test_dir(evidence)
 
-        assert desc == "AutoResearch 测试：会话、release gate、权重网格"
+        assert desc == "autoresearch 测试：会话、发布、门禁"
         assert "test_start_session" not in desc
         assert gd.is_acceptable_description(desc)
 
@@ -652,7 +657,7 @@ class TestDeterministicSummaries:
 
         desc = gd.summarize_docs_dir(evidence)
 
-        assert desc == "研究记录：性能验证、架构决策与实验报告"
+        assert desc == "research 文档：说明、设计记录与操作参考"
         assert gd.is_acceptable_description(desc)
 
     def test_summarize_artifact_dir_uses_path_contract(self):
@@ -660,7 +665,7 @@ class TestDeterministicSummaries:
 
         desc = gd.summarize_artifact_dir(evidence)
 
-        assert desc == "回测结果产物：best、summary、verdict 与实验输出"
+        assert desc == "结果产物目录：运行输出、汇总与审计记录"
         assert gd.is_acceptable_description(desc)
 
     def test_summarize_examples_dir_describes_usage_entry(self):
@@ -734,7 +739,7 @@ class TestDeterministicSummaries:
                 evidence_by_dir=evidence,
             )
 
-        assert descriptions["tests"].startswith("测试套件 测试")
+        assert descriptions["tests"].startswith("测试套件：")
         assert report["provider_counts"] == {"test_summary": 1}
 
     def test_main_reuses_classification_evidence_for_deterministic_generation(self, tmp_path, monkeypatch, capsys):
@@ -947,10 +952,24 @@ class TestAiGenerate:
         (tmp_path / ".gitnexus").mkdir()
         mock_result = MagicMock(returncode=0, stdout='{"src": "Core logic"}')
         with patch('generate_descriptions.get_ai_cmd', return_value="codex"), \
-             patch('generate_descriptions._run_ai_command', return_value=mock_result):
+             patch('generate_descriptions._run_ai_command', return_value=mock_result) as mock_run:
             result = ai_generate(["src"], timeout=77)
             assert result == {"src": "Core logic"}
+        args = mock_run.call_args.args[0]
+        assert "-s" in args
+        assert "read-only" in args
+        assert "-c" in args
+        assert "approval_policy=never" in args
         assert mock_result is not None
+
+    def test_normalizes_ai_trailing_slash_keys(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".gitnexus").mkdir()
+        mock_result = MagicMock(returncode=0, stdout='{"src/": "Core logic"}')
+        with patch('generate_descriptions.get_ai_cmd', return_value="codex"), \
+             patch('generate_descriptions._run_ai_command', return_value=mock_result):
+            result = ai_generate(["src"])
+            assert result == {"src": "Core logic"}
 
     def test_codex_path_uses_configured_timeout(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
