@@ -73,10 +73,33 @@ harness-init/
 
 CODE_MAP 描述生成带质量门禁：`📌` 描述永不覆盖；函数名列表、截断 token、
 `load_module / load_module`、`Tests for ... package` 等低质量描述会进入待刷新队列。
+描述 provider 顺序是：`📌` 手工描述 → `.harness/codemap_descriptions.json` 项目级
+override → README/docstring → GitNexus+AI → tests/docs/examples/artifact 确定性摘要 →
+低置信 fallback。产物目录、测试目录、研究文档和 examples 不会被强制走 GitNexus
+流程。
+
+项目可用 `.harness/codemap_descriptions.json` 固定稳定目录描述：
+
+```json
+{
+  "descriptions": {
+    "data/cache/": "本地缓存产物：计算中间结果与可复用运行状态",
+    "tests/": "测试套件：AutoResearch、VBT、因子、策略与发布门禁"
+  }
+}
+```
+
 AI+GitNexus 按小批次运行，默认超时 180 秒；可用 `--batch-size`、`--max-workers`、
-`--ai-timeout` 或 `HARNESS_CODEMAP_AI_*` 环境变量调整。fallback 只在 AI 不可用时写
-可信 docstring/`⚠️` 关键词；AI 已尝试但失败时不会用函数名关键词覆盖结果。
-每次运行都会输出 `quality_before` / `quality_after` 质量报告。
+`--ai-timeout` 或 `HARNESS_CODEMAP_AI_*` 环境变量调整。大项目可局部刷新：
+
+```bash
+python3 ~/.local/share/harness-hooks/generate_descriptions.py . --generate --refresh-dir tests/autoresearch
+python3 ~/.local/share/harness-hooks/generate_descriptions.py . --dry-run --use-fingerprints
+```
+
+fallback 只在 AI 不可用时写可信 docstring/`⚠️` 关键词；AI 已尝试但失败时不会用
+函数名关键词覆盖结果。每次运行都会输出 `quality_before` / `quality_after` 质量报告，
+包含目录分类、provider、未索引目录和“已索引但无 execution flow”的目录。
 后台任务状态写入 `~/.local/share/harness-hooks/jobs/*.json`。
 
 ## 卸载

@@ -91,15 +91,16 @@ python3 ~/.local/bin/harness-plan.py . --platform codex
 | action | 执行 |
 |---|---|
 | `skip` | 无操作 |
-| `refresh` | 对 `dirs_needing` 中的目录调 GitNexus 生成描述 |
+| `refresh` | 对 `dirs_needing` 中的目录按 provider 生成描述 |
 
 描述规则：
-1. 对该目录调用 `gitnexus_context` 查询核心函数
-2. 只基于 GitNexus 返回的数据写描述，不自行推测
+1. 先识别目录类型：code_process / code_symbols / test / docs / example / artifact
+2. code_process 才优先走 GitNexus+AI；tests/docs/examples/artifact 走确定性摘要
 3. 格式：`{核心职责}：{2-3 个关键功能}`，中文 ≤ 50 字
 
 质量规则：
 - `📌` 手工描述永不覆盖
+- `.harness/codemap_descriptions.json` 项目级 override 优先于自动生成
 - 已有高质量描述在未过期时保留
 - `load_module / load_module`、函数名列表、截断 token、`Tests for ... package` 等低质量描述视为待刷新
 - AI 输出必须通过质量门禁才写入
@@ -110,10 +111,11 @@ python3 ~/.local/bin/harness-plan.py . --platform codex
 - 后台 job 状态写入 `~/.local/share/harness-hooks/jobs/*.json`
 - CODE_MAP 写入使用临时文件 + 原子替换，失败时保留旧文件
 - AI+GitNexus 描述生成按小批次执行，默认 `--batch-size 2 --ai-timeout 180 --max-workers 1`
-- 大项目可显式运行：`python3 ~/.local/share/harness-hooks/generate_descriptions.py . --refresh --batch-size 2 --max-workers 2 --ai-timeout 180`
+- 大项目可显式运行：`python3 ~/.local/share/harness-hooks/generate_descriptions.py . --generate --refresh-dir tests/autoresearch --batch-size 2 --max-workers 2 --ai-timeout 180`
+- 指纹增量检查：`python3 ~/.local/share/harness-hooks/generate_descriptions.py . --dry-run --use-fingerprints`
 - 可用 `HARNESS_CODEMAP_AI_BATCH_SIZE`、`HARNESS_CODEMAP_AI_MAX_WORKERS`、`HARNESS_CODEMAP_AI_TIMEOUT` 调整后台默认值
 - AI 已尝试但失败时不写关键词 fallback，避免函数名列表冒充刷新结果
-- 运行输出包含 `ai_report` 与 `quality_before` / `quality_after`，用于审计刷新质量
+- 运行输出包含 `classification`、`ai_report`、`quality_before` / `quality_after`，用于审计刷新质量
 
 #### 2.4 子目录文档（plan.subdirs）
 
