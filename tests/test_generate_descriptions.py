@@ -444,6 +444,19 @@ class TestDirectoryEvidence:
         assert evidence.gitnexus_files == 0
         assert evidence.gitnexus_processes == 0
 
+    def test_collect_evidence_skips_gitnexus_when_index_missing(self, tmp_path, monkeypatch):
+        d = tmp_path / "src"
+        d.mkdir()
+        (d / "__init__.py").write_text('"""Core package."""\n')
+        monkeypatch.chdir(tmp_path)
+
+        with patch("generate_descriptions.gitnexus_query") as mock_query:
+            evidence = gd.collect_directory_evidence("src/")
+
+        mock_query.assert_not_called()
+        assert evidence.gitnexus_files == 0
+        assert evidence.gitnexus_processes == 0
+
 
 class TestProjectOverrides:
     def test_project_override_wins_over_low_quality_existing(self, tmp_path, monkeypatch):
@@ -555,6 +568,67 @@ class TestDirectoryClassification:
         data = json.loads(capsys.readouterr().out)
         assert data["classification"]["tests"]["category"] == "test"
         assert data["classification"]["tests"]["provider"] == "test_summary"
+
+
+class TestDeterministicSummaries:
+    def test_summarize_test_dir_uses_purpose_not_raw_functions(self):
+        evidence = make_evidence(
+            "tests/autoresearch/",
+            file_count=3,
+            py_count=3,
+            test_names=("test_start_session", "test_release_gate", "test_weight_grid"),
+        )
+
+        desc = gd.summarize_test_dir(evidence)
+
+        assert desc == "AutoResearch 测试：会话、release gate、权重网格"
+        assert "test_start_session" not in desc
+        assert gd.is_acceptable_description(desc)
+
+    def test_summarize_docs_dir_uses_markdown_titles(self):
+        evidence = make_evidence(
+            "docs/research/",
+            md_count=3,
+            markdown_titles=("Stage2 Profile", "Architecture Decision", "Experiment Summary"),
+        )
+
+        desc = gd.summarize_docs_dir(evidence)
+
+        assert desc == "研究记录：性能验证、架构决策与实验报告"
+        assert gd.is_acceptable_description(desc)
+
+    def test_summarize_artifact_dir_uses_path_contract(self):
+        evidence = make_evidence("data/results/", file_count=20, json_count=12, gitignored=True)
+
+        desc = gd.summarize_artifact_dir(evidence)
+
+        assert desc == "回测结果产物：best、summary、verdict 与实验输出"
+        assert gd.is_acceptable_description(desc)
+
+    def test_summarize_examples_dir_describes_usage_entry(self):
+        evidence = make_evidence("examples/", file_count=1, py_count=1)
+
+        desc = gd.summarize_examples_dir(evidence)
+
+        assert desc == "示例入口：最小运行脚本与用法演示"
+        assert gd.is_acceptable_description(desc)
+
+    def test_main_uses_deterministic_summary_before_ai(self, tmp_path, monkeypatch, capsys):
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_runner.py").write_text("def test_weight_grid():\n    pass\n")
+        (tmp_path / "CODE_MAP.md").write_text("### tests/\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["generate_descriptions.py", str(tmp_path), "--generate"])
+
+        with patch("generate_descriptions.gitnexus_query", return_value=[]), \
+             patch("generate_descriptions.ai_generate_batched", side_effect=AssertionError("AI should not run")):
+            gd_main()
+
+        data = json.loads(capsys.readouterr().out)
+        assert data["status"] == "updated"
+        assert data["source"] == "deterministic"
+        assert data["count"] == 1
+        assert "测试" in (tmp_path / "CODE_MAP.md").read_text()
 
 
 class TestBatchAiGenerate:

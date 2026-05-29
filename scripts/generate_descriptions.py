@@ -217,6 +217,8 @@ def _gitnexus_counts(dir_path: str) -> dict[str, int]:
     prefix = normalize_dir_key(dir_path, trailing_slash=True).replace("'", "\\'")
     if not prefix:
         return {"files": 0, "functions": 0, "methods": 0, "classes": 0, "processes": 0}
+    if not Path(".gitnexus").is_dir():
+        return {"files": 0, "functions": 0, "methods": 0, "classes": 0, "processes": 0}
     return {
         "files": _gitnexus_count(f"MATCH (f:File) WHERE f.filePath STARTS WITH '{prefix}' RETURN count(f)"),
         "functions": _gitnexus_count(
@@ -368,6 +370,112 @@ def build_classification_report(dirs: list[str], *, overrides: dict[str, str] | 
             "provider": select_provider(category),
         }
     return report
+
+
+def _topic_from_tokens(tokens: list[str]) -> list[str]:
+    topics: list[str] = []
+    mapping = (
+        ("session", "会话"),
+        ("release_gate", "release gate"),
+        ("weight_grid", "权重网格"),
+        ("cache", "缓存"),
+        ("factor", "因子"),
+        ("strategy", "策略"),
+        ("vbt", "VBT"),
+        ("distributed", "分布式"),
+        ("doctor", "诊断"),
+    )
+    text = " ".join(tokens).lower()
+    for needle, label in mapping:
+        if needle in text and label not in topics:
+            topics.append(label)
+    return topics[:4]
+
+
+def summarize_test_dir(evidence: DirectoryEvidence) -> str:
+    key = normalize_dir_key(evidence.dir_path)
+    label_by_dir = {
+        "tests/autoresearch": "AutoResearch",
+        "tests/engine_vbt": "VBT 引擎",
+        "tests/factors": "因子",
+        "tests/gmatrix_vbt_engine": "GMatrix VBT 引擎",
+        "tests/release": "发布门禁",
+        "tests/research": "研究脚本",
+        "tests/scripts": "脚本",
+        "tests/strategies": "策略",
+    }
+    label = label_by_dir.get(key, "测试套件")
+    topics = _topic_from_tokens(list(evidence.test_names) + list(evidence.child_dirs) + [key])
+    if topics:
+        return f"{label} 测试：{'、'.join(topics)}"
+    return f"{label} 测试：行为校验、边界条件与回归覆盖"
+
+
+def summarize_docs_dir(evidence: DirectoryEvidence) -> str:
+    key = normalize_dir_key(evidence.dir_path)
+    if key == "docs/research":
+        return "研究记录：性能验证、架构决策与实验报告"
+    if key == "docs/superpowers":
+        return "Superpowers 计划与规格：实现步骤、设计草案"
+    if key.startswith("doc/deepquantDemo"):
+        return "DeepQuant 示例文档：因子上传、数据获取与回调"
+    if key == "doc" or key.startswith("doc/"):
+        return "项目操作文档：缓存合约、部署说明与示例"
+    if key == "docs" or key.startswith("docs/"):
+        topics = _topic_from_tokens(list(evidence.markdown_titles) + [key])
+        if topics:
+            return f"项目文档：{'、'.join(topics)}"
+        return "项目文档：研究记录、计划规格与运行说明"
+    return "文档资料：说明、设计记录与操作参考"
+
+
+def summarize_artifact_dir(evidence: DirectoryEvidence) -> str:
+    key = normalize_dir_key(evidence.dir_path)
+    mapping = {
+        "data": "本地数据目录：研究产物、缓存与回测输出",
+        "data/backtest_artifacts": "回测中间产物：临时输出与执行记录",
+        "data/bundle": "数据 bundle 产物：快照打包与本地加载材料",
+        "data/cache": "本地缓存产物：计算中间结果与可复用运行状态",
+        "data/factor": "因子缓存产物：预计算因子值与本地材料",
+        "data/release_gate": "Release gate 产物：发布检查、判定与审计记录",
+        "data/results": "回测结果产物：best、summary、verdict 与实验输出",
+    }
+    return mapping.get(key, "生成产物目录：缓存、结果与运行审计文件")
+
+
+def summarize_examples_dir(evidence: DirectoryEvidence) -> str:
+    if evidence.py_count:
+        return "示例入口：最小运行脚本与用法演示"
+    return "示例入口：最小配置与使用方式"
+
+
+def deterministic_generate(
+    dirs: list[str],
+    *,
+    classification: dict[str, dict] | None = None,
+) -> tuple[dict[str, str], dict]:
+    """Generate descriptions for directory classes that do not need AI."""
+    descriptions: dict[str, str] = {}
+    provider_counts: dict[str, int] = {}
+    for dir_path in dirs:
+        key = normalize_dir_key(dir_path)
+        evidence = collect_directory_evidence(key)
+        row = (classification or {}).get(key)
+        category = row["category"] if row else classify_directory(evidence, has_override=False, existing_desc="")
+        provider = select_provider(category)
+        desc = ""
+        if category == "test":
+            desc = summarize_test_dir(evidence)
+        elif category == "docs":
+            desc = summarize_docs_dir(evidence)
+        elif category == "artifact":
+            desc = summarize_artifact_dir(evidence)
+        elif category == "example":
+            desc = summarize_examples_dir(evidence)
+        if desc:
+            descriptions[key] = desc
+            provider_counts[provider] = provider_counts.get(provider, 0) + 1
+    return descriptions, {"provider_counts": provider_counts}
 
 def parse_codemap(mode: str) -> list[str]:
     """Return list of directories needing descriptions based on mode."""
@@ -853,6 +961,29 @@ def main():
                               "quality_before": quality_before,
                               "quality_after": quality_after}, indent=2, ensure_ascii=False))
             return
+
+    classification = build_classification_report(dirs, overrides=overrides)
+    deterministic_descriptions, deterministic_report = deterministic_generate(
+        dirs,
+        classification=classification,
+    )
+    if deterministic_descriptions:
+        deterministic_descriptions, rejected = filter_generated_descriptions(deterministic_descriptions)
+        if deterministic_descriptions:
+            changes = write_descriptions(deterministic_descriptions)
+            written_dirs = {change["dir"] for change in changes}
+            dirs = [d for d in dirs if normalize_dir_key(d) not in written_dirs]
+            if not dirs:
+                quality_after = build_quality_report()
+                print(json.dumps({"status": "updated", "source": "deterministic",
+                                  "count": len(changes), "changes": changes,
+                                  "classification": classification,
+                                  "deterministic_report": deterministic_report,
+                                  "override_report": override_report,
+                                  "quality_before": quality_before,
+                                  "quality_after": quality_after,
+                                  "rejected": rejected}, indent=2, ensure_ascii=False))
+                return
 
     # Try AI + GitNexus first
     descriptions, ai_report = ai_generate_batched(
