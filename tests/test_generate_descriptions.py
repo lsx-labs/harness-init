@@ -766,6 +766,37 @@ class TestAiGenerate:
             assert ai_generate(["src"], timeout=211) == {"src": "Core logic"}
         assert mock_run.call_args.args[1] == 211
 
+    def test_prompt_includes_evidence_and_category(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".gitnexus").mkdir()
+        captured = {}
+
+        def fake_run(args, timeout):
+            captured["prompt"] = args[-1]
+            return MagicMock(returncode=0, stdout='{"src": "核心模块：加载与执行"}')
+
+        evidence = make_evidence(
+            "src/",
+            file_count=2,
+            py_count=2,
+            gitnexus_files=2,
+            gitnexus_functions=4,
+            gitnexus_processes=1,
+        )
+        with patch('generate_descriptions.get_ai_cmd', return_value="codex"), \
+             patch('generate_descriptions._run_ai_command', side_effect=fake_run):
+            result = ai_generate(
+                ["src"],
+                timeout=10,
+                evidence_by_dir={"src": evidence},
+                classification={"src": {"category": "code_process", "provider": "ai_gitnexus"}},
+            )
+
+        assert result == {"src": "核心模块：加载与执行"}
+        assert '"dir_path": "src/"' in captured["prompt"]
+        assert '"category": "code_process"' in captured["prompt"]
+        assert '"provider": "ai_gitnexus"' in captured["prompt"]
+
     def test_timeout(self, tmp_path, monkeypatch):
         """Line 146-147: subprocess timeout → None."""
         monkeypatch.chdir(tmp_path)

@@ -12,7 +12,7 @@ from __future__ import annotations
 import ast
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import json
 import os
 import re
@@ -679,21 +679,64 @@ def _parse_ai_json(raw: str) -> dict[str, str] | None:
     return data if isinstance(data, dict) else None
 
 
-def ai_generate(dirs: list[str], *, timeout: int = DEFAULT_AI_TIMEOUT) -> dict[str, str] | None:
+def _ai_evidence_payload(
+    dirs: list[str],
+    *,
+    evidence_by_dir: dict[str, DirectoryEvidence] | None = None,
+    classification: dict[str, dict] | None = None,
+) -> list[dict]:
+    payload = []
+    evidence_by_dir = evidence_by_dir or {}
+    classification = classification or {}
+    collect_evidence = bool(evidence_by_dir or classification)
+    for dir_path in dirs:
+        key = normalize_dir_key(dir_path)
+        evidence = evidence_by_dir.get(key)
+        if evidence is None and collect_evidence:
+            evidence = collect_directory_evidence(key)
+        row = classification.get(key)
+        if not row:
+            category = classify_directory(evidence, has_override=False, existing_desc="") if evidence else "unknown"
+            row = {"category": category, "provider": select_provider(category)}
+        evidence_data = asdict(evidence) if evidence else {"dir_path": normalize_dir_key(key, trailing_slash=True)}
+        payload.append({
+            "dir": key,
+            "category": row["category"],
+            "provider": row["provider"],
+            "evidence": evidence_data,
+        })
+    return payload
+
+
+def ai_generate(
+    dirs: list[str],
+    *,
+    timeout: int = DEFAULT_AI_TIMEOUT,
+    evidence_by_dir: dict[str, DirectoryEvidence] | None = None,
+    classification: dict[str, dict] | None = None,
+) -> dict[str, str] | None:
     """Invoke AI CLI to generate descriptions via GitNexus. Returns {dir: desc} or None."""
     cmd = get_ai_cmd()
     if not cmd or not Path(".gitnexus").is_dir():
         return None
 
     project = Path(".").resolve().name
+    evidence_payload = _ai_evidence_payload(
+        dirs,
+        evidence_by_dir=evidence_by_dir,
+        classification=classification,
+    )
     prompt = (
         f"你在项目 {project} 中。为以下 {len(dirs)} 个目录生成 CODE_MAP.md 导航描述。\n\n"
         f"规则：\n"
-        f"1. 对每个目录，调用 gitnexus_context 查询其核心函数（被引用最多的），了解调用关系\n"
-        f"2. 只基于 GitNexus 返回的数据写描述，不自行推测\n"
-        f"3. 每个描述中文 ≤ 30 字，格式：核心职责 + 2-3 个关键功能词\n"
-        f"4. 只输出纯 JSON，无 markdown 包裹，格式：{{\"目录名\": \"描述\"}}\n\n"
-        f"目录：{' '.join(dirs)}"
+        f"1. evidence 中有 category/provider/file/symbol/process 信息，必须优先使用这些事实\n"
+        f"2. 如果 category 是 test/docs/artifact/example，优先使用 evidence，不要强制调用 GitNexus\n"
+        f"3. 如果 category 是 code_process，必须使用 GitNexus 查询或 evidence 中的 process/symbol 信息\n"
+        f"4. 禁止输出函数名列表、截断 token、泛化测试描述；不要自行编造 evidence 以外的事实\n"
+        f"5. 每个描述中文 ≤ 50 字，格式：核心职责：2-3 个关键功能词\n"
+        f"6. 只输出纯 JSON，无 markdown 包裹，key 必须完全等于输入目录，格式：{{\"目录名\": \"描述\"}}\n\n"
+        f"目录：{' '.join(dirs)}\n\n"
+        f"evidence：{json.dumps(evidence_payload, ensure_ascii=False)}"
     )
 
     try:
@@ -725,6 +768,8 @@ def ai_generate_batched(
     batch_size: int = DEFAULT_BATCH_SIZE,
     max_workers: int = DEFAULT_MAX_WORKERS,
     timeout: int = DEFAULT_AI_TIMEOUT,
+    evidence_by_dir: dict[str, DirectoryEvidence] | None = None,
+    classification: dict[str, dict] | None = None,
 ) -> tuple[dict[str, str], dict]:
     """Generate descriptions in bounded AI batches and return audit metadata."""
     cmd = get_ai_cmd()
@@ -742,14 +787,32 @@ def ai_generate_batched(
         "timeout_seconds": timeout,
         "success_dirs": [],
         "failed_dirs": [],
+        "provider_counts": {},
         "batches": [],
     }
+    if classification:
+        for dir_path in dirs:
+            provider = classification.get(normalize_dir_key(dir_path), {}).get("provider", "ai_gitnexus")
+            report["provider_counts"][provider] = report["provider_counts"].get(provider, 0) + 1
     if not batches:
         return {}, report
 
     def run_batch(index: int, batch: list[str]) -> dict:
         try:
-            result = ai_generate(batch, timeout=timeout)
+            kwargs = {"timeout": timeout}
+            if evidence_by_dir is not None:
+                kwargs["evidence_by_dir"] = {
+                    normalize_dir_key(d): evidence_by_dir[normalize_dir_key(d)]
+                    for d in batch
+                    if normalize_dir_key(d) in evidence_by_dir
+                }
+            if classification is not None:
+                kwargs["classification"] = {
+                    normalize_dir_key(d): classification[normalize_dir_key(d)]
+                    for d in batch
+                    if normalize_dir_key(d) in classification
+                }
+            result = ai_generate(batch, **kwargs)
         except Exception as exc:  # defensive: keep one bad worker from hiding the audit trail
             return {
                 "index": index,
@@ -991,6 +1054,7 @@ def main():
         batch_size=args.batch_size,
         max_workers=args.max_workers,
         timeout=args.ai_timeout,
+        classification=classification,
     )
     if descriptions:
         descriptions, rejected = filter_generated_descriptions(descriptions)
