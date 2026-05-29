@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+import generate_descriptions as gd
 from generate_descriptions import (
     parse_codemap, write_descriptions,
     get_ai_cmd, fallback_generate, get_docstring, get_keywords,
@@ -14,6 +15,29 @@ from generate_descriptions import (
     batch_dirs, ai_generate_batched, build_quality_report, _run_ai_command,
 )
 from harness_shared import parse_codemap_entry
+
+
+def make_evidence(dir_path, **overrides):
+    values = {
+        "dir_path": dir_path,
+        "file_count": 0,
+        "py_count": 0,
+        "md_count": 0,
+        "json_count": 0,
+        "gitignored": False,
+        "gitnexus_files": 0,
+        "gitnexus_functions": 0,
+        "gitnexus_methods": 0,
+        "gitnexus_classes": 0,
+        "gitnexus_processes": 0,
+        "readme_summary": "",
+        "module_docstring": "",
+        "markdown_titles": (),
+        "test_names": (),
+        "child_dirs": (),
+    }
+    values.update(overrides)
+    return gd.DirectoryEvidence(**values)
 
 
 class TestExtractDesc:
@@ -94,6 +118,15 @@ class TestParseCodemap:
             "### empty/ (10 symbols)\n"
         )
         assert parse_codemap("--dry-run") == ["bad", "empty"]
+
+    def test_refresh_dir_forces_matching_good_description_only(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text(
+            "### tests/ — 测试套件：行为校验、边界条件与回归覆盖\n"
+            "### strategies/ — 策略配置：因子组合与回测入口\n"
+        )
+
+        assert parse_codemap("--generate", refresh_dirs=["tests"]) == ["tests"]
 
 
 class TestWriteDescriptions:
@@ -369,6 +402,407 @@ class TestQualityReport:
             "needs_refresh": 3,
         }
 
+    def test_build_quality_report_breaks_down_category_and_provider(self, tmp_path):
+        codemap = tmp_path / "CODE_MAP.md"
+        codemap.write_text(
+            "### tests/ — 测试套件：行为校验、边界条件与回归覆盖\n"
+            "### data/cache/\n"
+        )
+        classification = {
+            "tests": {
+                "category": "test",
+                "provider": "test_summary",
+                "gitnexus_files": 10,
+                "gitnexus_processes": 0,
+            },
+            "data/cache": {
+                "category": "artifact",
+                "provider": "artifact_summary",
+                "gitnexus_files": 0,
+                "gitnexus_processes": 0,
+            },
+        }
+
+        report = build_quality_report(codemap, classification=classification, include_breakdown=True)
+
+        assert report["by_category"]["test"]["total"] == 1
+        assert report["by_category"]["test"]["acceptable"] == 1
+        assert report["by_provider"] == {"test_summary": 1, "artifact_summary": 1}
+        assert report["not_indexed_dirs"] == ["data/cache"]
+        assert report["indexed_but_no_process_dirs"] == ["tests"]
+
+
+class TestDirectoryEvidence:
+    def test_collect_evidence_counts_test_files(self, tmp_path, monkeypatch):
+        d = tmp_path / "tests" / "autoresearch"
+        d.mkdir(parents=True)
+        (d / "test_runner.py").write_text(
+            "def test_start_session():\n"
+            "    pass\n"
+            "\n"
+            "class TestRunner:\n"
+            "    def test_stop_session(self):\n"
+            "        pass\n",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        with patch("generate_descriptions.gitnexus_query", return_value=[]):
+            evidence = gd.collect_directory_evidence("tests/autoresearch/")
+
+        assert evidence.file_count == 1
+        assert evidence.py_count == 1
+        assert evidence.gitnexus_files == 0
+        assert evidence.gitnexus_functions == 0
+        assert "test_start_session" in evidence.test_names
+        assert "test_stop_session" in evidence.test_names
+
+    def test_collect_evidence_reads_markdown_titles(self, tmp_path, monkeypatch):
+        d = tmp_path / "docs" / "research"
+        d.mkdir(parents=True)
+        (d / "report.md").write_text("# Stage2 Profile\n\n## Summary\n")
+        monkeypatch.chdir(tmp_path)
+
+        with patch("generate_descriptions.gitnexus_query", return_value=[]):
+            evidence = gd.collect_directory_evidence("docs/research/")
+
+        assert evidence.md_count == 1
+        assert evidence.markdown_titles[:2] == ("Stage2 Profile", "Summary")
+
+    def test_collect_evidence_handles_gitnexus_query_failure(self, tmp_path, monkeypatch):
+        d = tmp_path / "src"
+        d.mkdir()
+        (d / "__init__.py").write_text('"""Core package."""\n')
+        monkeypatch.chdir(tmp_path)
+
+        with patch("generate_descriptions.gitnexus_query", side_effect=RuntimeError("boom")):
+            evidence = gd.collect_directory_evidence("src/")
+
+        assert evidence.file_count == 1
+        assert evidence.module_docstring == "Core package."
+        assert evidence.gitnexus_files == 0
+        assert evidence.gitnexus_processes == 0
+
+    def test_collect_evidence_skips_gitnexus_when_index_missing(self, tmp_path, monkeypatch):
+        d = tmp_path / "src"
+        d.mkdir()
+        (d / "__init__.py").write_text('"""Core package."""\n')
+        monkeypatch.chdir(tmp_path)
+
+        with patch("generate_descriptions.gitnexus_query") as mock_query:
+            evidence = gd.collect_directory_evidence("src/")
+
+        mock_query.assert_not_called()
+        assert evidence.gitnexus_files == 0
+        assert evidence.gitnexus_processes == 0
+
+    def test_collect_evidence_uses_one_gitnexus_count_query(self, tmp_path, monkeypatch):
+        d = tmp_path / "src"
+        d.mkdir()
+        (d / "__init__.py").write_text('"""Core package."""\n')
+        (tmp_path / ".gitnexus").mkdir()
+        monkeypatch.chdir(tmp_path)
+
+        with patch("generate_descriptions.gitnexus_query", return_value=[["1", "2", "3", "4", "5"]]) as mock_query:
+            evidence = gd.collect_directory_evidence("src/")
+
+        assert mock_query.call_count == 1
+        assert evidence.gitnexus_files == 1
+        assert evidence.gitnexus_functions == 2
+        assert evidence.gitnexus_processes == 5
+
+
+class TestProjectOverrides:
+    def test_project_override_wins_over_low_quality_existing(self, tmp_path, monkeypatch):
+        (tmp_path / ".harness").mkdir()
+        (tmp_path / ".harness" / "codemap_descriptions.json").write_text(
+            json.dumps({"descriptions": {"tests/": "测试套件：AutoResearch 与发布门禁"}})
+        )
+        (tmp_path / "CODE_MAP.md").write_text("### tests/ — ⚠️ load_module / make_task_spec\n")
+        monkeypatch.chdir(tmp_path)
+
+        overrides, report = gd.load_project_overrides(tmp_path)
+
+        assert overrides["tests"] == "测试套件：AutoResearch 与发布门禁"
+        assert report["loaded"] == 1
+        assert report["rejected"] == {}
+
+    def test_project_override_accepts_object_values(self, tmp_path, monkeypatch):
+        (tmp_path / ".harness").mkdir()
+        (tmp_path / ".harness" / "codemap_descriptions.json").write_text(
+            json.dumps({"descriptions": {"./data/results/": {"description": "回测结果产物：best、summary 与 verdict"}}})
+        )
+        monkeypatch.chdir(tmp_path)
+
+        overrides, report = gd.load_project_overrides(tmp_path)
+
+        assert overrides == {"data/results": "回测结果产物：best、summary 与 verdict"}
+        assert report["loaded"] == 1
+
+    def test_invalid_project_override_reports_error(self, tmp_path, monkeypatch):
+        (tmp_path / ".harness").mkdir()
+        (tmp_path / ".harness" / "codemap_descriptions.json").write_text("{")
+        monkeypatch.chdir(tmp_path)
+
+        overrides, report = gd.load_project_overrides(tmp_path)
+
+        assert overrides == {}
+        assert report["error"]
+
+    def test_main_applies_project_override_before_ai(self, tmp_path, monkeypatch, capsys):
+        (tmp_path / ".harness").mkdir()
+        (tmp_path / ".harness" / "codemap_descriptions.json").write_text(
+            json.dumps({"descriptions": {"tests/": "测试套件：AutoResearch 与发布门禁"}})
+        )
+        (tmp_path / "CODE_MAP.md").write_text("### tests/ — ⚠️ load_module / make_task_spec\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["generate_descriptions.py", str(tmp_path), "--generate"])
+
+        with patch("generate_descriptions.ai_generate_batched", side_effect=AssertionError("AI should not run")):
+            gd_main()
+
+        data = json.loads(capsys.readouterr().out)
+        assert data["status"] == "updated"
+        assert data["source"] == "project_override"
+        assert data["count"] == 1
+        assert "测试套件：AutoResearch 与发布门禁" in (tmp_path / "CODE_MAP.md").read_text()
+
+
+class TestDirectoryClassification:
+    def test_classifier_marks_tests_without_processes_as_test(self):
+        evidence = make_evidence(
+            "tests/autoresearch/",
+            file_count=3,
+            py_count=3,
+            gitnexus_files=3,
+            gitnexus_functions=20,
+            test_names=("test_session",),
+        )
+
+        assert gd.classify_directory(evidence, has_override=False, existing_desc="") == "test"
+        assert gd.select_provider("test") == "test_summary"
+
+    def test_classifier_marks_strategy_with_processes_as_code_process(self):
+        evidence = make_evidence(
+            "strategies/small_cap_100/",
+            file_count=12,
+            py_count=12,
+            gitnexus_files=12,
+            gitnexus_functions=60,
+            gitnexus_processes=7,
+        )
+
+        assert gd.classify_directory(evidence, has_override=False, existing_desc="") == "code_process"
+        assert gd.select_provider("code_process") == "ai_gitnexus"
+
+    def test_classifier_marks_data_cache_as_artifact(self):
+        evidence = make_evidence("data/cache/", file_count=10, json_count=1, gitignored=True)
+
+        assert gd.classify_directory(evidence, has_override=False, existing_desc="") == "artifact"
+        assert gd.select_provider("artifact") == "artifact_summary"
+
+    def test_classifier_preserves_manual_and_override(self):
+        evidence = make_evidence("src/", file_count=1, py_count=1, gitnexus_processes=2)
+
+        assert gd.classify_directory(evidence, has_override=False, existing_desc="📌 Stable") == "manual_protected"
+        assert gd.select_provider("manual_protected") == "preserve"
+        assert gd.classify_directory(evidence, has_override=True, existing_desc="") == "project_override"
+        assert gd.select_provider("project_override") == "override"
+
+    def test_dry_run_reports_classification(self, tmp_path, monkeypatch, capsys):
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_runner.py").write_text("def test_runner():\n    pass\n")
+        (tmp_path / "CODE_MAP.md").write_text("### tests/\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["generate_descriptions.py", str(tmp_path), "--dry-run"])
+
+        with patch("generate_descriptions.gitnexus_query", return_value=[]):
+            gd_main()
+
+        data = json.loads(capsys.readouterr().out)
+        assert data["classification"]["tests"]["category"] == "test"
+        assert data["classification"]["tests"]["provider"] == "test_summary"
+
+
+class TestDeterministicSummaries:
+    def test_summarize_test_dir_uses_purpose_not_raw_functions(self):
+        evidence = make_evidence(
+            "tests/autoresearch/",
+            file_count=3,
+            py_count=3,
+            test_names=("test_start_session", "test_release_gate", "test_weight_grid"),
+        )
+
+        desc = gd.summarize_test_dir(evidence)
+
+        assert desc == "AutoResearch 测试：会话、release gate、权重网格"
+        assert "test_start_session" not in desc
+        assert gd.is_acceptable_description(desc)
+
+    def test_summarize_docs_dir_uses_markdown_titles(self):
+        evidence = make_evidence(
+            "docs/research/",
+            md_count=3,
+            markdown_titles=("Stage2 Profile", "Architecture Decision", "Experiment Summary"),
+        )
+
+        desc = gd.summarize_docs_dir(evidence)
+
+        assert desc == "研究记录：性能验证、架构决策与实验报告"
+        assert gd.is_acceptable_description(desc)
+
+    def test_summarize_artifact_dir_uses_path_contract(self):
+        evidence = make_evidence("data/results/", file_count=20, json_count=12, gitignored=True)
+
+        desc = gd.summarize_artifact_dir(evidence)
+
+        assert desc == "回测结果产物：best、summary、verdict 与实验输出"
+        assert gd.is_acceptable_description(desc)
+
+    def test_summarize_examples_dir_describes_usage_entry(self):
+        evidence = make_evidence("examples/", file_count=1, py_count=1)
+
+        desc = gd.summarize_examples_dir(evidence)
+
+        assert desc == "示例入口：最小运行脚本与用法演示"
+        assert gd.is_acceptable_description(desc)
+
+    def test_main_uses_deterministic_summary_before_ai(self, tmp_path, monkeypatch, capsys):
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_runner.py").write_text("def test_weight_grid():\n    pass\n")
+        (tmp_path / "CODE_MAP.md").write_text("### tests/\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["generate_descriptions.py", str(tmp_path), "--generate"])
+
+        with patch("generate_descriptions.gitnexus_query", return_value=[]), \
+             patch("generate_descriptions.ai_generate_batched", side_effect=AssertionError("AI should not run")):
+            gd_main()
+
+        data = json.loads(capsys.readouterr().out)
+        assert data["status"] == "updated"
+        assert data["source"] == "deterministic"
+        assert data["count"] == 1
+        assert "测试" in (tmp_path / "CODE_MAP.md").read_text()
+
+    def test_main_reports_deterministic_changes_when_ai_fails(self, tmp_path, monkeypatch, capsys):
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_runner.py").write_text("def test_weight_grid():\n    pass\n")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "CODE_MAP.md").write_text("### tests/\n### src/\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["generate_descriptions.py", str(tmp_path), "--generate"])
+
+        classification = {
+            "tests": {"category": "test", "provider": "test_summary", "file_count": 1, "gitnexus_files": 0, "gitnexus_processes": 0},
+            "src": {"category": "code_process", "provider": "ai_gitnexus", "file_count": 1, "gitnexus_files": 1, "gitnexus_processes": 1},
+        }
+        with patch("generate_descriptions.build_classification_report", return_value=classification), \
+             patch("generate_descriptions.ai_generate_batched", return_value=({}, {"attempted": True, "failed_dirs": ["src"], "success_dirs": [], "batches": []})), \
+             patch("generate_descriptions.fallback_generate", return_value={}):
+            gd_main()
+
+        data = json.loads(capsys.readouterr().out)
+        assert data["status"] == "partial"
+        assert data["source"] == "deterministic+ai_failed"
+        assert data["count"] == 1
+        assert data["pending_dirs"] == ["src"]
+        assert "测试" in (tmp_path / "CODE_MAP.md").read_text()
+
+    def test_deterministic_generate_reuses_evidence_without_gitnexus_queries(self, tmp_path, monkeypatch):
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_runner.py").write_text("def test_weight_grid():\n    pass\n")
+        monkeypatch.chdir(tmp_path)
+        evidence = {
+            "tests": make_evidence(
+                "tests/",
+                file_count=1,
+                py_count=1,
+                test_names=("test_weight_grid",),
+                gitnexus_files=10,
+            ),
+        }
+        classification = {"tests": {"category": "test", "provider": "test_summary"}}
+
+        with patch("generate_descriptions.gitnexus_query", side_effect=AssertionError("should not query GitNexus")):
+            descriptions, report = gd.deterministic_generate(
+                ["tests"],
+                classification=classification,
+                evidence_by_dir=evidence,
+            )
+
+        assert descriptions["tests"].startswith("测试套件 测试")
+        assert report["provider_counts"] == {"test_summary": 1}
+
+
+class TestIncrementalRefresh:
+    def test_main_refresh_dir_limits_generation_to_one_entry(self, tmp_path, monkeypatch, capsys):
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_runner.py").write_text("def test_weight_grid():\n    pass\n")
+        (tmp_path / "strategies").mkdir()
+        (tmp_path / "CODE_MAP.md").write_text(
+            "### tests/ — 测试套件：旧描述\n"
+            "### strategies/ — 策略配置：因子组合与回测入口\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "sys.argv",
+            ["generate_descriptions.py", str(tmp_path), "--generate", "--refresh-dir", "tests"],
+        )
+
+        with patch("generate_descriptions.gitnexus_query", return_value=[]), \
+             patch("generate_descriptions.ai_generate_batched", side_effect=AssertionError("AI should not run")):
+            gd_main()
+
+        text = (tmp_path / "CODE_MAP.md").read_text()
+        assert "### tests/ — 测试套件" in text
+        assert "### strategies/ — 策略配置：因子组合与回测入口" in text
+        data = json.loads(capsys.readouterr().out)
+        assert data["count"] == 1
+
+    def test_fingerprint_filter_skips_unchanged_good_directory(self, tmp_path, monkeypatch):
+        d = tmp_path / "src"
+        d.mkdir()
+        (d / "__init__.py").write_text('"""Core package."""\n')
+        (tmp_path / "CODE_MAP.md").write_text("### src/ — 核心模块：加载与执行\n")
+        monkeypatch.chdir(tmp_path)
+        state_path = tmp_path / "fingerprints.json"
+        fingerprint = gd.build_dir_fingerprint("src")
+        state_path.write_text(json.dumps({"src": fingerprint}))
+
+        selected, report = gd.filter_dirs_by_fingerprints(["src"], state_path=state_path)
+
+        assert selected == []
+        assert report["skipped"] == ["src"]
+
+    def test_refresh_dir_bypasses_fingerprint_skip(self, tmp_path, monkeypatch, capsys):
+        d = tmp_path / "tests"
+        d.mkdir()
+        (d / "test_runner.py").write_text("def test_weight_grid():\n    pass\n")
+        (tmp_path / "CODE_MAP.md").write_text("### tests/ — 测试套件：旧描述\n")
+        monkeypatch.chdir(tmp_path)
+        state_path = gd.fingerprint_state_path(tmp_path)
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text(json.dumps({"tests": gd.build_dir_fingerprint("tests")}))
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "generate_descriptions.py",
+                str(tmp_path),
+                "--generate",
+                "--use-fingerprints",
+                "--refresh-dir",
+                "tests",
+            ],
+        )
+
+        with patch("generate_descriptions.gitnexus_query", return_value=[]), \
+             patch("generate_descriptions.ai_generate_batched", side_effect=AssertionError("AI should not run")):
+            gd_main()
+
+        data = json.loads(capsys.readouterr().out)
+        assert data["status"] == "updated"
+        assert data["count"] == 1
+        assert data["fingerprint_report"]["forced_refresh_dirs"] == ["tests"]
+
 
 class TestBatchAiGenerate:
     def test_batch_dirs_splits_in_order(self):
@@ -504,6 +938,37 @@ class TestAiGenerate:
              patch('generate_descriptions._run_ai_command', return_value=mock_result) as mock_run:
             assert ai_generate(["src"], timeout=211) == {"src": "Core logic"}
         assert mock_run.call_args.args[1] == 211
+
+    def test_prompt_includes_evidence_and_category(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".gitnexus").mkdir()
+        captured = {}
+
+        def fake_run(args, timeout):
+            captured["prompt"] = args[-1]
+            return MagicMock(returncode=0, stdout='{"src": "核心模块：加载与执行"}')
+
+        evidence = make_evidence(
+            "src/",
+            file_count=2,
+            py_count=2,
+            gitnexus_files=2,
+            gitnexus_functions=4,
+            gitnexus_processes=1,
+        )
+        with patch('generate_descriptions.get_ai_cmd', return_value="codex"), \
+             patch('generate_descriptions._run_ai_command', side_effect=fake_run):
+            result = ai_generate(
+                ["src"],
+                timeout=10,
+                evidence_by_dir={"src": evidence},
+                classification={"src": {"category": "code_process", "provider": "ai_gitnexus"}},
+            )
+
+        assert result == {"src": "核心模块：加载与执行"}
+        assert '"dir_path": "src/"' in captured["prompt"]
+        assert '"category": "code_process"' in captured["prompt"]
+        assert '"provider": "ai_gitnexus"' in captured["prompt"]
 
     def test_timeout(self, tmp_path, monkeypatch):
         """Line 146-147: subprocess timeout → None."""
