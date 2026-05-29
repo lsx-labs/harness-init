@@ -369,6 +369,9 @@ def build_classification_report(dirs: list[str], *, overrides: dict[str, str] | 
         report[normalize_dir_key(dir_path)] = {
             "category": category,
             "provider": select_provider(category),
+            "file_count": evidence.file_count,
+            "gitnexus_files": evidence.gitnexus_files,
+            "gitnexus_processes": evidence.gitnexus_processes,
         }
     return report
 
@@ -630,11 +633,16 @@ def filter_generated_descriptions(
     return accepted, rejected
 
 
-def build_quality_report(codemap_path: Path = Path("CODE_MAP.md")) -> dict[str, int]:
+def build_quality_report(
+    codemap_path: Path = Path("CODE_MAP.md"),
+    *,
+    classification: dict[str, dict] | None = None,
+    include_breakdown: bool = False,
+) -> dict:
     """Summarize CODE_MAP description quality for audit output."""
     entries = _parse_codemap(codemap_path)
     described = [e for e in entries if (e.get("desc") or "").strip()]
-    return {
+    report = {
         "total": len(entries),
         "described": len(described),
         "acceptable": sum(1 for e in entries if is_acceptable_description(e.get("desc") or "")),
@@ -643,6 +651,39 @@ def build_quality_report(codemap_path: Path = Path("CODE_MAP.md")) -> dict[str, 
         "empty": sum(1 for e in entries if not (e.get("desc") or "").strip()),
         "needs_refresh": sum(1 for e in entries if needs_description_refresh(e.get("desc") or "")),
     }
+    if not include_breakdown:
+        return report
+
+    classification = classification or {}
+    by_category: dict[str, dict[str, int]] = {}
+    by_provider: dict[str, int] = {}
+    not_indexed_dirs: list[str] = []
+    indexed_but_no_process_dirs: list[str] = []
+    for entry in entries:
+        key = normalize_dir_key(entry["dir"])
+        row = classification.get(key, {})
+        category = row.get("category", "unknown")
+        provider = row.get("provider", "unknown")
+        bucket = by_category.setdefault(category, {"total": 0, "acceptable": 0, "needs_refresh": 0})
+        bucket["total"] += 1
+        if is_acceptable_description(entry.get("desc") or ""):
+            bucket["acceptable"] += 1
+        if needs_description_refresh(entry.get("desc") or ""):
+            bucket["needs_refresh"] += 1
+        by_provider[provider] = by_provider.get(provider, 0) + 1
+        gitnexus_files = int(row.get("gitnexus_files") or 0)
+        gitnexus_processes = int(row.get("gitnexus_processes") or 0)
+        if gitnexus_files == 0:
+            not_indexed_dirs.append(key)
+        elif gitnexus_processes == 0:
+            indexed_but_no_process_dirs.append(key)
+    report.update({
+        "by_category": by_category,
+        "by_provider": by_provider,
+        "not_indexed_dirs": not_indexed_dirs,
+        "indexed_but_no_process_dirs": indexed_but_no_process_dirs,
+    })
+    return report
 
 
 def write_descriptions(descriptions: dict[str, str]) -> list[dict]:
@@ -1116,12 +1157,13 @@ def main():
         return
 
     if mode == "--dry-run":
-        quality = build_quality_report()
         overrides, override_report = load_project_overrides(Path("."))
+        classification = build_classification_report(dirs, overrides=overrides)
+        quality = build_quality_report(classification=classification, include_breakdown=True)
         print(json.dumps({
             "status": "dry_run",
             "dirs_needing": dirs,
-            "classification": build_classification_report(dirs, overrides=overrides),
+            "classification": classification,
             "override_report": override_report,
             "fingerprint_report": fingerprint_report,
             "quality_before": quality,

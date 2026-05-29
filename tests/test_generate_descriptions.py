@@ -402,6 +402,35 @@ class TestQualityReport:
             "needs_refresh": 3,
         }
 
+    def test_build_quality_report_breaks_down_category_and_provider(self, tmp_path):
+        codemap = tmp_path / "CODE_MAP.md"
+        codemap.write_text(
+            "### tests/ — 测试套件：行为校验、边界条件与回归覆盖\n"
+            "### data/cache/\n"
+        )
+        classification = {
+            "tests": {
+                "category": "test",
+                "provider": "test_summary",
+                "gitnexus_files": 10,
+                "gitnexus_processes": 0,
+            },
+            "data/cache": {
+                "category": "artifact",
+                "provider": "artifact_summary",
+                "gitnexus_files": 0,
+                "gitnexus_processes": 0,
+            },
+        }
+
+        report = build_quality_report(codemap, classification=classification, include_breakdown=True)
+
+        assert report["by_category"]["test"]["total"] == 1
+        assert report["by_category"]["test"]["acceptable"] == 1
+        assert report["by_provider"] == {"test_summary": 1, "artifact_summary": 1}
+        assert report["not_indexed_dirs"] == ["data/cache"]
+        assert report["indexed_but_no_process_dirs"] == ["tests"]
+
 
 class TestDirectoryEvidence:
     def test_collect_evidence_counts_test_files(self, tmp_path, monkeypatch):
