@@ -128,6 +128,34 @@ class TestLiveSymbolCounts:
         assert counts["src/api"] == 30
         assert counts["src/core"] == 70
 
+    def test_nested_intermediate_dir_uses_exact_symbol_count(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".gitnexus").mkdir()
+        community_queries = []
+
+        def fake_run(args, **kwargs):
+            cypher = args[3]
+            if "Community" in cypher:
+                community_queries.append(cypher)
+                return MagicMock(
+                    returncode=0,
+                    stdout=json.dumps({"markdown": "| area | syms |\n| --- | --- |\n| core | 70 |\n| api | 30 |"}),
+                    stderr="",
+                )
+            return MagicMock(
+                returncode=0,
+                stdout=json.dumps({"markdown": "| filePath |\n| --- |\n| src/core |\n| src/core/api |"}),
+                stderr="",
+            )
+
+        with patch.object(hp.subprocess, "run", side_effect=fake_run):
+            counts = hp._get_live_symbol_counts()
+
+        assert counts["src"] == 100
+        assert counts["src/core"] == 70
+        assert counts["src/core/api"] == 30
+        assert "LIMIT 25" in community_queries[0]
+
 
 class TestPlanGitnexus:
     def test_indexed_up_to_date(self):

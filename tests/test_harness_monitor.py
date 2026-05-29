@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import time
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 import sys
@@ -44,6 +45,14 @@ class TestIsGitOperation:
 
     def test_quoted_git_text_is_not_git_operation(self):
         assert hm.is_git_operation({"tool_input": {"command": 'echo "git commit"'}}) is False
+
+    def test_many_git_options_without_target_command_returns_quickly(self):
+        command = "git " + " ".join(["-x"] * 28) + " status"
+        started = time.perf_counter()
+
+        assert hm.is_git_operation({"tool_input": {"command": command}}) is False
+
+        assert time.perf_counter() - started < 0.5
 
     def test_not_git(self):
         assert hm.is_git_operation({"tool_input": {"command": "pytest tests/"}}) is False
@@ -444,6 +453,23 @@ class TestUpdateSubdirDocs:
         with patch.object(hm, 'ai_invoke', return_value=""):
             result = hm.update_subdir_docs(["src"])
             assert result == []
+
+
+class TestSyncPlatformDocs:
+    def test_equal_mtime_content_conflict_does_not_overwrite(self, tmp_path):
+        claude = tmp_path / "CLAUDE.md"
+        agents = tmp_path / "AGENTS.md"
+        claude.write_text("claude content", encoding="utf-8")
+        agents.write_text("agent content", encoding="utf-8")
+        timestamp = 1_700_000_000
+        os.utime(claude, (timestamp, timestamp))
+        os.utime(agents, (timestamp, timestamp))
+
+        result = hm.sync_platform_docs(tmp_path)
+
+        assert result == "conflict"
+        assert claude.read_text(encoding="utf-8") == "claude content"
+        assert agents.read_text(encoding="utf-8") == "agent content"
 
 
 class TestBackgroundDispatch:

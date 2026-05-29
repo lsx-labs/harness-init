@@ -18,6 +18,11 @@ LOW_CONFIDENCE_MARKER = "⚠️"
 
 SOURCE_EXTS = {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".kt",
                ".rb", ".c", ".h", ".cpp", ".cs", ".swift", ".php"}
+CODE_NAME_GENERIC = {
+    "main", "init", "run", "start", "stop", "get", "set", "test", "setup",
+    "parse", "build", "create", "delete", "update", "load", "save", "read",
+    "write", "open", "close", "validate", "check", "add",
+}
 
 MAIN_BRANCHES = {"main", "master"}
 
@@ -83,6 +88,14 @@ _LOW_QUALITY_FRAGMENTS = (
 )
 
 
+def _is_code_like_token(token: str) -> bool:
+    return (
+        "_" in token
+        or token.endswith("_")
+        or bool(re.search(r'[a-z][A-Z]', token))
+    )
+
+
 def is_manual_description(desc: str) -> bool:
     return desc.strip().startswith(MANUAL_MARKER)
 
@@ -108,12 +121,15 @@ def is_low_quality_description(desc: str) -> bool:
         return True
     if re.search(r'\b[A-Za-z]+_$', desc):
         return True
-    if re.search(r'\b(get|set|load|build|run|parse|validate|create|update|delete)[A-Z][A-Za-z0-9]*', desc):
-        return True
-    if re.fullmatch(r'[A-Za-z0-9_./\s-]+', desc) and re.search(r'\b[A-Za-z]+_[A-Za-z0-9_]+\b', desc):
-        return True
-    if re.search(r'\b(build|resolve|run|load|parse|validate)_[A-Za-z0-9_]+', desc):
-        return True
+    if all(ord(ch) < 128 for ch in desc):
+        tokens = re.findall(r'\b[A-Za-z_][A-Za-z0-9_]*\b', desc)
+        if len(tokens) == 1 and tokens[0] == desc and _is_code_like_token(tokens[0]):
+            return True
+        if len(tokens) >= 2 and all(
+            _is_code_like_token(token) or token.lower() in CODE_NAME_GENERIC
+            for token in tokens
+        ):
+            return True
     return False
 
 

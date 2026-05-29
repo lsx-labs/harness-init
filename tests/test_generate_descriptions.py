@@ -610,6 +610,17 @@ class TestDirectoryClassification:
 
         assert gd.classify_directory(evidence, has_override=False, existing_desc="") == "artifact"
 
+    def test_classifier_marks_data_source_dir_as_code(self):
+        evidence = make_evidence(
+            "data/loaders/",
+            file_count=2,
+            py_count=2,
+            gitnexus_files=2,
+            gitnexus_functions=5,
+        )
+
+        assert gd.classify_directory(evidence, has_override=False, existing_desc="") == "code_symbols"
+
     def test_classifier_preserves_manual_and_override(self):
         evidence = make_evidence("src/", file_count=1, py_count=1, gitnexus_processes=2)
 
@@ -784,6 +795,21 @@ class TestIncrementalRefresh:
         assert "### strategies/ — 策略配置：因子组合与回测入口" in text
         data = json.loads(capsys.readouterr().out)
         assert data["count"] == 1
+
+    def test_build_dir_fingerprint_for_data_source_tracks_content(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        source_dir = tmp_path / "data" / "loaders"
+        source_dir.mkdir(parents=True)
+        source_file = source_dir / "loader.py"
+        source_file.write_text("x = 1\n")
+
+        first = gd.build_dir_fingerprint("data/loaders")
+        source_file.write_text("x = 100\n")
+        second = gd.build_dir_fingerprint("data/loaders")
+
+        assert first != "artifact:data/loaders"
+        assert second != "artifact:data/loaders"
+        assert first != second
 
     def test_fingerprint_filter_skips_unchanged_good_directory(self, tmp_path, monkeypatch):
         d = tmp_path / "src"

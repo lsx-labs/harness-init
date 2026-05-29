@@ -26,6 +26,20 @@ def test_low_quality_detects_camel_case_function_names() -> None:
     assert harness_shared.is_low_quality_description("getFactor option_value")
 
 
+def test_low_quality_detects_single_code_name_description() -> None:
+    assert harness_shared.is_low_quality_description("build_user_profile")
+
+
+def test_low_quality_does_not_reject_chinese_description_with_identifier() -> None:
+    assert not harness_shared.is_low_quality_description("数据加载模块：getData 输入适配与缓存管理")
+    assert not harness_shared.is_low_quality_description("配置模块：build_config 参数校验")
+
+
+def test_low_quality_does_not_reject_english_description_with_snake_case_term() -> None:
+    assert not harness_shared.is_low_quality_description("Handles user_id validation")
+    assert not harness_shared.is_low_quality_description("factor_cache local materials")
+
+
 def test_low_quality_detects_generic_test_descriptions() -> None:
     assert harness_shared.is_low_quality_description("Tests for engine_vbt package.")
 

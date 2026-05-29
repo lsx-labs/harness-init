@@ -26,6 +26,7 @@ from pathlib import Path
 from harness_shared import (
     LOW_CONFIDENCE_MARKER,
     MANUAL_MARKER,
+    SOURCE_EXTS,
     is_acceptable_description,
     is_low_confidence_description,
     is_low_quality_description,
@@ -362,6 +363,10 @@ def _is_artifact_dir(dir_path: str) -> bool:
     return key.startswith(ARTIFACT_PREFIXES)
 
 
+def _has_source_files(dir_path: str) -> bool:
+    return any(path.suffix.lower() in SOURCE_EXTS for path in _list_dir_files(dir_path))
+
+
 def classify_directory(evidence: DirectoryEvidence, *, has_override: bool, existing_desc: str) -> str:
     """Classify a CODE_MAP directory so generation can choose the right provider."""
     desc = (existing_desc or "").strip()
@@ -370,8 +375,6 @@ def classify_directory(evidence: DirectoryEvidence, *, has_override: bool, exist
         return "manual_protected"
     if has_override:
         return "project_override"
-    if _is_artifact_dir(key) or evidence.gitignored:
-        return "artifact"
     if key == "tests/" or key.startswith("tests/"):
         return "test"
     if key == "docs/" or key.startswith("docs/") or key == "doc/" or key.startswith("doc/"):
@@ -382,6 +385,8 @@ def classify_directory(evidence: DirectoryEvidence, *, has_override: bool, exist
         return "code_process"
     if evidence.py_count > 0 or evidence.gitnexus_functions > 0 or evidence.gitnexus_methods > 0 or evidence.gitnexus_classes > 0:
         return "code_symbols"
+    if _is_artifact_dir(key) or evidence.gitignored:
+        return "artifact"
     if evidence.file_count == 0 or (
         evidence.file_count <= 2
         and evidence.py_count == 0
@@ -526,7 +531,7 @@ def deterministic_generate(
 def build_dir_fingerprint(dir_path: str) -> str:
     """Build a stable fingerprint for deciding whether a CODE_MAP dir changed."""
     key = normalize_dir_key(dir_path)
-    if _is_artifact_dir(key):
+    if _is_artifact_dir(key) and not _has_source_files(key):
         return f"artifact:{key}"
     hasher = hashlib.sha256()
     try:

@@ -150,7 +150,7 @@ def _gitnexus_markdown_query(cypher: str) -> str:
 def _get_gitnexus_communities() -> dict[str, int]:
     markdown = _gitnexus_markdown_query(
         "MATCH (c:Community) WITH c.label AS area, sum(c.symbolCount) AS syms "
-        "RETURN area, syms ORDER BY syms DESC"
+        "RETURN area, syms ORDER BY syms DESC LIMIT 25"
     )
     communities: dict[str, int] = {}
     for row in _markdown_rows(markdown):
@@ -185,15 +185,21 @@ def _get_live_symbol_counts() -> dict[str, int]:
                 area_to_dir[area] = folder
                 break
 
-    counts: dict[str, int] = {}
+    exact_counts: dict[str, int] = {}
+    top_counts: dict[str, int] = {}
     for area, symbols in communities.items():
         dir_path = area_to_dir.get(area)
         if not dir_path:
             continue
         parts = [part for part in re.split(r"/+", dir_path.strip("/")) if part]
-        for index in range(1, len(parts) + 1):
-            prefix = "/".join(parts[:index])
-            counts[prefix] = counts.get(prefix, 0) + symbols
+        if not parts:
+            continue
+        exact = "/".join(parts)
+        top = parts[0]
+        exact_counts[exact] = exact_counts.get(exact, 0) + symbols
+        top_counts[top] = top_counts.get(top, 0) + symbols
+    counts = exact_counts.copy()
+    counts.update(top_counts)
     return counts
 
 

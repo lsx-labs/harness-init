@@ -44,7 +44,7 @@ DESC_SCRIPT = Path.home() / ".local" / "share" / "harness-hooks" / "generate_des
 GITNEXUS_TIMEOUT = 15
 GIT_COMMANDS = re.compile(
     r'(?:^|(?:&&|\|\||[;|])\s*)'
-    r'git(?:\s+-[^\s;|&]+(?:\s+[^\s;|&]+)?)*\s+'
+    r'git(?:\s+-[^\s;|&]+)*\s+'
     r'(commit|merge|rebase|pull|checkout|switch|cherry-pick)\b'
 )
 CODEX_EXEC_SANDBOX_ARGS = ["-s", "read-only", "-c", "approval_policy=never"]
@@ -379,14 +379,24 @@ def sync_platform_docs(dir_path):
     claude = Path(dir_path, "CLAUDE.md")
     agents = Path(dir_path, "AGENTS.md")
     if not claude.exists() or not agents.exists():
-        return
+        return None
     try:
-        if claude.stat().st_mtime >= agents.stat().st_mtime:
-            agents.write_text(claude.read_text(encoding="utf-8"), encoding="utf-8")
+        claude_text = claude.read_text(encoding="utf-8")
+        agents_text = agents.read_text(encoding="utf-8")
+        if claude_text == agents_text:
+            return None
+        claude_mtime = claude.stat().st_mtime_ns
+        agents_mtime = agents.stat().st_mtime_ns
+        if claude_mtime == agents_mtime:
+            return "conflict"
+        if claude_mtime > agents_mtime:
+            agents.write_text(claude_text, encoding="utf-8")
+            return "claude_to_agents"
         else:
-            claude.write_text(agents.read_text(encoding="utf-8"), encoding="utf-8")
+            claude.write_text(agents_text, encoding="utf-8")
+            return "agents_to_claude"
     except OSError:
-        pass
+        return None
 
 
 def update_subdir_docs(stale_dirs):
