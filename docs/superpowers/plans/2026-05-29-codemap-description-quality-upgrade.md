@@ -719,4 +719,3 @@ gh release create v3.3.0 --generate-notes
 - If GitNexus/MCP/CLI fails, do not block deterministic providers.
 - If AI times out, kill the process group and do not write function-list fallback.
 - Treat local fingerprint state as cache only; losing it should cause extra refresh, not incorrect descriptions.
-
