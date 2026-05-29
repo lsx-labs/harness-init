@@ -546,7 +546,7 @@ def _do_main_branch_update_inner():
             break
     if desc_script:
         try:
-            subprocess.run([sys.executable, str(desc_script), ".", "--refresh"],
+            subprocess.run([sys.executable, str(desc_script), ".", "--generate", "--use-fingerprints"],
                            capture_output=True, text=True, timeout=120)
         except (subprocess.TimeoutExpired, OSError):
             pass

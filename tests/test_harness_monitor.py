@@ -533,11 +533,12 @@ class TestDoMainBranchUpdate:
              patch.object(hm, 'build_codemap_structure', return_value=(new_content, ["src"])), \
              patch.object(hm, 'update_subdir_docs', return_value=["src"]), \
              patch.object(hm, 'DESC_SCRIPT', desc_script), \
-             patch.object(hm.subprocess, 'run', return_value=MagicMock(returncode=0)):
+             patch.object(hm.subprocess, 'run', return_value=MagicMock(returncode=0)) as mock_run:
             hm.do_main_branch_update("test_project")
 
         assert (tmp_path / "CODE_MAP.md").read_text() == new_content
         assert not (tmp_path / "CODE_MAP.md.tmp").exists()
+        assert "--use-fingerprints" in mock_run.call_args.args[0]
 
     def test_update_no_desc_script(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)

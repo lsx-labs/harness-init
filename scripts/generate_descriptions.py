@@ -13,6 +13,7 @@ import ast
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
+import hashlib
 import json
 import os
 import re
@@ -477,13 +478,125 @@ def deterministic_generate(
             provider_counts[provider] = provider_counts.get(provider, 0) + 1
     return descriptions, {"provider_counts": provider_counts}
 
-def parse_codemap(mode: str) -> list[str]:
+
+def build_dir_fingerprint(dir_path: str) -> str:
+    """Build a stable fingerprint for deciding whether a CODE_MAP dir changed."""
+    key = normalize_dir_key(dir_path)
+    if _is_artifact_dir(key):
+        return f"artifact:{key}"
+    hasher = hashlib.sha256()
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-s", "--", key],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        result = None
+    if result and result.returncode == 0 and result.stdout.strip():
+        hasher.update(result.stdout.encode("utf-8"))
+        return hasher.hexdigest()
+
+    for path in _list_dir_files(key):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        hasher.update(str(path).encode("utf-8"))
+        hasher.update(str(stat.st_size).encode("utf-8"))
+        hasher.update(str(int(stat.st_mtime_ns)).encode("utf-8"))
+    return hasher.hexdigest()
+
+
+def fingerprint_state_path(root: Path = Path(".")) -> Path:
+    project_id = hashlib.sha1(str(Path(root).resolve()).encode("utf-8")).hexdigest()[:16]
+    return Path.home() / ".local" / "share" / "harness-hooks" / "projects" / project_id / "codemap_fingerprints.json"
+
+
+def _read_fingerprint_state(state_path: Path) -> dict[str, str]:
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def filter_dirs_by_fingerprints(
+    dirs: list[str],
+    *,
+    state_path: Path | None = None,
+) -> tuple[list[str], dict]:
+    state_path = state_path or fingerprint_state_path()
+    state = _read_fingerprint_state(state_path)
+    existing = {entry["dir"]: entry.get("desc") or "" for entry in _parse_codemap(Path("CODE_MAP.md"))}
+    selected: list[str] = []
+    skipped: list[str] = []
+    changed: list[str] = []
+    missing: list[str] = []
+    fingerprints: dict[str, str] = {}
+    for dir_path in dirs:
+        key = normalize_dir_key(dir_path)
+        current = build_dir_fingerprint(key)
+        fingerprints[key] = current
+        previous = state.get(key)
+        if previous is None:
+            missing.append(key)
+            selected.append(key)
+            continue
+        if previous != current:
+            changed.append(key)
+            selected.append(key)
+            continue
+        if needs_description_refresh(existing.get(key, "")):
+            selected.append(key)
+            continue
+        skipped.append(key)
+    return selected, {
+        "state_path": str(state_path),
+        "skipped": skipped,
+        "changed": changed,
+        "missing": missing,
+        "fingerprints": fingerprints,
+    }
+
+
+def save_dir_fingerprints(dirs: list[str], *, state_path: Path | None = None) -> None:
+    if not dirs:
+        return
+    state_path = state_path or fingerprint_state_path()
+    state = _read_fingerprint_state(state_path)
+    for dir_path in dirs:
+        key = normalize_dir_key(dir_path)
+        state[key] = build_dir_fingerprint(key)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = state_path.with_suffix(state_path.suffix + ".tmp")
+    tmp.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, state_path)
+
+def _matches_refresh_dir(dir_path: str, refresh_dirs: list[str] | None) -> bool:
+    if not refresh_dirs:
+        return True
+    key = normalize_dir_key(dir_path)
+    for raw in refresh_dirs:
+        target = normalize_dir_key(raw)
+        if key == target or key.startswith(f"{target}/"):
+            return True
+    return False
+
+
+def parse_codemap(mode: str, *, refresh_dirs: list[str] | None = None) -> list[str]:
     """Return list of directories needing descriptions based on mode."""
     entries = _parse_codemap(Path("CODE_MAP.md"))
     dirs = []
     for e in entries:
         desc = e.get("desc") or ""
         if desc.startswith(MANUAL_MARKER):
+            continue
+        if not _matches_refresh_dir(e["dir"], refresh_dirs):
+            continue
+        if refresh_dirs:
+            dirs.append(e["dir"])
             continue
         if mode in {"--generate", "--dry-run"} and not needs_description_refresh(desc):
             continue
@@ -974,6 +1087,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=_env_int("HARNESS_CODEMAP_AI_BATCH_SIZE", DEFAULT_BATCH_SIZE))
     parser.add_argument("--max-workers", type=int, default=_env_int("HARNESS_CODEMAP_AI_MAX_WORKERS", DEFAULT_MAX_WORKERS))
     parser.add_argument("--ai-timeout", type=int, default=_env_int("HARNESS_CODEMAP_AI_TIMEOUT", DEFAULT_AI_TIMEOUT))
+    parser.add_argument("--refresh-dir", action="append", default=[])
+    parser.add_argument("--use-fingerprints", action="store_true")
     parsed = parser.parse_args(args)
     parsed.project_dir = project_dir
     parsed.mode = mode
@@ -986,11 +1101,15 @@ def main():
     mode = args.mode
     os.chdir(project_dir)
 
-    dirs = parse_codemap(mode)
+    dirs = parse_codemap(mode, refresh_dirs=args.refresh_dir)
+    fingerprint_report = {}
+    if args.use_fingerprints and dirs:
+        dirs, fingerprint_report = filter_dirs_by_fingerprints(dirs)
     if not dirs:
         quality = build_quality_report()
         print(json.dumps({
             "status": "all_described",
+            "fingerprint_report": fingerprint_report,
             "quality_before": quality,
             "quality_after": quality,
         }, ensure_ascii=False))
@@ -1004,6 +1123,7 @@ def main():
             "dirs_needing": dirs,
             "classification": build_classification_report(dirs, overrides=overrides),
             "override_report": override_report,
+            "fingerprint_report": fingerprint_report,
             "quality_before": quality,
             "quality_after": quality,
         }, indent=2, ensure_ascii=False))
@@ -1018,9 +1138,12 @@ def main():
         dirs = [d for d in dirs if d not in override_descriptions]
         if not dirs:
             quality_after = build_quality_report()
+            if args.use_fingerprints:
+                save_dir_fingerprints([change["dir"] for change in changes])
             print(json.dumps({"status": "updated", "source": "project_override",
                               "count": len(changes), "changes": changes,
                               "override_report": override_report,
+                              "fingerprint_report": fingerprint_report,
                               "quality_before": quality_before,
                               "quality_after": quality_after}, indent=2, ensure_ascii=False))
             return
@@ -1038,11 +1161,14 @@ def main():
             dirs = [d for d in dirs if normalize_dir_key(d) not in written_dirs]
             if not dirs:
                 quality_after = build_quality_report()
+                if args.use_fingerprints:
+                    save_dir_fingerprints([change["dir"] for change in changes])
                 print(json.dumps({"status": "updated", "source": "deterministic",
                                   "count": len(changes), "changes": changes,
                                   "classification": classification,
                                   "deterministic_report": deterministic_report,
                                   "override_report": override_report,
+                                  "fingerprint_report": fingerprint_report,
                                   "quality_before": quality_before,
                                   "quality_after": quality_after,
                                   "rejected": rejected}, indent=2, ensure_ascii=False))
@@ -1062,9 +1188,12 @@ def main():
         if descriptions:
             changes = write_descriptions(descriptions)
             quality_after = build_quality_report()
+            if args.use_fingerprints:
+                save_dir_fingerprints([change["dir"] for change in changes])
             print(json.dumps({"status": "updated", "source": "ai+gitnexus",
                               "count": len(changes), "changes": changes,
                               "ai_report": ai_report,
+                              "fingerprint_report": fingerprint_report,
                               "quality_before": quality_before,
                               "quality_after": quality_after,
                               "rejected": rejected}, indent=2, ensure_ascii=False))
@@ -1079,10 +1208,13 @@ def main():
         descriptions, rejected = filter_generated_descriptions(descriptions, allow_low_confidence=True)
         changes = write_descriptions(descriptions)
         quality_after = build_quality_report()
+        if args.use_fingerprints:
+            save_dir_fingerprints([change["dir"] for change in changes])
         source = "trusted_fallback" if ai_report.get("attempted") else "fallback"
         print(json.dumps({"status": "updated", "source": source,
                           "count": len(changes), "changes": changes,
                           "ai_report": ai_report,
+                          "fingerprint_report": fingerprint_report,
                           "quality_before": quality_before,
                           "quality_after": quality_after,
                           "rejected": rejected}, indent=2, ensure_ascii=False))
@@ -1095,6 +1227,7 @@ def main():
             "source": source,
             "count": 0,
             "ai_report": ai_report,
+            "fingerprint_report": fingerprint_report,
             "quality_before": quality_before,
             "quality_after": quality_after,
         }, ensure_ascii=False))

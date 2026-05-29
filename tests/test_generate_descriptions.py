@@ -119,6 +119,15 @@ class TestParseCodemap:
         )
         assert parse_codemap("--dry-run") == ["bad", "empty"]
 
+    def test_refresh_dir_forces_matching_good_description_only(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text(
+            "### tests/ — 测试套件：行为校验、边界条件与回归覆盖\n"
+            "### strategies/ — 策略配置：因子组合与回测入口\n"
+        )
+
+        assert parse_codemap("--generate", refresh_dirs=["tests"]) == ["tests"]
+
 
 class TestWriteDescriptions:
     def test_write_top_level(self, tmp_path, monkeypatch):
@@ -629,6 +638,47 @@ class TestDeterministicSummaries:
         assert data["source"] == "deterministic"
         assert data["count"] == 1
         assert "测试" in (tmp_path / "CODE_MAP.md").read_text()
+
+
+class TestIncrementalRefresh:
+    def test_main_refresh_dir_limits_generation_to_one_entry(self, tmp_path, monkeypatch, capsys):
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_runner.py").write_text("def test_weight_grid():\n    pass\n")
+        (tmp_path / "strategies").mkdir()
+        (tmp_path / "CODE_MAP.md").write_text(
+            "### tests/ — 测试套件：旧描述\n"
+            "### strategies/ — 策略配置：因子组合与回测入口\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "sys.argv",
+            ["generate_descriptions.py", str(tmp_path), "--generate", "--refresh-dir", "tests"],
+        )
+
+        with patch("generate_descriptions.gitnexus_query", return_value=[]), \
+             patch("generate_descriptions.ai_generate_batched", side_effect=AssertionError("AI should not run")):
+            gd_main()
+
+        text = (tmp_path / "CODE_MAP.md").read_text()
+        assert "### tests/ — 测试套件" in text
+        assert "### strategies/ — 策略配置：因子组合与回测入口" in text
+        data = json.loads(capsys.readouterr().out)
+        assert data["count"] == 1
+
+    def test_fingerprint_filter_skips_unchanged_good_directory(self, tmp_path, monkeypatch):
+        d = tmp_path / "src"
+        d.mkdir()
+        (d / "__init__.py").write_text('"""Core package."""\n')
+        (tmp_path / "CODE_MAP.md").write_text("### src/ — 核心模块：加载与执行\n")
+        monkeypatch.chdir(tmp_path)
+        state_path = tmp_path / "fingerprints.json"
+        fingerprint = gd.build_dir_fingerprint("src")
+        state_path.write_text(json.dumps({"src": fingerprint}))
+
+        selected, report = gd.filter_dirs_by_fingerprints(["src"], state_path=state_path)
+
+        assert selected == []
+        assert report["skipped"] == ["src"]
 
 
 class TestBatchAiGenerate:
