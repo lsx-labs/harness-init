@@ -422,6 +422,62 @@ class TestDirectoryEvidence:
         assert evidence.gitnexus_processes == 0
 
 
+class TestProjectOverrides:
+    def test_project_override_wins_over_low_quality_existing(self, tmp_path, monkeypatch):
+        (tmp_path / ".harness").mkdir()
+        (tmp_path / ".harness" / "codemap_descriptions.json").write_text(
+            json.dumps({"descriptions": {"tests/": "测试套件：AutoResearch 与发布门禁"}})
+        )
+        (tmp_path / "CODE_MAP.md").write_text("### tests/ — ⚠️ load_module / make_task_spec\n")
+        monkeypatch.chdir(tmp_path)
+
+        overrides, report = gd.load_project_overrides(tmp_path)
+
+        assert overrides["tests"] == "测试套件：AutoResearch 与发布门禁"
+        assert report["loaded"] == 1
+        assert report["rejected"] == {}
+
+    def test_project_override_accepts_object_values(self, tmp_path, monkeypatch):
+        (tmp_path / ".harness").mkdir()
+        (tmp_path / ".harness" / "codemap_descriptions.json").write_text(
+            json.dumps({"descriptions": {"./data/results/": {"description": "回测结果产物：best、summary 与 verdict"}}})
+        )
+        monkeypatch.chdir(tmp_path)
+
+        overrides, report = gd.load_project_overrides(tmp_path)
+
+        assert overrides == {"data/results": "回测结果产物：best、summary 与 verdict"}
+        assert report["loaded"] == 1
+
+    def test_invalid_project_override_reports_error(self, tmp_path, monkeypatch):
+        (tmp_path / ".harness").mkdir()
+        (tmp_path / ".harness" / "codemap_descriptions.json").write_text("{")
+        monkeypatch.chdir(tmp_path)
+
+        overrides, report = gd.load_project_overrides(tmp_path)
+
+        assert overrides == {}
+        assert report["error"]
+
+    def test_main_applies_project_override_before_ai(self, tmp_path, monkeypatch, capsys):
+        (tmp_path / ".harness").mkdir()
+        (tmp_path / ".harness" / "codemap_descriptions.json").write_text(
+            json.dumps({"descriptions": {"tests/": "测试套件：AutoResearch 与发布门禁"}})
+        )
+        (tmp_path / "CODE_MAP.md").write_text("### tests/ — ⚠️ load_module / make_task_spec\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["generate_descriptions.py", str(tmp_path), "--generate"])
+
+        with patch("generate_descriptions.ai_generate_batched", side_effect=AssertionError("AI should not run")):
+            gd_main()
+
+        data = json.loads(capsys.readouterr().out)
+        assert data["status"] == "updated"
+        assert data["source"] == "project_override"
+        assert data["count"] == 1
+        assert "测试套件：AutoResearch 与发布门禁" in (tmp_path / "CODE_MAP.md").read_text()
+
+
 class TestBatchAiGenerate:
     def test_batch_dirs_splits_in_order(self):
         assert batch_dirs(["a", "b", "c", "d", "e"], 2) == [["a", "b"], ["c", "d"], ["e"]]

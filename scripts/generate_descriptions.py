@@ -47,6 +47,7 @@ ARTIFACT_PREFIXES = (
     "data/release_gate/",
     "data/results/",
 )
+PROJECT_OVERRIDE_PATH = Path(".harness/codemap_descriptions.json")
 
 
 @dataclass(frozen=True)
@@ -246,6 +247,58 @@ def collect_directory_evidence(dir_path: str) -> DirectoryEvidence:
         test_names=_test_names(files),
         child_dirs=_child_dirs(key),
     )
+
+
+def _override_description(raw_value) -> tuple[str, str]:
+    if isinstance(raw_value, str):
+        desc = raw_value.strip()
+    elif isinstance(raw_value, dict):
+        desc = str(raw_value.get("description") or "").strip()
+    else:
+        return "", "invalid_value"
+    if not desc:
+        return "", "empty"
+    if len(desc) > 80:
+        return "", "too_long"
+    if is_low_quality_description(desc) or not is_acceptable_description(desc):
+        return "", "low_quality"
+    return desc, ""
+
+
+def load_project_overrides(root: Path = Path(".")) -> tuple[dict[str, str], dict]:
+    """Load optional project-maintained CODE_MAP descriptions."""
+    path = Path(root) / PROJECT_OVERRIDE_PATH
+    report = {
+        "path": str(PROJECT_OVERRIDE_PATH),
+        "loaded": 0,
+        "rejected": {},
+        "error": None,
+    }
+    if not path.is_file():
+        return {}, report
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        report["error"] = str(exc)
+        return {}, report
+    raw_descriptions = data.get("descriptions") if isinstance(data, dict) else None
+    if not isinstance(raw_descriptions, dict):
+        report["error"] = "missing_descriptions_object"
+        return {}, report
+
+    overrides: dict[str, str] = {}
+    for raw_key, raw_value in raw_descriptions.items():
+        key = normalize_dir_key(str(raw_key))
+        if not key:
+            report["rejected"][str(raw_key)] = "empty_key"
+            continue
+        desc, reason = _override_description(raw_value)
+        if reason:
+            report["rejected"][key] = reason
+            continue
+        overrides[key] = desc
+    report["loaded"] = len(overrides)
+    return overrides, report
 
 def parse_codemap(mode: str) -> list[str]:
     """Return list of directories needing descriptions based on mode."""
@@ -714,6 +767,20 @@ def main():
         return
 
     quality_before = build_quality_report()
+
+    overrides, override_report = load_project_overrides(Path("."))
+    override_descriptions = {d: overrides[d] for d in dirs if d in overrides}
+    if override_descriptions:
+        changes = write_descriptions(override_descriptions)
+        dirs = [d for d in dirs if d not in override_descriptions]
+        if not dirs:
+            quality_after = build_quality_report()
+            print(json.dumps({"status": "updated", "source": "project_override",
+                              "count": len(changes), "changes": changes,
+                              "override_report": override_report,
+                              "quality_before": quality_before,
+                              "quality_after": quality_after}, indent=2, ensure_ascii=False))
+            return
 
     # Try AI + GitNexus first
     descriptions, ai_report = ai_generate_batched(
