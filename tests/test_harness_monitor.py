@@ -538,7 +538,10 @@ class TestDoMainBranchUpdate:
 
         assert (tmp_path / "CODE_MAP.md").read_text() == new_content
         assert not (tmp_path / "CODE_MAP.md.tmp").exists()
-        assert "--use-fingerprints" in mock_run.call_args.args[0]
+        desc_cmd = mock_run.call_args.args[0]
+        assert "--use-fingerprints" in desc_cmd
+        assert "--refresh-dir" in desc_cmd
+        assert "src" in desc_cmd
 
     def test_update_no_desc_script(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)

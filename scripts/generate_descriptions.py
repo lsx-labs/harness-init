@@ -507,13 +507,15 @@ def deterministic_generate(
     dirs: list[str],
     *,
     classification: dict[str, dict] | None = None,
+    evidence_by_dir: dict[str, DirectoryEvidence] | None = None,
 ) -> tuple[dict[str, str], dict]:
     """Generate descriptions for directory classes that do not need AI."""
     descriptions: dict[str, str] = {}
     provider_counts: dict[str, int] = {}
+    evidence_by_dir = evidence_by_dir or {}
     for dir_path in dirs:
         key = normalize_dir_key(dir_path)
-        evidence = collect_directory_evidence(key)
+        evidence = evidence_by_dir.get(key) or collect_directory_evidence(key)
         row = (classification or {}).get(key)
         category = row["category"] if row else classify_directory(evidence, has_override=False, existing_desc="")
         provider = select_provider(category)
@@ -1194,7 +1196,11 @@ def main():
 
     dirs = parse_codemap(mode, refresh_dirs=args.refresh_dir)
     fingerprint_report = {}
-    if args.use_fingerprints and dirs:
+    if args.use_fingerprints and args.refresh_dir:
+        fingerprint_report = {
+            "forced_refresh_dirs": [normalize_dir_key(d) for d in args.refresh_dir],
+        }
+    elif args.use_fingerprints and dirs:
         dirs, fingerprint_report = filter_dirs_by_fingerprints(dirs)
     if not dirs:
         quality = build_quality_report()
@@ -1228,18 +1234,23 @@ def main():
         return
 
     quality_before = build_quality_report()
+    all_changes: list[dict] = []
+    sources: list[str] = []
 
     overrides, override_report = load_project_overrides(Path("."))
     override_descriptions = {d: overrides[d] for d in dirs if d in overrides}
     if override_descriptions:
         changes = write_descriptions(override_descriptions)
+        all_changes.extend(changes)
+        if changes:
+            sources.append("project_override")
         dirs = [d for d in dirs if d not in override_descriptions]
         if not dirs:
             quality_after = build_quality_report()
             if args.use_fingerprints:
-                save_dir_fingerprints([change["dir"] for change in changes])
-            print(json.dumps({"status": "updated", "source": "project_override",
-                              "count": len(changes), "changes": changes,
+                save_dir_fingerprints([change["dir"] for change in all_changes])
+            print(json.dumps({"status": "updated", "source": "+".join(sources),
+                              "count": len(all_changes), "changes": all_changes,
                               "override_report": override_report,
                               "fingerprint_report": fingerprint_report,
                               "quality_before": quality_before,
@@ -1255,14 +1266,17 @@ def main():
         deterministic_descriptions, rejected = filter_generated_descriptions(deterministic_descriptions)
         if deterministic_descriptions:
             changes = write_descriptions(deterministic_descriptions)
+            all_changes.extend(changes)
+            if changes:
+                sources.append("deterministic")
             written_dirs = {change["dir"] for change in changes}
             dirs = [d for d in dirs if normalize_dir_key(d) not in written_dirs]
             if not dirs:
                 quality_after = build_quality_report()
                 if args.use_fingerprints:
-                    save_dir_fingerprints([change["dir"] for change in changes])
-                print(json.dumps({"status": "updated", "source": "deterministic",
-                                  "count": len(changes), "changes": changes,
+                    save_dir_fingerprints([change["dir"] for change in all_changes])
+                print(json.dumps({"status": "updated", "source": "+".join(sources),
+                                  "count": len(all_changes), "changes": all_changes,
                                   "classification": classification,
                                   "deterministic_report": deterministic_report,
                                   "override_report": override_report,
@@ -1285,11 +1299,14 @@ def main():
         ai_report["rejected"] = rejected
         if descriptions:
             changes = write_descriptions(descriptions)
+            all_changes.extend(changes)
+            if changes:
+                sources.append("ai+gitnexus")
             quality_after = build_quality_report()
             if args.use_fingerprints:
-                save_dir_fingerprints([change["dir"] for change in changes])
-            print(json.dumps({"status": "updated", "source": "ai+gitnexus",
-                              "count": len(changes), "changes": changes,
+                save_dir_fingerprints([change["dir"] for change in all_changes])
+            print(json.dumps({"status": "updated", "source": "+".join(sources),
+                              "count": len(all_changes), "changes": all_changes,
                               "ai_report": ai_report,
                               "fingerprint_report": fingerprint_report,
                               "quality_before": quality_before,
@@ -1305,12 +1322,15 @@ def main():
     if descriptions:
         descriptions, rejected = filter_generated_descriptions(descriptions, allow_low_confidence=True)
         changes = write_descriptions(descriptions)
+        all_changes.extend(changes)
         quality_after = build_quality_report()
         if args.use_fingerprints:
-            save_dir_fingerprints([change["dir"] for change in changes])
-        source = "trusted_fallback" if ai_report.get("attempted") else "fallback"
-        print(json.dumps({"status": "updated", "source": source,
-                          "count": len(changes), "changes": changes,
+            save_dir_fingerprints([change["dir"] for change in all_changes])
+        fallback_source = "trusted_fallback" if ai_report.get("attempted") else "fallback"
+        if changes:
+            sources.append(fallback_source)
+        print(json.dumps({"status": "updated", "source": "+".join(sources),
+                          "count": len(all_changes), "changes": all_changes,
                           "ai_report": ai_report,
                           "fingerprint_report": fingerprint_report,
                           "quality_before": quality_before,
@@ -1319,11 +1339,19 @@ def main():
     else:
         status = "ai_failed" if ai_report.get("attempted") else "no_changes"
         source = "ai+gitnexus" if ai_report.get("attempted") else "fallback"
+        if all_changes:
+            status = "partial"
+            failed_source = "ai_failed" if ai_report.get("attempted") else "fallback_failed"
+            source = f"{'+'.join(sources)}+{failed_source}"
+            if args.use_fingerprints:
+                save_dir_fingerprints([change["dir"] for change in all_changes])
         quality_after = build_quality_report()
         print(json.dumps({
             "status": status,
             "source": source,
-            "count": 0,
+            "count": len(all_changes),
+            "changes": all_changes,
+            "pending_dirs": dirs,
             "ai_report": ai_report,
             "fingerprint_report": fingerprint_report,
             "quality_before": quality_before,

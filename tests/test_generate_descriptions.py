@@ -683,6 +683,55 @@ class TestDeterministicSummaries:
         assert data["count"] == 1
         assert "测试" in (tmp_path / "CODE_MAP.md").read_text()
 
+    def test_main_reports_deterministic_changes_when_ai_fails(self, tmp_path, monkeypatch, capsys):
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_runner.py").write_text("def test_weight_grid():\n    pass\n")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "CODE_MAP.md").write_text("### tests/\n### src/\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["generate_descriptions.py", str(tmp_path), "--generate"])
+
+        classification = {
+            "tests": {"category": "test", "provider": "test_summary", "file_count": 1, "gitnexus_files": 0, "gitnexus_processes": 0},
+            "src": {"category": "code_process", "provider": "ai_gitnexus", "file_count": 1, "gitnexus_files": 1, "gitnexus_processes": 1},
+        }
+        with patch("generate_descriptions.build_classification_report", return_value=classification), \
+             patch("generate_descriptions.ai_generate_batched", return_value=({}, {"attempted": True, "failed_dirs": ["src"], "success_dirs": [], "batches": []})), \
+             patch("generate_descriptions.fallback_generate", return_value={}):
+            gd_main()
+
+        data = json.loads(capsys.readouterr().out)
+        assert data["status"] == "partial"
+        assert data["source"] == "deterministic+ai_failed"
+        assert data["count"] == 1
+        assert data["pending_dirs"] == ["src"]
+        assert "测试" in (tmp_path / "CODE_MAP.md").read_text()
+
+    def test_deterministic_generate_reuses_evidence_without_gitnexus_queries(self, tmp_path, monkeypatch):
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_runner.py").write_text("def test_weight_grid():\n    pass\n")
+        monkeypatch.chdir(tmp_path)
+        evidence = {
+            "tests": make_evidence(
+                "tests/",
+                file_count=1,
+                py_count=1,
+                test_names=("test_weight_grid",),
+                gitnexus_files=10,
+            ),
+        }
+        classification = {"tests": {"category": "test", "provider": "test_summary"}}
+
+        with patch("generate_descriptions.gitnexus_query", side_effect=AssertionError("should not query GitNexus")):
+            descriptions, report = gd.deterministic_generate(
+                ["tests"],
+                classification=classification,
+                evidence_by_dir=evidence,
+            )
+
+        assert descriptions["tests"].startswith("测试套件 测试")
+        assert report["provider_counts"] == {"test_summary": 1}
+
 
 class TestIncrementalRefresh:
     def test_main_refresh_dir_limits_generation_to_one_entry(self, tmp_path, monkeypatch, capsys):
@@ -723,6 +772,36 @@ class TestIncrementalRefresh:
 
         assert selected == []
         assert report["skipped"] == ["src"]
+
+    def test_refresh_dir_bypasses_fingerprint_skip(self, tmp_path, monkeypatch, capsys):
+        d = tmp_path / "tests"
+        d.mkdir()
+        (d / "test_runner.py").write_text("def test_weight_grid():\n    pass\n")
+        (tmp_path / "CODE_MAP.md").write_text("### tests/ — 测试套件：旧描述\n")
+        monkeypatch.chdir(tmp_path)
+        state_path = gd.fingerprint_state_path(tmp_path)
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text(json.dumps({"tests": gd.build_dir_fingerprint("tests")}))
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "generate_descriptions.py",
+                str(tmp_path),
+                "--generate",
+                "--use-fingerprints",
+                "--refresh-dir",
+                "tests",
+            ],
+        )
+
+        with patch("generate_descriptions.gitnexus_query", return_value=[]), \
+             patch("generate_descriptions.ai_generate_batched", side_effect=AssertionError("AI should not run")):
+            gd_main()
+
+        data = json.loads(capsys.readouterr().out)
+        assert data["status"] == "updated"
+        assert data["count"] == 1
+        assert data["fingerprint_report"]["forced_refresh_dirs"] == ["tests"]
 
 
 class TestBatchAiGenerate:
