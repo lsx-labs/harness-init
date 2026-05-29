@@ -363,7 +363,7 @@ def load_project_overrides(root: Path = Path(".")) -> tuple[dict[str, str], dict
 
 def _is_artifact_dir(dir_path: str) -> bool:
     key = normalize_dir_key(dir_path, trailing_slash=True)
-    return key.startswith(ARTIFACT_PREFIXES)
+    return key == "data/" or key.startswith(ARTIFACT_PREFIXES)
 
 
 def classify_directory(evidence: DirectoryEvidence, *, has_override: bool, existing_desc: str) -> str:
@@ -400,7 +400,12 @@ def select_provider(category: str) -> str:
     return PROVIDER_BY_CATEGORY.get(category, "fallback")
 
 
-def build_classification_report(dirs: list[str], *, overrides: dict[str, str] | None = None) -> dict[str, dict]:
+def build_classification_report(
+    dirs: list[str],
+    *,
+    overrides: dict[str, str] | None = None,
+    include_evidence: bool = False,
+) -> dict[str, dict]:
     overrides = overrides or {}
     existing = {entry["dir"]: entry.get("desc") or "" for entry in _parse_codemap(Path("CODE_MAP.md"))}
     gitnexus_counts_by_dir = _gitnexus_counts_for_dirs(dirs)
@@ -416,13 +421,16 @@ def build_classification_report(dirs: list[str], *, overrides: dict[str, str] | 
             has_override=key in overrides,
             existing_desc=existing.get(key, ""),
         )
-        report[key] = {
+        row = {
             "category": category,
             "provider": select_provider(category),
             "file_count": evidence.file_count,
             "gitnexus_files": evidence.gitnexus_files,
             "gitnexus_processes": evidence.gitnexus_processes,
         }
+        if include_evidence:
+            row["evidence"] = evidence
+        report[key] = row
     return report
 
 
@@ -1257,10 +1265,20 @@ def main():
                               "quality_after": quality_after}, indent=2, ensure_ascii=False))
             return
 
-    classification = build_classification_report(dirs, overrides=overrides)
+    classification = build_classification_report(dirs, overrides=overrides, include_evidence=True)
+    evidence_by_dir = {
+        key: row["evidence"]
+        for key, row in classification.items()
+        if isinstance(row.get("evidence"), DirectoryEvidence)
+    }
+    public_classification = {
+        key: {field: value for field, value in row.items() if field != "evidence"}
+        for key, row in classification.items()
+    }
     deterministic_descriptions, deterministic_report = deterministic_generate(
         dirs,
-        classification=classification,
+        classification=public_classification,
+        evidence_by_dir=evidence_by_dir,
     )
     if deterministic_descriptions:
         deterministic_descriptions, rejected = filter_generated_descriptions(deterministic_descriptions)
@@ -1277,7 +1295,7 @@ def main():
                     save_dir_fingerprints([change["dir"] for change in all_changes])
                 print(json.dumps({"status": "updated", "source": "+".join(sources),
                                   "count": len(all_changes), "changes": all_changes,
-                                  "classification": classification,
+                                  "classification": public_classification,
                                   "deterministic_report": deterministic_report,
                                   "override_report": override_report,
                                   "fingerprint_report": fingerprint_report,
@@ -1292,7 +1310,7 @@ def main():
         batch_size=args.batch_size,
         max_workers=args.max_workers,
         timeout=args.ai_timeout,
-        classification=classification,
+        classification=public_classification,
     )
     if descriptions:
         descriptions, rejected = filter_generated_descriptions(descriptions)

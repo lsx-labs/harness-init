@@ -600,6 +600,11 @@ class TestDirectoryClassification:
         assert gd.classify_directory(evidence, has_override=False, existing_desc="") == "artifact"
         assert gd.select_provider("artifact") == "artifact_summary"
 
+    def test_classifier_marks_data_root_as_artifact(self):
+        evidence = make_evidence("data/", file_count=10, json_count=4, gitnexus_files=2)
+
+        assert gd.classify_directory(evidence, has_override=False, existing_desc="") == "artifact"
+
     def test_classifier_preserves_manual_and_override(self):
         evidence = make_evidence("src/", file_count=1, py_count=1, gitnexus_processes=2)
 
@@ -731,6 +736,23 @@ class TestDeterministicSummaries:
 
         assert descriptions["tests"].startswith("测试套件 测试")
         assert report["provider_counts"] == {"test_summary": 1}
+
+    def test_main_reuses_classification_evidence_for_deterministic_generation(self, tmp_path, monkeypatch, capsys):
+        (tmp_path / "data").mkdir()
+        (tmp_path / "data" / "result.json").write_text("{}\n")
+        (tmp_path / "CODE_MAP.md").write_text("### data/\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["generate_descriptions.py", str(tmp_path), "--generate"])
+
+        evidence = make_evidence("data/", file_count=1, json_count=1, gitnexus_files=0, gitnexus_processes=0)
+        with patch("generate_descriptions.collect_directory_evidence", return_value=evidence) as mock_collect, \
+             patch("generate_descriptions.ai_generate_batched", side_effect=AssertionError("AI should not run")):
+            gd_main()
+
+        assert mock_collect.call_count == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["source"] == "deterministic"
+        assert "本地数据目录" in (tmp_path / "CODE_MAP.md").read_text()
 
 
 class TestIncrementalRefresh:
