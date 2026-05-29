@@ -220,30 +220,75 @@ def _gitnexus_counts(dir_path: str) -> dict[str, int]:
         return {"files": 0, "functions": 0, "methods": 0, "classes": 0, "processes": 0}
     if not Path(".gitnexus").is_dir():
         return {"files": 0, "functions": 0, "methods": 0, "classes": 0, "processes": 0}
-    return {
-        "files": _gitnexus_count(f"MATCH (f:File) WHERE f.filePath STARTS WITH '{prefix}' RETURN count(f)"),
-        "functions": _gitnexus_count(
-            f"MATCH (n:Function) WHERE n.filePath STARTS WITH '{prefix}' RETURN count(n)"
-        ),
-        "methods": _gitnexus_count(
-            f"MATCH (n:Method) WHERE n.filePath STARTS WITH '{prefix}' RETURN count(n)"
-        ),
-        "classes": _gitnexus_count(
-            f"MATCH (n:Class) WHERE n.filePath STARTS WITH '{prefix}' RETURN count(n)"
-        ),
-        "processes": _gitnexus_count(
-            "MATCH (s)-[:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process) "
-            f"WHERE s.filePath STARTS WITH '{prefix}' RETURN count(DISTINCT p)"
-        ),
-    }
+    rows = gitnexus_query(
+        f"OPTIONAL MATCH (f:File) WHERE f.filePath STARTS WITH '{prefix}' "
+        "WITH count(DISTINCT f) AS files "
+        f"OPTIONAL MATCH (fn:Function) WHERE fn.filePath STARTS WITH '{prefix}' "
+        "WITH files, count(DISTINCT fn) AS functions "
+        f"OPTIONAL MATCH (m:Method) WHERE m.filePath STARTS WITH '{prefix}' "
+        "WITH files, functions, count(DISTINCT m) AS methods "
+        f"OPTIONAL MATCH (c:Class) WHERE c.filePath STARTS WITH '{prefix}' "
+        "WITH files, functions, methods, count(DISTINCT c) AS classes "
+        "OPTIONAL MATCH (s)-[:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process) "
+        f"WHERE s.filePath STARTS WITH '{prefix}' "
+        "RETURN files, functions, methods, classes, count(DISTINCT p) AS processes"
+    )
+    if not rows or len(rows[0]) < 5:
+        return {"files": 0, "functions": 0, "methods": 0, "classes": 0, "processes": 0}
+    keys = ("files", "functions", "methods", "classes", "processes")
+    counts: dict[str, int] = {}
+    for key, value in zip(keys, rows[0]):
+        try:
+            counts[key] = int(str(value).strip())
+        except (TypeError, ValueError):
+            counts[key] = 0
+    return counts
 
 
-def collect_directory_evidence(dir_path: str) -> DirectoryEvidence:
+def _gitnexus_counts_for_dirs(dirs: list[str]) -> dict[str, dict[str, int]]:
+    prefixes = [normalize_dir_key(d, trailing_slash=True) for d in dirs if normalize_dir_key(d)]
+    if not prefixes or not Path(".gitnexus").is_dir():
+        return {}
+    rows = gitnexus_query(
+        f"UNWIND {json.dumps(prefixes)} AS prefix "
+        "OPTIONAL MATCH (f:File) WHERE f.filePath STARTS WITH prefix "
+        "WITH prefix, count(DISTINCT f) AS files "
+        "OPTIONAL MATCH (fn:Function) WHERE fn.filePath STARTS WITH prefix "
+        "WITH prefix, files, count(DISTINCT fn) AS functions "
+        "OPTIONAL MATCH (m:Method) WHERE m.filePath STARTS WITH prefix "
+        "WITH prefix, files, functions, count(DISTINCT m) AS methods "
+        "OPTIONAL MATCH (c:Class) WHERE c.filePath STARTS WITH prefix "
+        "WITH prefix, files, functions, methods, count(DISTINCT c) AS classes "
+        "OPTIONAL MATCH (s)-[:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process) "
+        "WHERE s.filePath STARTS WITH prefix "
+        "RETURN prefix, files, functions, methods, classes, count(DISTINCT p) AS processes"
+    )
+    result: dict[str, dict[str, int]] = {}
+    keys = ("files", "functions", "methods", "classes", "processes")
+    for row in rows:
+        if len(row) < 6:
+            continue
+        dir_key = normalize_dir_key(row[0])
+        counts: dict[str, int] = {}
+        for key, value in zip(keys, row[1:6]):
+            try:
+                counts[key] = int(str(value).strip())
+            except (TypeError, ValueError):
+                counts[key] = 0
+        result[dir_key] = counts
+    return result
+
+
+def collect_directory_evidence(
+    dir_path: str,
+    *,
+    gitnexus_counts: dict[str, int] | None = None,
+) -> DirectoryEvidence:
     """Collect local and GitNexus evidence used by CODE_MAP description providers."""
     key = normalize_dir_key(dir_path, trailing_slash=True)
     files = _list_dir_files(key)
     suffixes = [path.suffix.lower() for path in files]
-    counts = _gitnexus_counts(key)
+    counts = gitnexus_counts or _gitnexus_counts(key)
     return DirectoryEvidence(
         dir_path=key,
         file_count=len(files),
@@ -358,15 +403,20 @@ def select_provider(category: str) -> str:
 def build_classification_report(dirs: list[str], *, overrides: dict[str, str] | None = None) -> dict[str, dict]:
     overrides = overrides or {}
     existing = {entry["dir"]: entry.get("desc") or "" for entry in _parse_codemap(Path("CODE_MAP.md"))}
+    gitnexus_counts_by_dir = _gitnexus_counts_for_dirs(dirs)
     report: dict[str, dict] = {}
     for dir_path in dirs:
-        evidence = collect_directory_evidence(dir_path)
+        key = normalize_dir_key(dir_path)
+        evidence = collect_directory_evidence(
+            key,
+            gitnexus_counts=gitnexus_counts_by_dir.get(key),
+        )
         category = classify_directory(
             evidence,
-            has_override=normalize_dir_key(dir_path) in overrides,
-            existing_desc=existing.get(normalize_dir_key(dir_path), ""),
+            has_override=key in overrides,
+            existing_desc=existing.get(key, ""),
         )
-        report[normalize_dir_key(dir_path)] = {
+        report[key] = {
             "category": category,
             "provider": select_provider(category),
             "file_count": evidence.file_count,
@@ -1158,8 +1208,14 @@ def main():
 
     if mode == "--dry-run":
         overrides, override_report = load_project_overrides(Path("."))
-        classification = build_classification_report(dirs, overrides=overrides)
-        quality = build_quality_report(classification=classification, include_breakdown=True)
+        all_dirs = [entry["dir"] for entry in _parse_codemap(Path("CODE_MAP.md"))]
+        all_classification = build_classification_report(all_dirs, overrides=overrides)
+        classification = {
+            normalize_dir_key(d): all_classification[normalize_dir_key(d)]
+            for d in dirs
+            if normalize_dir_key(d) in all_classification
+        }
+        quality = build_quality_report(classification=all_classification, include_breakdown=True)
         print(json.dumps({
             "status": "dry_run",
             "dirs_needing": dirs,

@@ -495,6 +495,21 @@ class TestDirectoryEvidence:
         assert evidence.gitnexus_files == 0
         assert evidence.gitnexus_processes == 0
 
+    def test_collect_evidence_uses_one_gitnexus_count_query(self, tmp_path, monkeypatch):
+        d = tmp_path / "src"
+        d.mkdir()
+        (d / "__init__.py").write_text('"""Core package."""\n')
+        (tmp_path / ".gitnexus").mkdir()
+        monkeypatch.chdir(tmp_path)
+
+        with patch("generate_descriptions.gitnexus_query", return_value=[["1", "2", "3", "4", "5"]]) as mock_query:
+            evidence = gd.collect_directory_evidence("src/")
+
+        assert mock_query.call_count == 1
+        assert evidence.gitnexus_files == 1
+        assert evidence.gitnexus_functions == 2
+        assert evidence.gitnexus_processes == 5
+
 
 class TestProjectOverrides:
     def test_project_override_wins_over_low_quality_existing(self, tmp_path, monkeypatch):
