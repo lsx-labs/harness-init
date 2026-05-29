@@ -48,6 +48,18 @@ ARTIFACT_PREFIXES = (
     "data/results/",
 )
 PROJECT_OVERRIDE_PATH = Path(".harness/codemap_descriptions.json")
+PROVIDER_BY_CATEGORY = {
+    "manual_protected": "preserve",
+    "project_override": "override",
+    "code_process": "ai_gitnexus",
+    "code_symbols": "local_code_summary",
+    "test": "test_summary",
+    "docs": "markdown_titles",
+    "example": "example_summary",
+    "artifact": "artifact_summary",
+    "empty_or_marker": "filesystem_summary",
+    "unknown": "fallback",
+}
 
 
 @dataclass(frozen=True)
@@ -299,6 +311,63 @@ def load_project_overrides(root: Path = Path(".")) -> tuple[dict[str, str], dict
         overrides[key] = desc
     report["loaded"] = len(overrides)
     return overrides, report
+
+
+def _is_artifact_dir(dir_path: str) -> bool:
+    key = normalize_dir_key(dir_path, trailing_slash=True)
+    return key.startswith(ARTIFACT_PREFIXES)
+
+
+def classify_directory(evidence: DirectoryEvidence, *, has_override: bool, existing_desc: str) -> str:
+    """Classify a CODE_MAP directory so generation can choose the right provider."""
+    desc = (existing_desc or "").strip()
+    key = normalize_dir_key(evidence.dir_path, trailing_slash=True)
+    if desc.startswith(MANUAL_MARKER):
+        return "manual_protected"
+    if has_override:
+        return "project_override"
+    if _is_artifact_dir(key) or evidence.gitignored:
+        return "artifact"
+    if key == "tests/" or key.startswith("tests/"):
+        return "test"
+    if key == "docs/" or key.startswith("docs/") or key == "doc/" or key.startswith("doc/"):
+        return "docs"
+    if key == "examples/" or key.startswith("examples/"):
+        return "example"
+    if evidence.gitnexus_processes > 0:
+        return "code_process"
+    if evidence.py_count > 0 or evidence.gitnexus_functions > 0 or evidence.gitnexus_methods > 0 or evidence.gitnexus_classes > 0:
+        return "code_symbols"
+    if evidence.file_count == 0 or (
+        evidence.file_count <= 2
+        and evidence.py_count == 0
+        and evidence.md_count == 0
+        and evidence.json_count == 0
+    ):
+        return "empty_or_marker"
+    return "unknown"
+
+
+def select_provider(category: str) -> str:
+    return PROVIDER_BY_CATEGORY.get(category, "fallback")
+
+
+def build_classification_report(dirs: list[str], *, overrides: dict[str, str] | None = None) -> dict[str, dict]:
+    overrides = overrides or {}
+    existing = {entry["dir"]: entry.get("desc") or "" for entry in _parse_codemap(Path("CODE_MAP.md"))}
+    report: dict[str, dict] = {}
+    for dir_path in dirs:
+        evidence = collect_directory_evidence(dir_path)
+        category = classify_directory(
+            evidence,
+            has_override=normalize_dir_key(dir_path) in overrides,
+            existing_desc=existing.get(normalize_dir_key(dir_path), ""),
+        )
+        report[normalize_dir_key(dir_path)] = {
+            "category": category,
+            "provider": select_provider(category),
+        }
+    return report
 
 def parse_codemap(mode: str) -> list[str]:
     """Return list of directories needing descriptions based on mode."""
@@ -758,9 +827,12 @@ def main():
 
     if mode == "--dry-run":
         quality = build_quality_report()
+        overrides, override_report = load_project_overrides(Path("."))
         print(json.dumps({
             "status": "dry_run",
             "dirs_needing": dirs,
+            "classification": build_classification_report(dirs, overrides=overrides),
+            "override_report": override_report,
             "quality_before": quality,
             "quality_after": quality,
         }, indent=2, ensure_ascii=False))

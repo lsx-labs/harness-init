@@ -17,6 +17,29 @@ from generate_descriptions import (
 from harness_shared import parse_codemap_entry
 
 
+def make_evidence(dir_path, **overrides):
+    values = {
+        "dir_path": dir_path,
+        "file_count": 0,
+        "py_count": 0,
+        "md_count": 0,
+        "json_count": 0,
+        "gitignored": False,
+        "gitnexus_files": 0,
+        "gitnexus_functions": 0,
+        "gitnexus_methods": 0,
+        "gitnexus_classes": 0,
+        "gitnexus_processes": 0,
+        "readme_summary": "",
+        "module_docstring": "",
+        "markdown_titles": (),
+        "test_names": (),
+        "child_dirs": (),
+    }
+    values.update(overrides)
+    return gd.DirectoryEvidence(**values)
+
+
 class TestExtractDesc:
     def test_with_desc(self):
         desc, _ = parse_codemap_entry("(100 symbols) — Core module")
@@ -476,6 +499,62 @@ class TestProjectOverrides:
         assert data["source"] == "project_override"
         assert data["count"] == 1
         assert "测试套件：AutoResearch 与发布门禁" in (tmp_path / "CODE_MAP.md").read_text()
+
+
+class TestDirectoryClassification:
+    def test_classifier_marks_tests_without_processes_as_test(self):
+        evidence = make_evidence(
+            "tests/autoresearch/",
+            file_count=3,
+            py_count=3,
+            gitnexus_files=3,
+            gitnexus_functions=20,
+            test_names=("test_session",),
+        )
+
+        assert gd.classify_directory(evidence, has_override=False, existing_desc="") == "test"
+        assert gd.select_provider("test") == "test_summary"
+
+    def test_classifier_marks_strategy_with_processes_as_code_process(self):
+        evidence = make_evidence(
+            "strategies/small_cap_100/",
+            file_count=12,
+            py_count=12,
+            gitnexus_files=12,
+            gitnexus_functions=60,
+            gitnexus_processes=7,
+        )
+
+        assert gd.classify_directory(evidence, has_override=False, existing_desc="") == "code_process"
+        assert gd.select_provider("code_process") == "ai_gitnexus"
+
+    def test_classifier_marks_data_cache_as_artifact(self):
+        evidence = make_evidence("data/cache/", file_count=10, json_count=1, gitignored=True)
+
+        assert gd.classify_directory(evidence, has_override=False, existing_desc="") == "artifact"
+        assert gd.select_provider("artifact") == "artifact_summary"
+
+    def test_classifier_preserves_manual_and_override(self):
+        evidence = make_evidence("src/", file_count=1, py_count=1, gitnexus_processes=2)
+
+        assert gd.classify_directory(evidence, has_override=False, existing_desc="📌 Stable") == "manual_protected"
+        assert gd.select_provider("manual_protected") == "preserve"
+        assert gd.classify_directory(evidence, has_override=True, existing_desc="") == "project_override"
+        assert gd.select_provider("project_override") == "override"
+
+    def test_dry_run_reports_classification(self, tmp_path, monkeypatch, capsys):
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_runner.py").write_text("def test_runner():\n    pass\n")
+        (tmp_path / "CODE_MAP.md").write_text("### tests/\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["generate_descriptions.py", str(tmp_path), "--dry-run"])
+
+        with patch("generate_descriptions.gitnexus_query", return_value=[]):
+            gd_main()
+
+        data = json.loads(capsys.readouterr().out)
+        assert data["classification"]["tests"]["category"] == "test"
+        assert data["classification"]["tests"]["provider"] == "test_summary"
 
 
 class TestBatchAiGenerate:
