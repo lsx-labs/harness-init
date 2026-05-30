@@ -247,6 +247,9 @@ def main():
     if claude_dir.is_dir():
         register_hooks(claude_dir / "settings.json", "Claude Code", monitor_path, context_path)
     if codex_dir.is_dir():
+        # Assumes Codex honors the same event names + matchers as Claude
+        # (PostToolUse "Bash", SessionStart "startup|clear"). If Codex's hook schema
+        # diverges, the SessionStart context injection would silently no-op on Codex.
         register_hooks(codex_dir / "hooks.json", "Codex", monitor_path, context_path)
 
     # ── 4. GitNexus Codex integration (wrapper + reachable Claude hook) ──

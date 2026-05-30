@@ -48,18 +48,19 @@ python3 ~/.local/bin/harness-plan.py . --platform codex
 
 ```json
 {
-  "platform": "claude",
-  "doc_file": "CLAUDE.md",
-  "root_doc": {"action": "copy", "from": "AGENTS.md"},
+  "platform": "codex",
+  "doc_file": "AGENTS.md",
+  "root_doc": {"action": "copy", "from": "CLAUDE.md"},
   "codemap": {"action": "refresh", "dirs_needing": ["src/core"]},
   "gitnexus": {"action": "analyze"},
   "subdirs": {
-    "copy": [{"dir": "src/api", "from": "AGENTS.md"}],
+    "copy": [{"dir": "src/api", "from": "CLAUDE.md"}],
     "generate": [{"dir": "src/utils", "depth": 1}],
     "skip": ["src/common"],
     "layers": [[1, ["src/utils"]]]
   },
-  "lsp": [{"language": "Python", "action": "recommend", "plugin": "..."}]
+  "lsp": [{"language": "Python", "action": "recommend", "plugin": "..."}],
+  "codex_gitnexus_wrapper": {"action": "skip"}
 }
 ```
 
@@ -144,6 +145,13 @@ Layer 1: spawn 子 Agent 生成 src/utils/AGENTS.md（可复用下层）
 |---|---|
 | `skip` | 无操作 |
 | `recommend` | 提示用户安装对应插件（询问确认） |
+
+#### 2.6 Codex GitNexus 包装器（plan.codex_gitnexus_wrapper）
+
+| action | 执行 |
+|---|---|
+| `skip` | 无操作（已配置 / 非 Codex / 无 hooks.json） |
+| `fix` | 提示用户重新运行 `python3 <harness-init>/install.py` 安装并注册 Codex GitNexus 包装器；`status`/`reason` 字段说明具体问题（missing_wrapper / not_configured / self_test_failed 等） |
 
 ### 根 AGENTS.md 模板
 

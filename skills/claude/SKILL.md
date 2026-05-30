@@ -59,7 +59,8 @@ python3 ~/.local/bin/harness-plan.py . --platform claude
     "skip": ["src/common"],
     "layers": [[1, ["src/utils"]]]
   },
-  "lsp": [{"language": "Python", "action": "recommend", "plugin": "..."}]
+  "lsp": [{"language": "Python", "action": "recommend", "plugin": "..."}],
+  "codex_gitnexus_wrapper": {"action": "skip"}
 }
 ```
 
@@ -144,6 +145,10 @@ Layer 1: spawn 子 Agent 生成 src/utils/CLAUDE.md（可复用下层）
 |---|---|
 | `skip` | 无操作 |
 | `recommend` | 提示用户安装对应插件（询问确认） |
+
+#### 2.6 Codex GitNexus 包装器（plan.codex_gitnexus_wrapper）
+
+仅 Codex 环境相关;在 Claude 下 `action` 恒为 `skip`,无操作。
 
 ### 根 CLAUDE.md 模板
 

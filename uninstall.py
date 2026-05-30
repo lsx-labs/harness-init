@@ -73,8 +73,9 @@ def main():
     rm_dir(share / "jobs")
     rm_dir(share / "projects")
 
-    # Codex GitNexus wrapper (installed by install.py section 4b)
+    # Codex GitNexus wrapper + the Claude GitNexus hook it delegates to (install.py section 4)
     rm_file(HOME / ".codex" / "hooks" / "gitnexus-codex-hook.cjs")
+    rm_file(HOME / ".claude" / "hooks" / "gitnexus" / "gitnexus-hook.cjs")
 
     # Skills
     rm_dir(HOME / ".claude" / "skills" / "harness-init")
