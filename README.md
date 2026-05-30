@@ -90,8 +90,8 @@ examples 不会被强制走 GitNexus 流程。
 ```
 
 AI+GitNexus 按小批次运行，默认超时 180 秒；批次失败或超时时会自动拆成单目录重试，
-重试默认使用最多 2 个 worker 和不少于 240 秒的 timeout。可用 `--batch-size`、
-`--max-workers`、`--ai-timeout` 或 `HARNESS_CODEMAP_AI_*` 环境变量调整。模式：`--generate`
+重试 timeout 不低于 240 秒。批次与重试均顺序执行（无 worker 池）。可用 `--batch-size`、
+`--ai-timeout` 或 `HARNESS_CODEMAP_AI_*` 环境变量调整。模式：`--generate`
 （仅补空/低质，默认）、`--refresh`（重生成全部，除 `📌`）、`--dry-run`（只看变更）。大项目可局部刷新：
 
 ```bash

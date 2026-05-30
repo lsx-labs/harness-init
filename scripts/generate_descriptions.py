@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import ast
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 import hashlib
 import json
@@ -41,7 +40,6 @@ from harness_shared import (
 HOOK_TIMEOUT = 10
 DEFAULT_AI_TIMEOUT = 180
 DEFAULT_BATCH_SIZE = 2
-DEFAULT_MAX_WORKERS = 1
 GENERIC = {"main", "init", "run", "start", "stop", "get", "set", "test", "setup", "parse",
            "build", "create", "delete", "update", "load", "save", "read", "write", "open",
            "close", "validate", "check", "add", "all", "data", "config", "path", "name", "type"}
@@ -941,12 +939,15 @@ def ai_generate_batched(
     dirs: list[str],
     *,
     batch_size: int = DEFAULT_BATCH_SIZE,
-    max_workers: int = DEFAULT_MAX_WORKERS,
     timeout: int = DEFAULT_AI_TIMEOUT,
     evidence_by_dir: dict[str, DirectoryEvidence] | None = None,
     classification: dict[str, dict] | None = None,
 ) -> tuple[dict[str, str], dict]:
-    """Generate descriptions in bounded AI batches and return audit metadata."""
+    """Generate descriptions in bounded AI batches (sequential) and return audit metadata.
+
+    Runs as a detached background job with no timeout pressure, so batches and the
+    single per-dir retry pass run sequentially — no worker pool.
+    """
     cmd = get_ai_cmd()
     if not cmd:
         return {}, {"attempted": False, "reason": "no_ai_cmd"}
@@ -954,19 +955,15 @@ def ai_generate_batched(
         return {}, {"attempted": False, "reason": "no_gitnexus_index"}
 
     batches = batch_dirs(dirs, batch_size)
-    worker_count = max(1, min(int(max_workers or 1), len(batches) or 1))
     report = {
         "attempted": True,
         "batch_size": max(1, int(batch_size or 1)),
-        "max_workers": worker_count,
         "timeout_seconds": timeout,
         "success_dirs": [],
         "failed_dirs": [],
         "initial_success_dirs": [],
         "initial_failed_dirs": [],
         "retry_attempted": False,
-        "retry_batch_size": 1,
-        "retry_max_workers": 0,
         "retry_timeout_seconds": None,
         "retry_success_dirs": [],
         "retry_failed_dirs": [],
@@ -997,126 +994,46 @@ def ai_generate_batched(
             }
         return kwargs
 
-    def run_batch(index: int, batch: list[str]) -> dict:
+    def run_one(index: int, batch: list[str], timeout_seconds: int) -> dict:
         try:
-            result = ai_generate(batch, **_ai_kwargs(batch, timeout))
-        except Exception as exc:  # defensive: keep one bad worker from hiding the audit trail
-            return {
-                "index": index,
-                "dirs": batch,
-                "status": "error",
-                "error": str(exc),
-                "descriptions": {},
-            }
-        return {
-            "index": index,
-            "dirs": batch,
-            "status": "success" if result else "failed",
-            "descriptions": result or {},
-        }
+            result = ai_generate(batch, **_ai_kwargs(batch, timeout_seconds))
+        except Exception as exc:  # defensive: keep a bad call from hiding the audit trail
+            return {"index": index, "dirs": batch, "status": "error",
+                    "error": str(exc), "descriptions": {}}
+        return {"index": index, "dirs": batch, "status": "success" if result else "failed",
+                "descriptions": result or {}}
 
-    results: list[dict] = []
-    if worker_count == 1:
-        results = [run_batch(index, batch) for index, batch in enumerate(batches)]
-    else:
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            futures = {
-                executor.submit(run_batch, index, batch): index
-                for index, batch in enumerate(batches)
-            }
-            for future in as_completed(futures):
-                results.append(future.result())
-
-    descriptions: dict[str, str] = {}
-    retry_dirs: list[str] = []
-    for item in sorted(results, key=lambda row: row["index"]):
+    def record(item: dict, success_key: str, failed_key: str, log_key: str) -> list[str]:
         requested = item["dirs"]
-        returned = {
-            key: value
-            for key, value in item.get("descriptions", {}).items()
-            if key in requested
-        }
+        returned = {k: v for k, v in item.get("descriptions", {}).items() if k in requested}
         descriptions.update(returned)
         success_dirs = [d for d in requested if d in returned]
         failed_dirs = [d for d in requested if d not in returned]
-        report["initial_success_dirs"].extend(success_dirs)
-        report["initial_failed_dirs"].extend(failed_dirs)
-        for dir_path in failed_dirs:
-            if dir_path not in retry_dirs:
-                retry_dirs.append(dir_path)
-        status = item["status"]
-        if returned and failed_dirs:
-            status = "partial"
-        report["batches"].append({
-            "index": item["index"],
-            "dirs": requested,
-            "status": status,
-            "returned_dirs": success_dirs,
-            "failed_dirs": failed_dirs,
+        report[success_key].extend(success_dirs)
+        report[failed_key].extend(failed_dirs)
+        status = "partial" if (returned and failed_dirs) else item["status"]
+        report[log_key].append({
+            "index": item["index"], "dirs": requested, "status": status,
+            "returned_dirs": success_dirs, "failed_dirs": failed_dirs,
             **({"error": item["error"]} if item.get("error") else {}),
         })
+        return failed_dirs
+
+    descriptions: dict[str, str] = {}
+    retry_dirs: list[str] = []
+    for index, batch in enumerate(batches):
+        for d in record(run_one(index, batch, timeout),
+                        "initial_success_dirs", "initial_failed_dirs", "batches"):
+            if d not in retry_dirs:
+                retry_dirs.append(d)
 
     if retry_dirs:
         retry_timeout = max(timeout, 240)
-        retry_worker_count = max(1, min(2, int(max_workers or 1), len(retry_dirs)))
         report["retry_attempted"] = True
-        report["retry_max_workers"] = retry_worker_count
         report["retry_timeout_seconds"] = retry_timeout
-
-        def run_retry(index: int, dir_path: str) -> dict:
-            batch = [dir_path]
-            try:
-                result = ai_generate(batch, **_ai_kwargs(batch, retry_timeout))
-            except Exception as exc:  # defensive: keep retry failures auditable
-                return {
-                    "index": index,
-                    "dirs": batch,
-                    "status": "error",
-                    "error": str(exc),
-                    "descriptions": {},
-                }
-            return {
-                "index": index,
-                "dirs": batch,
-                "status": "success" if result else "failed",
-                "descriptions": result or {},
-            }
-
-        if retry_worker_count == 1:
-            retry_results = [run_retry(index, dir_path) for index, dir_path in enumerate(retry_dirs)]
-        else:
-            retry_results = []
-            with ThreadPoolExecutor(max_workers=retry_worker_count) as executor:
-                futures = {
-                    executor.submit(run_retry, index, dir_path): index
-                    for index, dir_path in enumerate(retry_dirs)
-                }
-                for future in as_completed(futures):
-                    retry_results.append(future.result())
-
-        for item in sorted(retry_results, key=lambda row: row["index"]):
-            requested = item["dirs"]
-            returned = {
-                key: value
-                for key, value in item.get("descriptions", {}).items()
-                if key in requested
-            }
-            descriptions.update(returned)
-            success_dirs = [d for d in requested if d in returned]
-            failed_dirs = [d for d in requested if d not in returned]
-            report["retry_success_dirs"].extend(success_dirs)
-            report["retry_failed_dirs"].extend(failed_dirs)
-            status = item["status"]
-            if returned and failed_dirs:
-                status = "partial"
-            report["retries"].append({
-                "index": item["index"],
-                "dirs": requested,
-                "status": status,
-                "returned_dirs": success_dirs,
-                "failed_dirs": failed_dirs,
-                **({"error": item["error"]} if item.get("error") else {}),
-            })
+        for index, dir_path in enumerate(retry_dirs):
+            record(run_one(index, [dir_path], retry_timeout),
+                   "retry_success_dirs", "retry_failed_dirs", "retries")
 
     report["success_dirs"] = [d for d in dirs if d in descriptions]
     report["failed_dirs"] = [d for d in dirs if d not in descriptions]
@@ -1226,7 +1143,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         mode = args.pop(0)
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch-size", type=int, default=_env_int("HARNESS_CODEMAP_AI_BATCH_SIZE", DEFAULT_BATCH_SIZE))
-    parser.add_argument("--max-workers", type=int, default=_env_int("HARNESS_CODEMAP_AI_MAX_WORKERS", DEFAULT_MAX_WORKERS))
     parser.add_argument("--ai-timeout", type=int, default=_env_int("HARNESS_CODEMAP_AI_TIMEOUT", DEFAULT_AI_TIMEOUT))
     parser.add_argument("--refresh-dir", action="append", default=[])
     parser.add_argument("--use-fingerprints", action="store_true")
@@ -1348,7 +1264,6 @@ def main():
     descriptions, ai_report = ai_generate_batched(
         dirs,
         batch_size=args.batch_size,
-        max_workers=args.max_workers,
         timeout=args.ai_timeout,
         classification=public_classification,
     )

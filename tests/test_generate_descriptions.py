@@ -880,14 +880,12 @@ class TestBatchAiGenerate:
             descriptions, report = ai_generate_batched(
                 ["a", "b", "c"],
                 batch_size=2,
-                max_workers=1,
                 timeout=123,
             )
 
         assert descriptions == {"a": "a 语义描述", "b": "b 语义描述"}
         assert report["attempted"] is True
         assert report["batch_size"] == 2
-        assert report["max_workers"] == 1
         assert report["timeout_seconds"] == 123
         assert report["success_dirs"] == ["a", "b"]
         assert report["failed_dirs"] == ["c"]
@@ -909,7 +907,6 @@ class TestBatchAiGenerate:
             descriptions, report = ai_generate_batched(
                 ["a", "b", "c"],
                 batch_size=2,
-                max_workers=1,
                 timeout=180,
             )
 
@@ -948,7 +945,6 @@ class TestBatchAiGenerate:
             descriptions, report = ai_generate_batched(
                 ["a", "b"],
                 batch_size=2,
-                max_workers=1,
                 timeout=300,
             )
 
@@ -1278,8 +1274,6 @@ class TestMainFunction:
                 '--generate',
                 '--batch-size',
                 '2',
-                '--max-workers',
-                '2',
                 '--ai-timeout',
                 '180',
             ],
@@ -1291,7 +1285,6 @@ class TestMainFunction:
                 {
                     "attempted": True,
                     "batch_size": 2,
-                    "max_workers": 2,
                     "timeout_seconds": 180,
                     "success_dirs": ["src"],
                     "failed_dirs": [],
@@ -1305,7 +1298,6 @@ class TestMainFunction:
         assert data["status"] == "updated"
         assert data["source"] == "ai+gitnexus"
         assert data["ai_report"]["batch_size"] == 2
-        assert data["ai_report"]["max_workers"] == 2
         assert data["ai_report"]["timeout_seconds"] == 180
         assert data["quality_before"]["acceptable"] == 0
         assert data["quality_after"]["acceptable"] == 1
