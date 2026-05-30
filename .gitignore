@@ -6,4 +6,5 @@ __pycache__/
 htmlcov/
 .pytest_cache/
 .gitnexus/
+.claude/
 CODE_MAP.md
