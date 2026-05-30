@@ -1000,8 +1000,17 @@ def ai_generate_batched(
         "timeout_seconds": timeout,
         "success_dirs": [],
         "failed_dirs": [],
+        "initial_success_dirs": [],
+        "initial_failed_dirs": [],
+        "retry_attempted": False,
+        "retry_batch_size": 1,
+        "retry_max_workers": 0,
+        "retry_timeout_seconds": None,
+        "retry_success_dirs": [],
+        "retry_failed_dirs": [],
         "provider_counts": {},
         "batches": [],
+        "retries": [],
     }
     if classification:
         for dir_path in dirs:
@@ -1010,22 +1019,25 @@ def ai_generate_batched(
     if not batches:
         return {}, report
 
+    def _ai_kwargs(batch: list[str], timeout_seconds: int) -> dict:
+        kwargs = {"timeout": timeout_seconds}
+        if evidence_by_dir is not None:
+            kwargs["evidence_by_dir"] = {
+                normalize_dir_key(d): evidence_by_dir[normalize_dir_key(d)]
+                for d in batch
+                if normalize_dir_key(d) in evidence_by_dir
+            }
+        if classification is not None:
+            kwargs["classification"] = {
+                normalize_dir_key(d): classification[normalize_dir_key(d)]
+                for d in batch
+                if normalize_dir_key(d) in classification
+            }
+        return kwargs
+
     def run_batch(index: int, batch: list[str]) -> dict:
         try:
-            kwargs = {"timeout": timeout}
-            if evidence_by_dir is not None:
-                kwargs["evidence_by_dir"] = {
-                    normalize_dir_key(d): evidence_by_dir[normalize_dir_key(d)]
-                    for d in batch
-                    if normalize_dir_key(d) in evidence_by_dir
-                }
-            if classification is not None:
-                kwargs["classification"] = {
-                    normalize_dir_key(d): classification[normalize_dir_key(d)]
-                    for d in batch
-                    if normalize_dir_key(d) in classification
-                }
-            result = ai_generate(batch, **kwargs)
+            result = ai_generate(batch, **_ai_kwargs(batch, timeout))
         except Exception as exc:  # defensive: keep one bad worker from hiding the audit trail
             return {
                 "index": index,
@@ -1054,6 +1066,7 @@ def ai_generate_batched(
                 results.append(future.result())
 
     descriptions: dict[str, str] = {}
+    retry_dirs: list[str] = []
     for item in sorted(results, key=lambda row: row["index"]):
         requested = item["dirs"]
         returned = {
@@ -1064,8 +1077,11 @@ def ai_generate_batched(
         descriptions.update(returned)
         success_dirs = [d for d in requested if d in returned]
         failed_dirs = [d for d in requested if d not in returned]
-        report["success_dirs"].extend(success_dirs)
-        report["failed_dirs"].extend(failed_dirs)
+        report["initial_success_dirs"].extend(success_dirs)
+        report["initial_failed_dirs"].extend(failed_dirs)
+        for dir_path in failed_dirs:
+            if dir_path not in retry_dirs:
+                retry_dirs.append(dir_path)
         status = item["status"]
         if returned and failed_dirs:
             status = "partial"
@@ -1077,6 +1093,71 @@ def ai_generate_batched(
             "failed_dirs": failed_dirs,
             **({"error": item["error"]} if item.get("error") else {}),
         })
+
+    if retry_dirs:
+        retry_timeout = max(timeout, 240)
+        retry_worker_count = max(1, min(2, int(max_workers or 1), len(retry_dirs)))
+        report["retry_attempted"] = True
+        report["retry_max_workers"] = retry_worker_count
+        report["retry_timeout_seconds"] = retry_timeout
+
+        def run_retry(index: int, dir_path: str) -> dict:
+            batch = [dir_path]
+            try:
+                result = ai_generate(batch, **_ai_kwargs(batch, retry_timeout))
+            except Exception as exc:  # defensive: keep retry failures auditable
+                return {
+                    "index": index,
+                    "dirs": batch,
+                    "status": "error",
+                    "error": str(exc),
+                    "descriptions": {},
+                }
+            return {
+                "index": index,
+                "dirs": batch,
+                "status": "success" if result else "failed",
+                "descriptions": result or {},
+            }
+
+        if retry_worker_count == 1:
+            retry_results = [run_retry(index, dir_path) for index, dir_path in enumerate(retry_dirs)]
+        else:
+            retry_results = []
+            with ThreadPoolExecutor(max_workers=retry_worker_count) as executor:
+                futures = {
+                    executor.submit(run_retry, index, dir_path): index
+                    for index, dir_path in enumerate(retry_dirs)
+                }
+                for future in as_completed(futures):
+                    retry_results.append(future.result())
+
+        for item in sorted(retry_results, key=lambda row: row["index"]):
+            requested = item["dirs"]
+            returned = {
+                key: value
+                for key, value in item.get("descriptions", {}).items()
+                if key in requested
+            }
+            descriptions.update(returned)
+            success_dirs = [d for d in requested if d in returned]
+            failed_dirs = [d for d in requested if d not in returned]
+            report["retry_success_dirs"].extend(success_dirs)
+            report["retry_failed_dirs"].extend(failed_dirs)
+            status = item["status"]
+            if returned and failed_dirs:
+                status = "partial"
+            report["retries"].append({
+                "index": item["index"],
+                "dirs": requested,
+                "status": status,
+                "returned_dirs": success_dirs,
+                "failed_dirs": failed_dirs,
+                **({"error": item["error"]} if item.get("error") else {}),
+            })
+
+    report["success_dirs"] = [d for d in dirs if d in descriptions]
+    report["failed_dirs"] = [d for d in dirs if d not in descriptions]
     return descriptions, report
 
 

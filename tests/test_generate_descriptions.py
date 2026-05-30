@@ -890,6 +890,72 @@ class TestBatchAiGenerate:
         assert report["failed_dirs"] == ["c"]
         assert report["batches"][1]["status"] == "failed"
 
+    def test_ai_generate_batched_retries_failed_batches_as_single_dirs(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".gitnexus").mkdir()
+        calls = []
+
+        def fake_ai_generate(dirs, *, timeout):
+            calls.append((tuple(dirs), timeout))
+            if dirs == ["a", "b"]:
+                return None
+            return {d: f"{d} 语义描述" for d in dirs}
+
+        with patch("generate_descriptions.get_ai_cmd", return_value="codex"), \
+             patch("generate_descriptions.ai_generate", side_effect=fake_ai_generate):
+            descriptions, report = ai_generate_batched(
+                ["a", "b", "c"],
+                batch_size=2,
+                max_workers=1,
+                timeout=180,
+            )
+
+        assert descriptions == {
+            "a": "a 语义描述",
+            "b": "b 语义描述",
+            "c": "c 语义描述",
+        }
+        assert calls == [
+            (("a", "b"), 180),
+            (("c",), 180),
+            (("a",), 240),
+            (("b",), 240),
+        ]
+        assert report["failed_dirs"] == []
+        assert report["initial_failed_dirs"] == ["a", "b"]
+        assert report["retry_attempted"] is True
+        assert report["retry_success_dirs"] == ["a", "b"]
+        assert report["retry_failed_dirs"] == []
+        assert report["retries"][0]["dirs"] == ["a"]
+        assert report["retries"][0]["status"] == "success"
+
+    def test_ai_generate_batched_retries_only_missing_dirs_from_partial_batch(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".gitnexus").mkdir()
+        calls = []
+
+        def fake_ai_generate(dirs, *, timeout):
+            calls.append((tuple(dirs), timeout))
+            if dirs == ["a", "b"]:
+                return {"a": "a 语义描述"}
+            return {d: f"{d} 语义描述" for d in dirs}
+
+        with patch("generate_descriptions.get_ai_cmd", return_value="codex"), \
+             patch("generate_descriptions.ai_generate", side_effect=fake_ai_generate):
+            descriptions, report = ai_generate_batched(
+                ["a", "b"],
+                batch_size=2,
+                max_workers=1,
+                timeout=300,
+            )
+
+        assert descriptions == {"a": "a 语义描述", "b": "b 语义描述"}
+        assert calls == [(("a", "b"), 300), (("b",), 300)]
+        assert report["failed_dirs"] == []
+        assert report["initial_failed_dirs"] == ["b"]
+        assert report["retry_success_dirs"] == ["b"]
+        assert report["retry_timeout_seconds"] == 300
+
 
 # ── Additional coverage tests ──
 
