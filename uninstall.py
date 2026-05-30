@@ -37,7 +37,8 @@ def cleanup_hooks(config_file: Path, platform_name: str):
                 if not any("harness_monitor" in h.get("command", "") or
                            "harness-monitor" in h.get("command", "") or
                            "session_context" in h.get("command", "") or
-                           "session-context" in h.get("command", "")
+                           "session-context" in h.get("command", "") or
+                           "gitnexus-codex-hook" in h.get("command", "")
                            for h in i.get("hooks", []))
             ]
             if not hooks[event]:
@@ -69,6 +70,9 @@ def main():
     rm_dir(share / "counters")
     rm_dir(share / "locks")
     rm_dir(share / "notifications")
+
+    # Codex GitNexus wrapper (installed by install.py section 4b)
+    rm_file(HOME / ".codex" / "hooks" / "gitnexus-codex-hook.cjs")
 
     # Skills
     rm_dir(HOME / ".claude" / "skills" / "harness-init")
