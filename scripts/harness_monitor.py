@@ -19,7 +19,6 @@ import io
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -29,8 +28,8 @@ if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 from harness_shared import (SKIP_DIRS, STALE_THRESHOLD, SOURCE_EXTS, MAIN_BRANCHES,
-                    CODEX_EXEC_SANDBOX_ARGS, should_skip, parse_codemap_entry, parse_codemap,
-                    is_acceptable_description, parse_gitnexus_markdown,
+                    CODEX_EXEC_SANDBOX_ARGS, get_ai_cmd, should_skip, parse_codemap_entry,
+                    parse_codemap, is_acceptable_description, parse_gitnexus_markdown,
                     gitnexus_markdown_rows, map_areas_to_dirs)
 
 # ── Config ──
@@ -114,28 +113,6 @@ def get_subdir_list(dir_path) -> str:
             return " / ".join(subs[:8])
     except OSError:
         pass
-    return ""
-
-
-# ── Platform detection ──
-
-def _is_codex_runtime():
-    platform = os.environ.get("HARNESS_PLATFORM", "").strip().lower()
-    if platform:
-        return platform == "codex"
-    return any(key.startswith("CODEX_") for key in os.environ)
-
-
-def get_ai_cmd():
-    """Find available AI CLI for non-interactive invocation."""
-    preferred = ["codex", "claude"] if _is_codex_runtime() else ["claude", "codex"]
-    for cmd in preferred:
-        if shutil.which(cmd):
-            return cmd
-    # Codex app binary
-    codex_app = "/Applications/Codex.app/Contents/Resources/codex"
-    if os.path.isfile(codex_app):
-        return codex_app
     return ""
 
 

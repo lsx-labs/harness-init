@@ -28,6 +28,7 @@ from harness_shared import (
     LOW_CONFIDENCE_MARKER,
     MANUAL_MARKER,
     SOURCE_EXTS,
+    get_ai_cmd,
     gitnexus_markdown_rows,
     is_acceptable_description,
     is_low_confidence_description,
@@ -782,24 +783,6 @@ def write_descriptions(descriptions: dict[str, str]) -> list[dict]:
 # ══════════════════════════════════════════════════════════
 # AI + GitNexus (primary path)
 # ══════════════════════════════════════════════════════════
-
-def _is_codex_runtime() -> bool:
-    platform = os.environ.get("HARNESS_PLATFORM", "").strip().lower()
-    if platform:
-        return platform == "codex"
-    return any(key.startswith("CODEX_") for key in os.environ)
-
-
-def get_ai_cmd() -> str:
-    preferred = ["codex", "claude"] if _is_codex_runtime() else ["claude", "codex"]
-    for cmd in preferred:
-        if shutil.which(cmd):
-            return cmd
-    codex_app = "/Applications/Codex.app/Contents/Resources/codex"
-    if os.path.isfile(codex_app):
-        return codex_app
-    return ""
-
 
 def _terminate_process_group(process: subprocess.Popen) -> None:
     try:

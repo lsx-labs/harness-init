@@ -79,13 +79,13 @@ class TestIsOnMainBranch:
 
 class TestGetAiCmd:
     def test_finds_claude(self):
-        with patch.object(hm.shutil, 'which', side_effect=lambda x: "/usr/bin/claude" if x == "claude" else None):
+        with patch.object(harness_shared.shutil, 'which', side_effect=lambda x: "/usr/bin/claude" if x == "claude" else None):
             assert hm.get_ai_cmd() == "claude"
 
     def test_codex_environment_prefers_codex_over_claude(self, monkeypatch):
         monkeypatch.setenv("CODEX_THREAD_ID", "thread-1")
         with patch.object(
-            hm.shutil,
+            harness_shared.shutil,
             'which',
             side_effect=lambda x: f"/usr/bin/{x}" if x in {"claude", "codex"} else None,
         ):
@@ -95,14 +95,14 @@ class TestGetAiCmd:
         monkeypatch.setenv("HARNESS_PLATFORM", "claude")
         monkeypatch.setenv("CODEX_THREAD_ID", "thread-1")
         with patch.object(
-            hm.shutil,
+            harness_shared.shutil,
             'which',
             side_effect=lambda x: f"/usr/bin/{x}" if x in {"claude", "codex"} else None,
         ):
             assert hm.get_ai_cmd() == "claude"
 
     def test_finds_codex(self):
-        with patch.object(hm.shutil, 'which', side_effect=lambda x: "/usr/bin/codex" if x == "codex" else None):
+        with patch.object(harness_shared.shutil, 'which', side_effect=lambda x: "/usr/bin/codex" if x == "codex" else None):
             assert hm.get_ai_cmd() == "codex"
 
 
@@ -177,13 +177,13 @@ class TestGetAiCmdCodexApp:
     """Cover lines 54-57: Codex.app fallback path."""
 
     def test_finds_codex_app(self):
-        with patch.object(hm.shutil, 'which', return_value=None):
-            with patch.object(hm.os.path, 'isfile', return_value=True):
+        with patch.object(harness_shared.shutil, 'which', return_value=None):
+            with patch.object(harness_shared.os.path, 'isfile', return_value=True):
                 assert hm.get_ai_cmd() == "/Applications/Codex.app/Contents/Resources/codex"
 
     def test_finds_nothing(self):
-        with patch.object(hm.shutil, 'which', return_value=None):
-            with patch.object(hm.os.path, 'isfile', return_value=False):
+        with patch.object(harness_shared.shutil, 'which', return_value=None):
+            with patch.object(harness_shared.os.path, 'isfile', return_value=False):
                 assert hm.get_ai_cmd() == ""
 
 

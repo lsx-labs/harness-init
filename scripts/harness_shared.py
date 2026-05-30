@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 from pathlib import Path
 
 # ── Constants ──
@@ -30,6 +32,27 @@ MAIN_BRANCHES = {"main", "master"}
 # Sandbox flags for `codex exec`: read-only filesystem, no approval escalation.
 # Mirrors the tool restriction applied on the Claude CLI path.
 CODEX_EXEC_SANDBOX_ARGS = ["-s", "read-only", "-c", "approval_policy=never"]
+
+
+# ── AI CLI discovery (shared by monitor / description generator) ──
+
+def is_codex_runtime() -> bool:
+    platform = os.environ.get("HARNESS_PLATFORM", "").strip().lower()
+    if platform:
+        return platform == "codex"
+    return any(key.startswith("CODEX_") for key in os.environ)
+
+
+def get_ai_cmd() -> str:
+    """Find an available AI CLI for non-interactive invocation."""
+    preferred = ["codex", "claude"] if is_codex_runtime() else ["claude", "codex"]
+    for cmd in preferred:
+        if shutil.which(cmd):
+            return cmd
+    codex_app = "/Applications/Codex.app/Contents/Resources/codex"
+    if os.path.isfile(codex_app):
+        return codex_app
+    return ""
 
 
 def should_skip(name: str) -> bool:
