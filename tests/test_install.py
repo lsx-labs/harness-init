@@ -7,7 +7,8 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from install import install_file, install_dir, check_command, register_hooks
+from install import (install_file, install_dir, check_command, register_hooks,
+                     register_codex_gitnexus_wrapper)
 
 
 class TestInstallFile:
@@ -111,3 +112,35 @@ class TestRegisterHooks:
         register_hooks(cfg, "Test", "/monitor.py", "/context.py")
         d = json.loads(cfg.read_text())
         assert "PreToolUse" in d["hooks"]
+
+
+class TestRegisterCodexGitnexusWrapper:
+    def _wrapper_cmds(self, d, event):
+        return [h.get("command", "")
+                for i in d["hooks"].get(event, []) for h in i.get("hooks", [])
+                if "gitnexus-codex-hook" in h.get("command", "")]
+
+    def test_registers_pre_and_post(self, tmp_path):
+        cfg = tmp_path / "hooks.json"
+        register_codex_gitnexus_wrapper(cfg, "/w/gitnexus-codex-hook.cjs")
+        d = json.loads(cfg.read_text())
+        assert self._wrapper_cmds(d, "PreToolUse")
+        assert self._wrapper_cmds(d, "PostToolUse")
+
+    def test_idempotent(self, tmp_path):
+        cfg = tmp_path / "hooks.json"
+        register_codex_gitnexus_wrapper(cfg, "/w/gitnexus-codex-hook.cjs")
+        register_codex_gitnexus_wrapper(cfg, "/w/gitnexus-codex-hook.cjs")
+        d = json.loads(cfg.read_text())
+        assert len(self._wrapper_cmds(d, "PreToolUse")) == 1
+        assert len(self._wrapper_cmds(d, "PostToolUse")) == 1
+
+    def test_preserves_harness_monitor_post(self, tmp_path):
+        cfg = tmp_path / "hooks.json"
+        register_hooks(cfg, "Codex", "/monitor.py", "/context.py")
+        register_codex_gitnexus_wrapper(cfg, "/w/gitnexus-codex-hook.cjs")
+        d = json.loads(cfg.read_text())
+        post_cmds = [h.get("command", "") for i in d["hooks"]["PostToolUse"] for h in i.get("hooks", [])]
+        assert any("monitor" in c for c in post_cmds)
+        assert any("gitnexus-codex-hook" in c for c in post_cmds)
+        assert "SessionStart" in d["hooks"]

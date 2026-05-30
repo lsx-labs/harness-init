@@ -182,6 +182,31 @@ class TestPlanGitnexus:
         assert hp.plan_gitnexus(diag) == {"action": "suggest_install"}
 
 
+class TestPlanCodexGitnexusWrapper:
+    def _diag(self, status):
+        return {"existing": {"codex_gitnexus_wrapper": {"status": status}}}
+
+    def test_non_codex_platform_skips(self):
+        assert hp.plan_codex_gitnexus_wrapper(self._diag("not_configured"), "claude") == {"action": "skip"}
+
+    def test_pass_skips(self):
+        assert hp.plan_codex_gitnexus_wrapper(self._diag("pass"), "codex") == {"action": "skip"}
+
+    def test_missing_diagnostic_skips(self):
+        assert hp.plan_codex_gitnexus_wrapper({}, "codex") == {"action": "skip"}
+
+    def test_not_configured_recommends_fix(self):
+        result = hp.plan_codex_gitnexus_wrapper(self._diag("not_configured"), "codex")
+        assert result["action"] == "fix"
+        assert result["status"] == "not_configured"
+        assert result["reason"]
+
+    def test_self_test_failed_recommends_fix(self):
+        result = hp.plan_codex_gitnexus_wrapper(self._diag("self_test_failed"), "codex")
+        assert result["action"] == "fix"
+        assert result["status"] == "self_test_failed"
+
+
 class TestFindComplexDirs:
     def test_finds_complex(self):
         entries = [

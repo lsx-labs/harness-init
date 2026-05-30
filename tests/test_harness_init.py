@@ -390,6 +390,37 @@ class TestCheckExistingHooks:
         assert result["self_test_passed"] is False
         assert "bad schema" in result["self_test_output"]
 
+    def test_codex_gitnexus_wrapper_reports_missing_hooks(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)  # no ~/.codex/hooks.json
+        result = check_codex_gitnexus_wrapper()
+        assert result["status"] == "missing_hooks"
+        assert result["hooks_json_exists"] is False
+        assert result["configured"] is False
+
+    def test_codex_gitnexus_wrapper_reports_invalid_hooks_json(self, tmp_path, monkeypatch):
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "hooks.json").write_text("{ not valid json")
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+        result = check_codex_gitnexus_wrapper()
+        assert result["status"] == "invalid_hooks_json"
+
+    def test_codex_gitnexus_wrapper_reports_missing_wrapper(self, tmp_path, monkeypatch):
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        wrapper = codex_dir / "hooks" / "gitnexus-codex-hook.cjs"  # referenced but NOT created
+        hooks = {
+            "hooks": {
+                "PreToolUse": [{"hooks": [{"command": f'node "{wrapper}"'}]}],
+                "PostToolUse": [{"hooks": [{"command": f'node "{wrapper}"'}]}],
+            }
+        }
+        (codex_dir / "hooks.json").write_text(json.dumps(hooks))
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+        result = check_codex_gitnexus_wrapper()
+        assert result["status"] == "missing_wrapper"
+        assert result["wrapper_exists"] is False
+
 
 class TestCheckLspInstalled:
     """Cover lines 185, 188, 191: check_lsp_installed paths."""

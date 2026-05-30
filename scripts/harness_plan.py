@@ -65,6 +65,29 @@ def plan_codemap(entries: list[dict], live_counts: dict) -> dict:
     return {"action": "refresh", "dirs_needing": needing}
 
 
+_WRAPPER_FIX_REASONS = {
+    "missing_hooks": "Codex hooks.json 不存在，运行 install.py 配置 GitNexus 包装器",
+    "invalid_hooks_json": "Codex hooks.json 解析失败，需修复 JSON 后重装",
+    "missing_wrapper": "缺少 gitnexus-codex-hook.cjs，运行 install.py 安装",
+    "not_configured": "Pre/PostToolUse 未指向 GitNexus 包装器，运行 install.py 注册",
+    "self_test_failed": "GitNexus 包装器 --self-test 失败，建议升级 GitNexus 后重装",
+}
+
+
+def plan_codex_gitnexus_wrapper(diagnostic: dict, platform: str) -> dict:
+    """Recommend fixing the Codex GitNexus wrapper when it is configured but unhealthy.
+
+    Only relevant on Codex; missing_hooks on a non-Codex setup is silently skipped.
+    """
+    if platform != "codex":
+        return {"action": "skip"}
+    status = diagnostic.get("existing", {}).get("codex_gitnexus_wrapper", {}).get("status", "")
+    if status in ("", "pass"):
+        return {"action": "skip"}
+    return {"action": "fix", "status": status,
+            "reason": _WRAPPER_FIX_REASONS.get(status, "Codex GitNexus 包装器需要修复")}
+
+
 def plan_gitnexus(diagnostic: dict) -> dict:
     existing = diagnostic.get("existing", {})
     gn = existing.get("gitnexus", {})
@@ -231,6 +254,7 @@ def main():
         "gitnexus": plan_gitnexus(diagnostic),
         "subdirs": plan_subdirs(complex_dirs, own_file, other_file),
         "lsp": plan_lsp(diagnostic),
+        "codex_gitnexus_wrapper": plan_codex_gitnexus_wrapper(diagnostic, platform),
     }
 
     print(json.dumps(plan, indent=2, ensure_ascii=False))

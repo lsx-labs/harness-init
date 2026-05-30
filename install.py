@@ -104,6 +104,34 @@ def register_hooks(config_file: Path, platform_name: str, monitor_path: str, con
     log(f"✅ {platform_name} hooks registered (PostToolUse + SessionStart)")
 
 
+def register_codex_gitnexus_wrapper(hooks_file: Path, wrapper_path: str):
+    """Register the GitNexus Codex wrapper on Pre+PostToolUse (idempotent)."""
+    if not hooks_file.exists():
+        hooks_file.parent.mkdir(parents=True, exist_ok=True)
+        hooks_file.write_text('{"hooks": {}}')
+    d = json.loads(hooks_file.read_text())
+    hooks = d.setdefault("hooks", {})
+    entries = {
+        "PreToolUse": ("Grep|Glob|Bash", "Enriching with GitNexus graph context..."),
+        "PostToolUse": ("Bash", "Checking GitNexus index freshness..."),
+    }
+    for event, (matcher, status_message) in entries.items():
+        items = hooks.setdefault(event, [])
+        items[:] = [item for item in items
+                    if not any("gitnexus-codex-hook" in h.get("command", "")
+                               for h in item.get("hooks", []))]
+        items.append({
+            "matcher": matcher,
+            "hooks": [{
+                "type": "command",
+                "command": f'node "{wrapper_path}"',
+                "timeout": 8000,
+                "statusMessage": status_message,
+            }],
+        })
+    hooks_file.write_text(json.dumps(d, indent=2, ensure_ascii=False))
+
+
 def main():
     mode = "symlink" if USE_LINK else "copy"
     log(f"Installing harness-init from {SCRIPT_DIR} ({mode} mode)")
@@ -210,18 +238,25 @@ def main():
     if codex_dir.is_dir():
         register_hooks(codex_dir / "hooks.json", "Codex", monitor_path, context_path)
 
-    # ── 4. GitNexus hook reachability (pure Codex) ──
-    gitnexus_hook = HOME / ".claude" / "hooks" / "gitnexus" / "gitnexus-hook.cjs"
-    if gitnexus_available and codex_dir.is_dir() and not gitnexus_hook.exists():
-        try:
-            r = subprocess.run(["npm", "root", "-g"], capture_output=True, text=True, timeout=5)
-            src = Path(r.stdout.strip()) / "gitnexus" / "hooks" / "claude" / "gitnexus-hook.cjs"
-            if src.exists():
-                gitnexus_hook.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, gitnexus_hook)
-                log("✅ GitNexus hook copied for Codex compatibility")
-        except (subprocess.TimeoutExpired, OSError):
-            pass
+    # ── 4. GitNexus Codex integration (wrapper + reachable Claude hook) ──
+    if gitnexus_available and codex_dir.is_dir():
+        # 4a. Ensure the underlying Claude GitNexus hook is reachable — the wrapper delegates to it.
+        gitnexus_hook = HOME / ".claude" / "hooks" / "gitnexus" / "gitnexus-hook.cjs"
+        if not gitnexus_hook.exists():
+            try:
+                r = subprocess.run(["npm", "root", "-g"], capture_output=True, text=True, timeout=5)
+                src = Path(r.stdout.strip()) / "gitnexus" / "hooks" / "claude" / "gitnexus-hook.cjs"
+                if src.exists():
+                    gitnexus_hook.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, gitnexus_hook)
+                    log("✅ GitNexus hook copied for Codex compatibility")
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+        # 4b. Install the Codex compatibility wrapper and register it on Pre/PostToolUse.
+        codex_wrapper = codex_dir / "hooks" / "gitnexus-codex-hook.cjs"
+        install_file(SCRIPT_DIR / "hooks" / "gitnexus-codex-hook.cjs", codex_wrapper)
+        register_codex_gitnexus_wrapper(codex_dir / "hooks.json", str(codex_wrapper))
+        log("✅ GitNexus Codex wrapper installed + registered")
 
     # ── 5. Verify ──
     log("")
