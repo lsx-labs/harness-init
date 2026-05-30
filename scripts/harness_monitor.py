@@ -30,7 +30,8 @@ if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8
 from harness_shared import (SKIP_DIRS, STALE_THRESHOLD, SOURCE_EXTS, MAIN_BRANCHES,
                     should_skip, parse_codemap_entry,
                     parse_codemap, is_acceptable_description, needs_description_refresh,
-                    parse_gitnexus_markdown, gitnexus_markdown_rows, map_areas_to_dirs)
+                    parse_gitnexus_markdown, gitnexus_markdown_rows, map_areas_to_dirs,
+                    read_dir_docstring)
 
 # ── Config ──
 
@@ -77,23 +78,7 @@ def get_readme_first_line(dir_path) -> str:
 
 def get_init_docstring(dir_path) -> str:
     """Read __init__.py / index.ts docstring first line."""
-    import ast as _ast
-    for fname in ("__init__.py", "index.ts", "index.js", "mod.rs"):
-        fpath = Path(dir_path) / fname
-        if fpath.exists():
-            try:
-                if fname.endswith(".py"):
-                    ds = _ast.get_docstring(_ast.parse(fpath.read_text(encoding="utf-8", errors="ignore")))
-                    if ds:
-                        line = ds.strip().split("\n")[0]
-                        for sep in ("—", "–", "-"):
-                            if sep in line:
-                                line = line.split(sep, 1)[1].strip()
-                                break
-                        return line[:80]
-            except (SyntaxError, OSError):
-                pass
-    return ""
+    return read_dir_docstring(dir_path)
 
 
 def get_subdir_list(dir_path) -> str:

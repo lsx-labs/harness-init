@@ -35,6 +35,7 @@ from harness_shared import (
     needs_description_refresh,
     parse_codemap as _parse_codemap,
     parse_gitnexus_markdown,
+    read_dir_docstring,
 )
 
 HOOK_TIMEOUT = 10
@@ -1058,21 +1059,7 @@ def gitnexus_query(cypher: str) -> list[list[str]]:
 
 
 def get_docstring(dir_path: str) -> str:
-    for fname in ("__init__.py", "index.ts", "index.js", "mod.rs"):
-        fpath = Path(dir_path) / fname
-        if fpath.exists():
-            try:
-                ds = ast.get_docstring(ast.parse(fpath.read_text(encoding="utf-8")))
-                if ds:
-                    line = ds.strip().split("\n")[0]
-                    for sep in ("—", "–", "-"):
-                        if sep in line:
-                            line = line.split(sep, 1)[1].strip()
-                            break
-                    return line[:60]
-            except (SyntaxError, OSError):
-                pass
-    return ""
+    return read_dir_docstring(dir_path, limit=60)
 
 
 def get_keywords(dir_path: str) -> str:

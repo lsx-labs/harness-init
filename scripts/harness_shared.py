@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -82,6 +83,29 @@ def gitnexus_markdown_rows(markdown: str) -> list[list[str]]:
     if len(lines) < 3:
         return []
     return [[c.strip() for c in line.split("|") if c.strip()] for line in lines[2:]]
+
+
+def read_dir_docstring(dir_path: str, *, limit: int = 80) -> str:
+    """First line of a directory's package docstring (__init__.py), separator-stripped.
+
+    Reads the module docstring, takes its first line, drops a leading
+    "Name — / – / - " prefix, and truncates to `limit` chars.
+    """
+    for fname in ("__init__.py", "index.ts", "index.js", "mod.rs"):
+        fpath = Path(dir_path) / fname
+        if fname.endswith(".py") and fpath.exists():
+            try:
+                ds = ast.get_docstring(ast.parse(fpath.read_text(encoding="utf-8", errors="ignore")))
+            except (SyntaxError, OSError):
+                continue
+            if ds:
+                line = ds.strip().split("\n")[0]
+                for sep in ("—", "–", "-"):
+                    if sep in line:
+                        line = line.split(sep, 1)[1].strip()
+                        break
+                return line[:limit]
+    return ""
 
 
 def map_areas_to_dirs(areas, folders: list[str]) -> dict[str, str]:
