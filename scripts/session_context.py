@@ -49,8 +49,8 @@ def get_dirty_files() -> tuple[int, str]:
     raw = run_git("status", "--porcelain")
     if not raw:
         return 0, ""
-    lines = [l for l in raw.split("\n") if l.strip()][:10]
-    modules = sorted(set(l.split()[-1].split("/")[0] for l in lines if l.split()))
+    lines = [l for l in raw.split("\n") if l.strip()]
+    modules = sorted(set(l.split()[-1].split("/")[0] for l in lines[:10] if l.split()))
     return len(lines), " ".join(modules)
 
 

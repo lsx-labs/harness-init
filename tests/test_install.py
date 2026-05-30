@@ -144,3 +144,18 @@ class TestRegisterCodexGitnexusWrapper:
         assert any("monitor" in c for c in post_cmds)
         assert any("gitnexus-codex-hook" in c for c in post_cmds)
         assert "SessionStart" in d["hooks"]
+
+
+class TestNodeMajor:
+    def test_parses_major(self):
+        from install import _node_major
+        assert _node_major("v18.17.0") == 18
+        assert _node_major("v20.1.0") == 20
+
+    def test_old_version(self):
+        from install import _node_major
+        assert _node_major("v16.20.0") == 16
+
+    def test_unparseable(self):
+        from install import _node_major
+        assert _node_major("garbage") is None

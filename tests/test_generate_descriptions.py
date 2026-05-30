@@ -1384,3 +1384,9 @@ class TestMainFunction:
         gd_main()
         out = capsys.readouterr().out
         assert "all_described" in out
+
+
+def test_override_description_caps_at_60():
+    import generate_descriptions as _gd
+    assert _gd._override_description("y" * 60)[1] == ""          # 60 chars accepted
+    assert _gd._override_description("x" * 61) == ("", "too_long")  # 61 chars rejected

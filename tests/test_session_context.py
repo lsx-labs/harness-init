@@ -70,6 +70,12 @@ class TestGetDirtyFiles:
             assert count == 3
             assert "src" in modules
 
+    def test_count_not_capped_at_10(self):
+        raw = "\n".join(f" M src/file{i}.py" for i in range(15))
+        with patch('session_context.run_git', return_value=raw):
+            count, _ = get_dirty_files()
+            assert count == 15
+
 
 class TestGetRecentCommits:
     def test_with_commits(self):

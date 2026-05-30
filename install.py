@@ -60,6 +60,13 @@ def check_command(cmd: str) -> str | None:
         return None
 
 
+def _node_major(version: str) -> int | None:
+    """Parse the major version from `node --version` output (e.g. 'v18.17.0' -> 18)."""
+    import re
+    m = re.search(r'v?(\d+)\.', version or "")
+    return int(m.group(1)) if m else None
+
+
 def register_hooks(config_file: Path, platform_name: str, monitor_path: str, context_path: str):
     """Register PostToolUse + SessionStart hooks in a JSON config file."""
     if not config_file.exists():
@@ -142,7 +149,11 @@ def main():
     if not node_ver:
         log("❌ Node.js not found. Install Node.js 18+ first: https://nodejs.org")
         sys.exit(1)
-    log(f"✅ Node.js {node_ver}")
+    node_major = _node_major(node_ver)
+    if node_major is not None and node_major < 18:
+        log(f"⚠️  Node.js {node_ver} detected; GitNexus requires Node.js 18+. Please upgrade.")
+    else:
+        log(f"✅ Node.js {node_ver}")
 
     gitnexus_available = False
     try:

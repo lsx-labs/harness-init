@@ -200,19 +200,6 @@ def _child_dirs(dir_path: str) -> tuple[str, ...]:
     return tuple(children)
 
 
-def _gitnexus_count(cypher: str) -> int:
-    try:
-        rows = gitnexus_query(cypher)
-    except Exception:
-        return 0
-    if not rows or not rows[0]:
-        return 0
-    try:
-        return int(str(rows[0][0]).strip())
-    except (TypeError, ValueError):
-        return 0
-
-
 def _gitnexus_counts(dir_path: str) -> dict[str, int]:
     prefix = normalize_dir_key(dir_path, trailing_slash=True).replace("'", "\\'")
     if not prefix:
@@ -317,7 +304,7 @@ def _override_description(raw_value) -> tuple[str, str]:
         return "", "invalid_value"
     if not desc:
         return "", "empty"
-    if len(desc) > 80:
+    if len(desc) > 60:  # match write_descriptions truncation so validated text == written text
         return "", "too_long"
     if is_low_quality_description(desc) or not is_acceptable_description(desc):
         return "", "low_quality"

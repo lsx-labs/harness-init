@@ -70,6 +70,8 @@ def main():
     rm_dir(share / "counters")
     rm_dir(share / "locks")
     rm_dir(share / "notifications")
+    rm_dir(share / "jobs")
+    rm_dir(share / "projects")
 
     # Codex GitNexus wrapper (installed by install.py section 4b)
     rm_file(HOME / ".codex" / "hooks" / "gitnexus-codex-hook.cjs")

@@ -38,3 +38,15 @@ class TestCleanupHooks:
         }}))
         cleanup_hooks(cfg, "Codex")
         assert any("some-other-hook" in c for c in _commands(cfg))
+
+
+class TestUninstallMain:
+    def test_removes_jobs_and_projects_dirs(self, tmp_path, monkeypatch):
+        import uninstall
+        share = tmp_path / ".local" / "share" / "harness-hooks"
+        (share / "jobs").mkdir(parents=True)
+        (share / "projects").mkdir(parents=True)
+        monkeypatch.setattr(uninstall, "HOME", tmp_path)
+        uninstall.main()
+        assert not (share / "jobs").exists()
+        assert not (share / "projects").exists()
