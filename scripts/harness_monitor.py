@@ -289,7 +289,7 @@ def build_codemap_structure(communities, existing_descs, old_counts):
                 else:
                     lines.append(f"- **{sub}/** ({syms} symbols)")
 
-        # Append uncovered sub-dirs (e.g., core/ inside gmatrix_vbt_engine/)
+        # Append uncovered sub-dirs (e.g., a nested core/ inside a top-level package)
         try:
             top_path = Path(top_dir)
             if top_path.is_dir():

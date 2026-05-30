@@ -45,9 +45,6 @@ DEFAULT_MAX_WORKERS = 1
 GENERIC = {"main", "init", "run", "start", "stop", "get", "set", "test", "setup", "parse",
            "build", "create", "delete", "update", "load", "save", "read", "write", "open",
            "close", "validate", "check", "add", "all", "data", "config", "path", "name", "type"}
-ARTIFACT_PREFIXES = (
-    "data/",
-)
 PROJECT_OVERRIDE_PATH = Path(".harness/codemap_descriptions.json")
 PROVIDER_BY_CATEGORY = {
     "manual_protected": "preserve",
@@ -121,8 +118,6 @@ def _list_dir_files(dir_path: str) -> list[Path]:
 
 def _is_gitignored_dir(dir_path: str) -> bool:
     key = normalize_dir_key(dir_path, trailing_slash=True)
-    if key.startswith(ARTIFACT_PREFIXES):
-        return True
     try:
         result = subprocess.run(
             ["git", "check-ignore", "-q", key],
@@ -348,11 +343,6 @@ def load_project_overrides(root: Path = Path(".")) -> tuple[dict[str, str], dict
     return overrides, report
 
 
-def _is_artifact_dir(dir_path: str) -> bool:
-    key = normalize_dir_key(dir_path, trailing_slash=True)
-    return key.startswith(ARTIFACT_PREFIXES)
-
-
 def _has_source_files(dir_path: str) -> bool:
     return any(path.suffix.lower() in SOURCE_EXTS for path in _list_dir_files(dir_path))
 
@@ -375,7 +365,7 @@ def classify_directory(evidence: DirectoryEvidence, *, has_override: bool, exist
         return "code_process"
     if evidence.py_count > 0 or evidence.gitnexus_functions > 0 or evidence.gitnexus_methods > 0 or evidence.gitnexus_classes > 0:
         return "code_symbols"
-    if _is_artifact_dir(key) or evidence.gitignored:
+    if evidence.gitignored:
         return "artifact"
     if evidence.file_count == 0 or (
         evidence.file_count <= 2
@@ -521,7 +511,7 @@ def deterministic_generate(
 def build_dir_fingerprint(dir_path: str) -> str:
     """Build a stable fingerprint for deciding whether a CODE_MAP dir changed."""
     key = normalize_dir_key(dir_path)
-    if _is_artifact_dir(key) and not _has_source_files(key):
+    if _is_gitignored_dir(key) and not _has_source_files(key):
         return f"artifact:{key}"
     hasher = hashlib.sha256()
     try:

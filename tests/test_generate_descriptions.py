@@ -605,10 +605,12 @@ class TestDirectoryClassification:
         assert gd.classify_directory(evidence, has_override=False, existing_desc="") == "artifact"
         assert gd.select_provider("artifact") == "artifact_summary"
 
-    def test_classifier_marks_data_root_as_artifact(self):
-        evidence = make_evidence("data/", file_count=10, json_count=4, gitnexus_files=2)
+    def test_classifier_does_not_force_nongitignored_data_as_artifact(self):
+        # De-genericized: artifact = gitignored. A top-level data/ that is NOT gitignored
+        # (e.g. a real version-controlled data package) is no longer auto-classified artifact.
+        evidence = make_evidence("data/", file_count=10, json_count=4, gitnexus_files=2, gitignored=False)
 
-        assert gd.classify_directory(evidence, has_override=False, existing_desc="") == "artifact"
+        assert gd.classify_directory(evidence, has_override=False, existing_desc="") != "artifact"
 
     def test_classifier_marks_data_source_dir_as_code(self):
         evidence = make_evidence(
@@ -760,7 +762,8 @@ class TestDeterministicSummaries:
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr("sys.argv", ["generate_descriptions.py", str(tmp_path), "--generate"])
 
-        evidence = make_evidence("data/", file_count=1, json_count=1, gitnexus_files=0, gitnexus_processes=0)
+        evidence = make_evidence("data/", file_count=1, json_count=1, gitnexus_files=0,
+                                 gitnexus_processes=0, gitignored=True)
         with patch("generate_descriptions.collect_directory_evidence", return_value=evidence) as mock_collect, \
              patch("generate_descriptions.ai_generate_batched", side_effect=AssertionError("AI should not run")):
             gd_main()

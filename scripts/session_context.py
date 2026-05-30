@@ -16,7 +16,7 @@ from pathlib import Path
 if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-from harness_shared import needs_description_refresh, parse_codemap
+from harness_shared import MAIN_BRANCHES, needs_description_refresh, parse_codemap
 
 NOTIFY_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "notifications"
 
@@ -34,13 +34,27 @@ def get_branch() -> str:
     return run_git("branch", "--show-current", default="detached HEAD")
 
 
+def _baseline_ref() -> str:
+    """Branch to compare HEAD against: upstream tracking branch, else first main-like branch."""
+    upstream = run_git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+    if upstream:
+        return upstream
+    for branch in sorted(MAIN_BRANCHES):  # "main" before "master"
+        if run_git("rev-parse", "--verify", "--quiet", branch):
+            return branch
+    return ""
+
+
 def get_ahead_behind() -> str:
-    raw = run_git("rev-list", "--left-right", "--count", "main...HEAD")
+    base = _baseline_ref()
+    if not base:
+        return ""
+    raw = run_git("rev-list", "--left-right", "--count", f"{base}...HEAD")
     if not raw:
         return ""
     parts = raw.split()
     if len(parts) == 2:
-        return f"(↑{parts[1]} ↓{parts[0]} vs main)"
+        return f"(↑{parts[1]} ↓{parts[0]} vs {base})"
     return ""
 
 

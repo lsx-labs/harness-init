@@ -113,7 +113,7 @@ python3 ~/.local/bin/harness-plan.py . --platform codex
 - CODE_MAP 写入使用临时文件 + 原子替换，失败时保留旧文件
 - AI+GitNexus 描述生成按小批次执行，默认 `--batch-size 2 --ai-timeout 180 --max-workers 1`
 - 失败或超时的 AI batch 会自动拆成单目录 retry，retry 最多 2 worker，timeout 不低于 240 秒
-- 大项目可显式运行：`python3 ~/.local/share/harness-hooks/generate_descriptions.py . --generate --refresh-dir tests/autoresearch --batch-size 2 --max-workers 2 --ai-timeout 180`
+- 大项目可显式运行：`python3 ~/.local/share/harness-hooks/generate_descriptions.py . --generate --refresh-dir src/core --batch-size 2 --max-workers 2 --ai-timeout 180`
 - 指纹增量检查：`python3 ~/.local/share/harness-hooks/generate_descriptions.py . --dry-run --use-fingerprints`
 - 可用 `HARNESS_CODEMAP_AI_BATCH_SIZE`、`HARNESS_CODEMAP_AI_MAX_WORKERS`、`HARNESS_CODEMAP_AI_TIMEOUT` 调整后台默认值
 - AI 已尝试但失败时不写关键词 fallback，避免函数名列表冒充刷新结果
@@ -209,8 +209,8 @@ Step 3: gitnexus_query({目录名})
 
 每条约束必须标注**GitNexus 查询来源**：
 ```
-- `load_baseline_contract` 被 13 个函数调用（gitnexus_context 返回 13 incoming calls）
-  → 改签名需排查 status.py/post_oos.py/vbt_runner.py 等（见 baseline_contract.py L92）
+- `{核心函数}` 被 {N} 个函数调用（gitnexus_context 返回 {N} incoming calls）
+  → 改签名需排查这些调用方（见 {文件}:{行}）
 ```
 
 **危险操作生成流程（严格 GitNexus 驱动）**：

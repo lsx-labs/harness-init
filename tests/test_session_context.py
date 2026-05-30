@@ -56,6 +56,20 @@ class TestGetAheadBehind:
         with patch('session_context.run_git', return_value=""):
             assert get_ahead_behind() == ""
 
+    def test_resolves_default_branch_when_no_main_no_upstream(self):
+        # master-only repo, no upstream: must compare vs master, not a hardcoded "main".
+        def fake(*args, **kwargs):
+            if "@{upstream}" in args:
+                return ""  # no upstream tracking branch
+            if args[:2] == ("rev-parse", "--verify"):
+                return "ok" if "master" in args else ""  # only master exists
+            if args and args[0] == "rev-list":
+                return "1\t2"
+            return ""
+        with patch('session_context.run_git', side_effect=fake):
+            result = get_ahead_behind()
+        assert "↑2" in result and "↓1" in result and "master" in result
+
 
 class TestGetDirtyFiles:
     def test_clean(self):
