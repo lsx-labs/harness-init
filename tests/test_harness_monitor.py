@@ -528,6 +528,26 @@ class TestBackgroundDispatch:
         hm.release_lock("proj1")
 
 
+class TestCodemapRefreshTimeout:
+    """codemap_refresh_timeout sizes the refresh subprocess cap to the AI budget."""
+
+    def test_single_dir_covers_initial_plus_retry(self):
+        # one stale dir: one initial AI call + one retry at max(ai_timeout, 240)
+        assert hm.codemap_refresh_timeout(1) >= hm.CODEMAP_AI_TIMEOUT + max(hm.CODEMAP_AI_TIMEOUT, 240)
+
+    def test_scales_with_stale_count(self):
+        # K=2 worst case: ceil(2/2) initial batches + 2 retries — the old fixed 600s could not cover this
+        n, retry = 2, max(hm.CODEMAP_AI_TIMEOUT, 240)
+        assert hm.codemap_refresh_timeout(2) >= ((n + 1) // 2) * hm.CODEMAP_AI_TIMEOUT + n * retry
+        assert hm.codemap_refresh_timeout(2) > hm.codemap_refresh_timeout(1)
+
+    def test_zero_dirs_treated_as_one(self):
+        assert hm.codemap_refresh_timeout(0) == hm.codemap_refresh_timeout(1)
+
+    def test_bounded_for_large_refreshes(self):
+        assert hm.codemap_refresh_timeout(1000) <= hm.CODEMAP_REFRESH_TIMEOUT_MAX
+
+
 class TestDoMainBranchUpdate:
     """Cover do_main_branch_update (background worker)."""
 
@@ -603,7 +623,8 @@ class TestDoMainBranchUpdate:
         ai_timeout = int(desc_cmd[desc_cmd.index("--ai-timeout") + 1])
         sub_timeout = mock_run.call_args.kwargs.get("timeout")
         assert sub_timeout is not None
-        assert sub_timeout >= ai_timeout
+        # Cap must cover one AI call PLUS its retry (max(ai_timeout, 240)), not just one call.
+        assert sub_timeout >= ai_timeout + max(ai_timeout, 240)
 
     def test_update_no_desc_script(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)

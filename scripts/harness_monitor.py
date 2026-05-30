@@ -48,11 +48,23 @@ GIT_COMMANDS = re.compile(
     r'git(?:\s+-[^\s;|&]+)*\s+'
     r'(commit|merge|rebase|pull|checkout|switch|cherry-pick)\b'
 )
-# CODE_MAP description refresh budget. The subprocess cap must exceed one AI call
-# plus its single retry (generate_descriptions retries failed dirs at max(ai_timeout, 240)s),
-# otherwise the refresh is killed before it can write any AI description.
+# CODE_MAP description refresh budget. generate_descriptions runs each stale dir's
+# initial AI call at CODEMAP_AI_TIMEOUT and retries failures at max(ai_timeout, 240)s,
+# all sequentially (default workers=1, batch=2). The subprocess cap is sized to that
+# worst case so the refresh is not killed before it can write descriptions, but is
+# bounded so a hung refresh cannot hold the project lock indefinitely.
 CODEMAP_AI_TIMEOUT = 150
-CODEMAP_REFRESH_TIMEOUT = 600
+CODEMAP_REFRESH_SLACK = 60
+CODEMAP_REFRESH_TIMEOUT_MAX = 1800
+
+
+def codemap_refresh_timeout(stale_count: int) -> int:
+    """Subprocess cap covering the worst-case AI budget for `stale_count` stale dirs:
+    ceil(n/2) sequential initial batches + n sequential retries, plus slack, capped."""
+    n = max(1, stale_count)
+    initial = ((n + 1) // 2) * CODEMAP_AI_TIMEOUT
+    retry = n * max(CODEMAP_AI_TIMEOUT, 240)
+    return min(initial + retry + CODEMAP_REFRESH_SLACK, CODEMAP_REFRESH_TIMEOUT_MAX)
 
 
 # ── Directory description helpers (deterministic, no AI) ──
@@ -538,7 +550,8 @@ def _do_main_branch_update_inner():
                    "--ai-timeout", str(CODEMAP_AI_TIMEOUT)]
             for dir_path in stale_dirs:
                 cmd.extend(["--refresh-dir", dir_path])
-            subprocess.run(cmd, capture_output=True, text=True, timeout=CODEMAP_REFRESH_TIMEOUT)
+            subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=codemap_refresh_timeout(len(stale_dirs)))
         except (subprocess.TimeoutExpired, OSError):
             pass
 
