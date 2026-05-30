@@ -60,6 +60,31 @@ class TestIsGitOperation:
     def test_empty(self):
         assert hm.is_git_operation({"tool_input": {"command": ""}}) is False
 
+    def test_sudo_prefix(self):
+        assert hm.is_git_operation({"tool_input": {"command": "sudo git pull"}}) is True
+
+    def test_env_assignment_prefix(self):
+        assert hm.is_git_operation({"tool_input": {"command": "GIT_DIR=/x git commit -m y"}}) is True
+
+    def test_env_wrapper_prefix(self):
+        assert hm.is_git_operation({"tool_input": {"command": "env FOO=1 git checkout main"}}) is True
+
+    def test_time_wrapper_prefix(self):
+        assert hm.is_git_operation({"tool_input": {"command": "time git rebase main"}}) is True
+
+    def test_subshell(self):
+        assert hm.is_git_operation({"tool_input": {"command": "x=$(git merge feat)"}}) is True
+
+    def test_echo_with_git_word_still_not_git(self):
+        # a non-wrapper leading token must NOT count as a git operation
+        assert hm.is_git_operation({"tool_input": {"command": "echo git commit"}}) is False
+
+    def test_many_env_prefixes_returns_quickly(self):
+        command = " ".join([f"V{i}=1" for i in range(40)]) + " echo done"
+        started = time.perf_counter()
+        assert hm.is_git_operation({"tool_input": {"command": command}}) is False
+        assert time.perf_counter() - started < 0.5
+
 
 class TestIsOnMainBranch:
     def test_on_main(self):
@@ -145,7 +170,7 @@ class TestLoadSaveState:
 
 
 class TestGetProjectId:
-    """Cover lines 84-91: get_project_id."""
+    """get_project_id."""
 
     def test_success(self):
         mock_result = MagicMock(returncode=0, stdout="/Users/dev/myproject\n")
@@ -165,7 +190,7 @@ class TestGetProjectId:
 
 
 class TestGetGitnexusCommunities:
-    """Cover lines 168-196: get_gitnexus_communities."""
+    """get_gitnexus_communities."""
 
     def test_no_gitnexus_dir(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -240,7 +265,7 @@ class TestGetGitnexusCommunities:
 
 
 class TestBuildAreaToDir:
-    """Cover lines 200-222: build_area_to_dir."""
+    """build_area_to_dir."""
 
     def test_maps_areas_to_dirs(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -275,7 +300,7 @@ class TestBuildAreaToDir:
 
 
 class TestBuildCodemapStructure:
-    """Cover lines 227-269: build_codemap_structure."""
+    """build_codemap_structure."""
 
     def test_basic_structure(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -598,7 +623,7 @@ class TestDoMainBranchUpdate:
 
 
 class TestCountSourceFiles:
-    """Cover lines 367-376: count_source_files."""
+    """count_source_files."""
 
     def test_counts_source_files(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -812,7 +837,7 @@ class TestDoGrowthCheck:
 
 
 class TestMainFunction:
-    """Cover lines 438-460, 464: main() with different ctx inputs."""
+    """main() with different ctx inputs."""
 
     def test_invalid_json_stdin(self, monkeypatch):
         """Lines 439-441: invalid JSON from stdin."""

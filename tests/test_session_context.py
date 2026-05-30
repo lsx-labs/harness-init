@@ -90,6 +90,15 @@ class TestGetDirtyFiles:
             count, _ = get_dirty_files()
             assert count == 15
 
+    def test_handles_renames_and_quoted_paths(self):
+        raw = 'R  "old.py" -> "src/new.py"\n?? "lib dir/x.py"'
+        with patch('session_context.run_git', return_value=raw):
+            count, modules = get_dirty_files()
+        assert count == 2
+        assert "src" in modules        # rename destination dir
+        assert "lib dir" in modules    # space-in-path dir, unquoted
+        assert '"' not in modules      # no stray quote characters
+
 
 class TestGetRecentCommits:
     def test_with_commits(self):
@@ -171,7 +180,7 @@ class TestGetAheadBehindMalformed:
 
 
 class TestGetRecentCommitsEdgeCases:
-    """Cover lines 53, 56: empty lines and single-part lines in git log."""
+    """empty lines and single-part lines in git log."""
 
     def test_empty_line_in_log(self):
         """Line 53: empty lines are skipped."""
@@ -221,7 +230,7 @@ class TestGetRecentCommitsEdgeCases:
 
 
 class TestCheckGitnexusStaleTimeout:
-    """Cover lines 74-75: timeout during gitnexus status."""
+    """timeout during gitnexus status."""
 
     def test_timeout(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -233,7 +242,7 @@ class TestCheckGitnexusStaleTimeout:
 
 
 class TestCheckCodemapStaleOSError:
-    """Cover lines 87-88: OSError reading CODE_MAP.md."""
+    """OSError reading CODE_MAP.md."""
 
     def test_oserror(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)

@@ -108,18 +108,25 @@ def read_dir_docstring(dir_path: str, *, limit: int = 80) -> str:
     return ""
 
 
-def map_areas_to_dirs(areas, folders: list[str]) -> dict[str, str]:
-    """Map each GitNexus community label to the first folder whose leaf name matches.
+def _folder_leaf(folder: str) -> str:
+    return folder.split("/")[-1].lower().lstrip("_")
 
-    Matching is case-insensitive and ignores a leading underscore on either side.
+
+def map_areas_to_dirs(areas, folders: list[str]) -> dict[str, str]:
+    """Map each GitNexus community label to the folder whose leaf name uniquely matches.
+
+    Matching is case-insensitive and ignores a leading underscore on either side. When
+    two or more folders share the same leaf (e.g. src/utils and tests/utils), the match
+    is ambiguous and the area is omitted rather than mis-attributed to an arbitrary one.
     """
+    by_leaf: dict[str, list[str]] = {}
+    for folder in folders:
+        by_leaf.setdefault(_folder_leaf(folder), []).append(folder)
     mapping: dict[str, str] = {}
     for area in areas:
-        area_lower = area.lower().lstrip("_")
-        for folder in folders:
-            if folder.split("/")[-1].lower().lstrip("_") == area_lower:
-                mapping[area] = folder
-                break
+        candidates = by_leaf.get(area.lower().lstrip("_"), [])
+        if len(candidates) == 1:
+            mapping[area] = candidates[0]
     return mapping
 
 

@@ -58,13 +58,26 @@ def get_ahead_behind() -> str:
     return ""
 
 
+def _porcelain_module(line: str) -> str:
+    """Top-level dir/file from a `git status --porcelain` line.
+
+    Drops the 2-char XY status + space, takes the rename destination (after ' -> '),
+    strips git's surrounding quotes, then the first path segment.
+    """
+    rest = line[3:] if len(line) >= 3 else ""
+    if " -> " in rest:
+        rest = rest.split(" -> ", 1)[1]
+    rest = rest.strip().strip('"')
+    return rest.split("/")[0] if rest else ""
+
+
 def get_dirty_files() -> tuple[int, str]:
     """Return (count, space-separated top-level module names)."""
     raw = run_git("status", "--porcelain")
     if not raw:
         return 0, ""
     lines = [l for l in raw.split("\n") if l.strip()]
-    modules = sorted(set(l.split()[-1].split("/")[0] for l in lines[:10] if l.split()))
+    modules = sorted({m for l in lines[:10] if (m := _porcelain_module(l))})
     return len(lines), " ".join(modules)
 
 

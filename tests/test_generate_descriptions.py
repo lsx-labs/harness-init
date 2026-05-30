@@ -963,7 +963,7 @@ from generate_descriptions import ai_generate, main as gd_main
 
 
 class TestParseCodemapSubLevelPinned:
-    """Cover lines 58, 60: sub-level entries with pin/existing desc in generate mode."""
+    """sub-level entries with pin/existing desc in generate mode."""
 
     def test_generate_mode_skips_sub_with_desc(self, tmp_path, monkeypatch):
         """Line 60: sub-level with existing desc skipped in --generate mode."""
@@ -991,7 +991,7 @@ class TestParseCodemapSubLevelPinned:
 
 
 class TestAiGenerate:
-    """Cover lines 103, 109-161: ai_generate function."""
+    """ai_generate function."""
 
     def test_no_ai_cmd(self, tmp_path, monkeypatch):
         """Line 110: no AI command → None."""
@@ -1162,7 +1162,7 @@ class TestGetAiCmdCodexApp:
 
 
 class TestGitnexusQuery:
-    """Cover lines 169-182: gitnexus_query function."""
+    """gitnexus_query function."""
 
     def test_successful_query(self):
         md_output = json.dumps({
@@ -1211,7 +1211,7 @@ class TestGitnexusQuery:
 
 
 class TestGetDocstringSyntaxError:
-    """Cover lines 198-199: SyntaxError in docstring extraction."""
+    """SyntaxError in docstring extraction."""
 
     def test_syntax_error(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -1243,7 +1243,7 @@ class TestWriteDescriptionsSubLevel:
 
 
 class TestMainFunction:
-    """Cover lines 229-257, 261: main() in different modes."""
+    """main() in different modes."""
 
     def test_main_all_described(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)

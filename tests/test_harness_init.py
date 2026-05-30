@@ -202,7 +202,7 @@ class TestDiagnose:
 
 
 class TestScanLanguagesImportCounting:
-    """Cover lines 68, 73-74, 80-84, 91 — import counting and small-language filtering."""
+    """import counting and small-language filtering."""
 
     def test_non_code_file_skipped(self, tmp_path, monkeypatch):
         """Line 68: ext not in LANG_MAP → continue."""
@@ -274,7 +274,7 @@ class TestScanLanguagesImportCounting:
 
 
 class TestMeasureTypeCoverageOSError:
-    """Cover lines 129, 134-135: non-.py skipped and OSError during read."""
+    """non-.py skipped and OSError during read."""
 
     def test_non_py_file_skipped(self, tmp_path, monkeypatch):
         """Line 129: non .py files skipped."""
@@ -295,7 +295,7 @@ class TestMeasureTypeCoverageOSError:
 
 
 class TestCheckExistingHooks:
-    """Cover lines 164-165: check_hooks exception handling."""
+    """check_hooks exception handling."""
 
     def test_hooks_with_valid_settings(self, tmp_path, monkeypatch):
         """Lines 160-163: parse hooks from settings JSON."""
@@ -423,7 +423,7 @@ class TestCheckExistingHooks:
 
 
 class TestCheckLspInstalled:
-    """Cover lines 185, 188, 191: check_lsp_installed paths."""
+    """check_lsp_installed paths."""
 
     def test_unknown_language(self):
         """Line 185: language not in LSP_PLUGIN_MAP → False."""
@@ -453,7 +453,7 @@ class TestCheckLspInstalled:
 
 
 class TestAssessLspCAndCpp:
-    """Cover lines 213-215: C/C++ assessment branch."""
+    """C/C++ assessment branch."""
 
     def test_cpp_many_files(self):
         with patch('harness_init.check_lsp_installed', return_value=False):
@@ -475,7 +475,7 @@ class TestAssessLspCAndCpp:
 
 
 class TestAssessLspStrongTyped:
-    """Cover lines 205-206: strong typed languages."""
+    """strong typed languages."""
 
     def test_typescript_many_files(self):
         with patch('harness_init.check_lsp_installed', return_value=False):
@@ -530,7 +530,7 @@ class TestGetVersionFallback:
 
 
 class TestMainFunction:
-    """Cover lines 255-258, 262: main() entry point."""
+    """main() entry point."""
 
     def test_main_default_dir(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)

@@ -44,7 +44,8 @@ DIAG_SCRIPT = Path.home() / ".local" / "bin" / "harness-init.py"
 DESC_SCRIPT = Path.home() / ".local" / "share" / "harness-hooks" / "generate_descriptions.py"
 GITNEXUS_TIMEOUT = 15
 GIT_COMMANDS = re.compile(
-    r'(?:^|(?:&&|\|\||[;|])\s*)'
+    r'(?:^|(?:&&|\|\||[;|]|\$\()\s*)'                              # start / shell separator / $( subshell
+    r'(?:(?:\w+=\S+|sudo|env|time|nohup|command|exec|xargs)\s+)*'  # optional env-assignments / wrappers
     r'git(?:\s+-[^\s;|&]+)*\s+'
     r'(commit|merge|rebase|pull|checkout|switch|cherry-pick)\b'
 )
