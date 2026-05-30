@@ -10,7 +10,8 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 from harness_init import (
     should_skip, scan_languages, measure_grep_noise, measure_type_coverage,
-    check_existing, check_lsp_installed, assess_lsp, get_version, diagnose
+    check_existing, check_lsp_installed, assess_lsp, get_version, diagnose,
+    check_codex_gitnexus_wrapper
 )
 
 
@@ -324,6 +325,70 @@ class TestCheckExistingHooks:
         result = check_existing()
         assert result["hooks_claude"]["gitnexus"] is False
         assert result["hooks_claude"]["harness_monitor"] is False
+
+    def test_codex_gitnexus_wrapper_configured_and_self_test_passes(self, tmp_path, monkeypatch):
+        codex_dir = tmp_path / ".codex"
+        wrapper = codex_dir / "hooks" / "gitnexus-codex-hook.cjs"
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text("#!/usr/bin/env node\n")
+        hooks = {
+            "hooks": {
+                "PreToolUse": [{"hooks": [{"command": f'node "{wrapper}"'}]}],
+                "PostToolUse": [{"hooks": [{"command": f'node "{wrapper}"'}]}],
+            }
+        }
+        (codex_dir / "hooks.json").write_text(json.dumps(hooks))
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+        with patch('harness_init.subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="PASS self-test\n", stderr="")
+            result = check_codex_gitnexus_wrapper()
+
+        assert result["status"] == "pass"
+        assert result["configured"] is True
+        assert result["self_test_passed"] is True
+        assert result["pretooluse_points_to_wrapper"] is True
+        assert result["posttooluse_points_to_wrapper"] is True
+
+    def test_codex_gitnexus_wrapper_reports_misconfigured_hooks(self, tmp_path, monkeypatch):
+        codex_dir = tmp_path / ".codex"
+        wrapper = codex_dir / "hooks" / "gitnexus-codex-hook.cjs"
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text("#!/usr/bin/env node\n")
+        hooks = {
+            "hooks": {
+                "PreToolUse": [{"hooks": [{"command": "node old-gitnexus-hook.cjs"}]}],
+                "PostToolUse": [{"hooks": [{"command": "node old-gitnexus-hook.cjs"}]}],
+            }
+        }
+        (codex_dir / "hooks.json").write_text(json.dumps(hooks))
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+        result = check_codex_gitnexus_wrapper()
+
+        assert result["status"] == "not_configured"
+        assert result["configured"] is False
+        assert result["self_test_passed"] is False
+
+    def test_codex_gitnexus_wrapper_reports_self_test_failure(self, tmp_path, monkeypatch):
+        codex_dir = tmp_path / ".codex"
+        wrapper = codex_dir / "hooks" / "gitnexus-codex-hook.cjs"
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text("#!/usr/bin/env node\n")
+        hooks = {
+            "hooks": {
+                "PreToolUse": [{"hooks": [{"command": f'node "{wrapper}"'}]}],
+                "PostToolUse": [{"hooks": [{"command": f'node "{wrapper}"'}]}],
+            }
+        }
+        (codex_dir / "hooks.json").write_text(json.dumps(hooks))
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+        with patch('harness_init.subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="bad schema")
+            result = check_codex_gitnexus_wrapper()
+
+        assert result["status"] == "self_test_failed"
+        assert result["configured"] is True
+        assert result["self_test_passed"] is False
+        assert "bad schema" in result["self_test_output"]
 
 
 class TestCheckLspInstalled:

@@ -181,11 +181,81 @@ def check_existing() -> dict:
     existing["hooks_codex"] = check_hooks_multi(
         Path.home() / ".codex" / "hooks.json",
         {"gitnexus": "gitnexus", "harness_monitor": ["harness_monitor", "harness-monitor"]})
+    existing["codex_gitnexus_wrapper"] = check_codex_gitnexus_wrapper()
     existing["mcp_claude"] = "gitnexus" in (
         (Path.home() / ".claude.json").read_text(encoding="utf-8") if (Path.home() / ".claude.json").exists() else "")
     existing["mcp_codex"] = "gitnexus" in (
         (Path.home() / ".codex" / "config.toml").read_text(encoding="utf-8") if (Path.home() / ".codex" / "config.toml").exists() else "")
     return existing
+
+
+def _hook_commands(hooks: dict, event_name: str) -> list[str]:
+    commands = []
+    for item in hooks.get(event_name, []):
+        for hook in item.get("hooks", []):
+            command = hook.get("command", "")
+            if isinstance(command, str) and command:
+                commands.append(command)
+    return commands
+
+
+def check_codex_gitnexus_wrapper() -> dict:
+    """Check Codex's GitNexus hook wrapper and its upgrade-safety self-test."""
+    home = Path.home()
+    hooks_path = home / ".codex" / "hooks.json"
+    wrapper_path = home / ".codex" / "hooks" / "gitnexus-codex-hook.cjs"
+    result = {
+        "status": "missing_hooks",
+        "hooks_json_exists": hooks_path.exists(),
+        "wrapper_exists": wrapper_path.exists(),
+        "configured": False,
+        "pretooluse_points_to_wrapper": False,
+        "posttooluse_points_to_wrapper": False,
+        "self_test_passed": False,
+        "self_test_output": "",
+    }
+
+    if not hooks_path.exists():
+        return result
+
+    try:
+        hooks = json.loads(hooks_path.read_text(encoding="utf-8")).get("hooks", {})
+    except (json.JSONDecodeError, OSError):
+        result["status"] = "invalid_hooks_json"
+        return result
+
+    wrapper_ref = str(wrapper_path)
+    pre_commands = _hook_commands(hooks, "PreToolUse")
+    post_commands = _hook_commands(hooks, "PostToolUse")
+    result["pretooluse_points_to_wrapper"] = any(wrapper_ref in command for command in pre_commands)
+    result["posttooluse_points_to_wrapper"] = any(wrapper_ref in command for command in post_commands)
+    result["configured"] = (
+        result["pretooluse_points_to_wrapper"] and result["posttooluse_points_to_wrapper"]
+    )
+
+    if not wrapper_path.exists():
+        result["status"] = "missing_wrapper"
+        return result
+    if not result["configured"]:
+        result["status"] = "not_configured"
+        return result
+
+    try:
+        run = subprocess.run(
+            ["node", str(wrapper_path), "--self-test"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        result["status"] = "self_test_failed"
+        result["self_test_output"] = str(exc)
+        return result
+
+    result["self_test_passed"] = run.returncode == 0
+    result["self_test_output"] = ((run.stdout or "") + (run.stderr or "")).strip()[:500]
+    result["status"] = "pass" if result["self_test_passed"] else "self_test_failed"
+    return result
 
 
 # ── 5. LSP assessment ──
