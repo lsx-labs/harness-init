@@ -29,8 +29,9 @@ if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 from harness_shared import (SKIP_DIRS, STALE_THRESHOLD, SOURCE_EXTS, MAIN_BRANCHES,
-                    should_skip, parse_codemap_entry, parse_codemap,
-                    is_acceptable_description)
+                    CODEX_EXEC_SANDBOX_ARGS, should_skip, parse_codemap_entry, parse_codemap,
+                    is_acceptable_description, parse_gitnexus_markdown,
+                    gitnexus_markdown_rows, map_areas_to_dirs)
 
 # ── Config ──
 
@@ -47,7 +48,11 @@ GIT_COMMANDS = re.compile(
     r'git(?:\s+-[^\s;|&]+)*\s+'
     r'(commit|merge|rebase|pull|checkout|switch|cherry-pick)\b'
 )
-CODEX_EXEC_SANDBOX_ARGS = ["-s", "read-only", "-c", "approval_policy=never"]
+# CODE_MAP description refresh budget. The subprocess cap must exceed one AI call
+# plus its single retry (generate_descriptions retries failed dirs at max(ai_timeout, 240)s),
+# otherwise the refresh is killed before it can write any AI description.
+CODEMAP_AI_TIMEOUT = 150
+CODEMAP_REFRESH_TIMEOUT = 600
 
 
 # ── Directory description helpers (deterministic, no AI) ──
@@ -85,22 +90,6 @@ def get_init_docstring(dir_path) -> str:
                         return line[:80]
             except (SyntaxError, OSError):
                 pass
-    return ""
-
-
-def parse_gitnexus_markdown(output: str) -> str:
-    """Extract markdown table from GitNexus output. Handles both dict and list formats."""
-    try:
-        data = json.loads(output)
-        if isinstance(data, dict):
-            return data.get("markdown", "")
-        elif isinstance(data, list) and data:
-            # List format: first item may contain markdown
-            if isinstance(data[0], dict):
-                return data[0].get("markdown", "")
-            return str(data[0])
-    except (json.JSONDecodeError, IndexError, TypeError):
-        pass
     return ""
 
 
@@ -234,13 +223,8 @@ def get_gitnexus_communities():
         output = r.stdout.strip() or r.stderr.strip()
         if not output or r.returncode != 0:
             return None
-        md = parse_gitnexus_markdown(output)
-        lines = [l.strip() for l in md.split("\n") if l.strip()]
-        if len(lines) < 3:
-            return None
         result = {}
-        for line in lines[2:]:
-            cols = [c.strip() for c in line.split("|") if c.strip()]
+        for cols in gitnexus_markdown_rows(parse_gitnexus_markdown(output)):
             if len(cols) >= 3 and cols[1].isdigit():
                 area, syms, clusters = cols[0], int(cols[1]), int(cols[2])
                 if area in result:
@@ -254,7 +238,6 @@ def get_gitnexus_communities():
 
 
 def build_area_to_dir(communities):
-    mapping = {}
     try:
         r = subprocess.run(
             ["npx", "gitnexus", "cypher",
@@ -262,21 +245,10 @@ def build_area_to_dir(communities):
              "-r", Path(".").resolve().name],
             capture_output=True, text=True, timeout=GITNEXUS_TIMEOUT)
         output = r.stdout.strip() or r.stderr.strip()
-        md = parse_gitnexus_markdown(output)
-        folders = [
-            [c.strip() for c in l.split("|") if c.strip()][0]
-            for l in [x.strip() for x in md.split("\n") if x.strip()][2:]
-            if [c.strip() for c in l.split("|") if c.strip()]
-        ]
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError, IndexError):
+        folders = [row[0] for row in gitnexus_markdown_rows(parse_gitnexus_markdown(output)) if row]
+    except (subprocess.TimeoutExpired, OSError):
         folders = []
-    for area in communities:
-        area_lower = area.lower().lstrip("_")
-        for f in folders:
-            if f.split("/")[-1].lower().lstrip("_") == area_lower:
-                mapping[area] = f
-                break
-    return mapping
+    return map_areas_to_dirs(communities, folders)
 
 
 def build_codemap_structure(communities, existing_descs, old_counts):
@@ -562,10 +534,11 @@ def _do_main_branch_update_inner():
             break
     if desc_script:
         try:
-            cmd = [sys.executable, str(desc_script), ".", "--generate", "--use-fingerprints"]
+            cmd = [sys.executable, str(desc_script), ".", "--generate", "--use-fingerprints",
+                   "--ai-timeout", str(CODEMAP_AI_TIMEOUT)]
             for dir_path in stale_dirs:
                 cmd.extend(["--refresh-dir", dir_path])
-            subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            subprocess.run(cmd, capture_output=True, text=True, timeout=CODEMAP_REFRESH_TIMEOUT)
         except (subprocess.TimeoutExpired, OSError):
             pass
 

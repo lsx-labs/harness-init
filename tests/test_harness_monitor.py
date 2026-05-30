@@ -579,6 +579,32 @@ class TestDoMainBranchUpdate:
         assert "--refresh-dir" in desc_cmd
         assert "src" in desc_cmd
 
+    def test_desc_subprocess_timeout_accommodates_ai_timeout(self, tmp_path, monkeypatch):
+        """The refresh subprocess cap must exceed the AI per-call budget it requests,
+        otherwise generate_descriptions is killed before it can write AI descriptions."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
+        (tmp_path / "CODE_MAP.md").write_text("# Old\n")
+        communities = {"auth": {"symbols": 100, "clusters": 2}}
+        new_content = "# Code Map\n\n### src/ (100 symbols)\n"
+        desc_script = tmp_path / "generate_descriptions.py"
+        desc_script.write_text("pass")
+
+        with patch.object(hm, 'ensure_gitnexus_fresh'), \
+             patch.object(hm, 'get_gitnexus_communities', return_value=communities), \
+             patch.object(hm, 'build_codemap_structure', return_value=(new_content, ["src"])), \
+             patch.object(hm, 'update_subdir_docs', return_value=["src"]), \
+             patch.object(hm, 'DESC_SCRIPT', desc_script), \
+             patch.object(hm.subprocess, 'run', return_value=MagicMock(returncode=0)) as mock_run:
+            hm.do_main_branch_update("test_project")
+
+        desc_cmd = mock_run.call_args.args[0]
+        assert "--ai-timeout" in desc_cmd
+        ai_timeout = int(desc_cmd[desc_cmd.index("--ai-timeout") + 1])
+        sub_timeout = mock_run.call_args.kwargs.get("timeout")
+        assert sub_timeout is not None
+        assert sub_timeout >= ai_timeout
+
     def test_update_no_desc_script(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -26,9 +27,53 @@ CODE_NAME_GENERIC = {
 
 MAIN_BRANCHES = {"main", "master"}
 
+# Sandbox flags for `codex exec`: read-only filesystem, no approval escalation.
+# Mirrors the tool restriction applied on the Claude CLI path.
+CODEX_EXEC_SANDBOX_ARGS = ["-s", "read-only", "-c", "approval_policy=never"]
+
 
 def should_skip(name: str) -> bool:
     return name in SKIP_DIRS or name.endswith(".egg-info") or (name.startswith(".") and name != ".")
+
+
+# ── GitNexus output parsing (shared by monitor / plan / description generator) ──
+
+def parse_gitnexus_markdown(output: str) -> str:
+    """Extract the markdown table from GitNexus cypher JSON output (dict or list form)."""
+    try:
+        data = json.loads(output)
+        if isinstance(data, dict):
+            return data.get("markdown", "")
+        if isinstance(data, list) and data:
+            if isinstance(data[0], dict):
+                return data[0].get("markdown", "")
+            return str(data[0])
+    except (json.JSONDecodeError, IndexError, TypeError):
+        pass
+    return ""
+
+
+def gitnexus_markdown_rows(markdown: str) -> list[list[str]]:
+    """Split a GitNexus markdown table into data-cell rows (header + separator dropped)."""
+    lines = [line.strip() for line in markdown.split("\n") if line.strip()]
+    if len(lines) < 3:
+        return []
+    return [[c.strip() for c in line.split("|") if c.strip()] for line in lines[2:]]
+
+
+def map_areas_to_dirs(areas, folders: list[str]) -> dict[str, str]:
+    """Map each GitNexus community label to the first folder whose leaf name matches.
+
+    Matching is case-insensitive and ignores a leading underscore on either side.
+    """
+    mapping: dict[str, str] = {}
+    for area in areas:
+        area_lower = area.lower().lstrip("_")
+        for folder in folders:
+            if folder.split("/")[-1].lower().lstrip("_") == area_lower:
+                mapping[area] = folder
+                break
+    return mapping
 
 
 # ── Platform ──

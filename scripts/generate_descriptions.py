@@ -24,21 +24,23 @@ import sys
 from pathlib import Path
 
 from harness_shared import (
+    CODEX_EXEC_SANDBOX_ARGS,
     LOW_CONFIDENCE_MARKER,
     MANUAL_MARKER,
     SOURCE_EXTS,
+    gitnexus_markdown_rows,
     is_acceptable_description,
     is_low_confidence_description,
     is_low_quality_description,
     needs_description_refresh,
     parse_codemap as _parse_codemap,
+    parse_gitnexus_markdown,
 )
 
 HOOK_TIMEOUT = 10
 DEFAULT_AI_TIMEOUT = 180
 DEFAULT_BATCH_SIZE = 2
 DEFAULT_MAX_WORKERS = 1
-CODEX_EXEC_SANDBOX_ARGS = ["-s", "read-only", "-c", "approval_policy=never"]
 GENERIC = {"main", "init", "run", "start", "stop", "get", "set", "test", "setup", "parse",
            "build", "create", "delete", "update", "load", "save", "read", "write", "open",
            "close", "validate", "check", "add", "all", "data", "config", "path", "name", "type"}
@@ -1170,22 +1172,12 @@ def gitnexus_query(cypher: str) -> list[list[str]]:
         r = subprocess.run(
             ["npx", "gitnexus", "cypher", cypher, "-r", Path(".").resolve().name],
             capture_output=True, text=True, timeout=HOOK_TIMEOUT)
-        output = r.stdout.strip() or r.stderr.strip()
-        if not output:
-            return []
-        data = json.loads(output)
-        if isinstance(data, dict):
-            md = data.get("markdown", "")
-        elif isinstance(data, list) and data and isinstance(data[0], dict):
-            md = data[0].get("markdown", "")
-        else:
-            md = ""
-        lines = [l.strip() for l in md.split("\n") if l.strip()]
-        if len(lines) < 3:
-            return []
-        return [[c.strip() for c in l.split("|") if c.strip()] for l in lines[2:]]
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
+    except (subprocess.TimeoutExpired, OSError):
         return []
+    output = r.stdout.strip() or r.stderr.strip()
+    if not output:
+        return []
+    return gitnexus_markdown_rows(parse_gitnexus_markdown(output))
 
 
 def get_docstring(dir_path: str) -> str:
