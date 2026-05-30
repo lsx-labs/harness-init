@@ -527,6 +527,16 @@ class TestBackgroundDispatch:
         assert hm.acquire_lock("proj1")
         hm.release_lock("proj1")
 
+    def test_reclaims_stale_lock_even_with_live_pid(self, tmp_path, monkeypatch):
+        # A reused PID could otherwise wedge refreshes forever; an old lock is reclaimed.
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
+        assert hm.acquire_lock("proj_stale")  # lock now holds our (live) PID
+        lock_file = (tmp_path / "locks") / "proj_stale.lock"
+        old = time.time() - (hm.LOCK_STALE_SECONDS + 60)
+        os.utime(lock_file, (old, old))
+        assert hm.acquire_lock("proj_stale")  # reclaimed despite the live PID
+        hm.release_lock("proj_stale")
+
 
 class TestCodemapRefreshTimeout:
     """codemap_refresh_timeout sizes the refresh subprocess cap to the AI budget."""
@@ -551,10 +561,61 @@ class TestCodemapRefreshTimeout:
 class TestDoMainBranchUpdate:
     """Cover do_main_branch_update (background worker)."""
 
+    def test_skips_when_branch_changed_after_spawn(self, tmp_path, monkeypatch):
+        # TOCTOU: if the user switched off main after the git op spawned the worker,
+        # the worker must NOT write files. Re-check the branch and bail.
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
+        monkeypatch.setattr(hm, 'JOB_DIR', tmp_path / "jobs")
+        (tmp_path / "CODE_MAP.md").write_text("# Old\n")
+        with patch.object(hm, 'is_on_main_branch', return_value=False), \
+             patch.object(hm, 'ensure_gitnexus_fresh'), \
+             patch.object(hm, 'get_gitnexus_communities', return_value=None) as gc:
+            hm.do_main_branch_update("test_project", job_id="j1")
+        assert (tmp_path / "CODE_MAP.md").read_text() == "# Old\n"
+        gc.assert_not_called()
+        status = json.loads((tmp_path / "jobs" / "j1.json").read_text())
+        assert status["status"] == "skipped_branch_changed"
+
+    def test_refreshes_descriptions_when_entries_need_refresh_despite_unchanged_structure(self, tmp_path, monkeypatch):
+        # Self-healing: an entry with an empty/low-quality description must still trigger a
+        # description run even when the GitNexus structure is byte-identical and no dir is stale.
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
+        content = "# Code Map\n\n### src/ (100 symbols)\n"  # src/ has NO description
+        (tmp_path / "CODE_MAP.md").write_text(content)
+        desc_script = tmp_path / "generate_descriptions.py"
+        desc_script.write_text("pass")
+        with patch.object(hm, 'is_on_main_branch', return_value=True), \
+             patch.object(hm, 'ensure_gitnexus_fresh'), \
+             patch.object(hm, 'get_gitnexus_communities', return_value={"src": {"symbols": 100, "clusters": 1}}), \
+             patch.object(hm, 'build_codemap_structure', return_value=(content, [])), \
+             patch.object(hm, 'DESC_SCRIPT', desc_script), \
+             patch.object(hm.subprocess, 'run', return_value=MagicMock(returncode=0)) as mock_run:
+            hm.do_main_branch_update("test_project")
+        assert mock_run.called
+        assert "--generate" in mock_run.call_args.args[0]
+
+    def test_ensure_gitnexus_fresh_records_analyze_timeout(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(hm, 'JOB_DIR', tmp_path / "jobs")
+        (tmp_path / ".gitnexus").mkdir()
+
+        def fake_run(cmd, *a, **k):
+            if "status" in cmd:
+                return MagicMock(returncode=0, stdout="stale", stderr="")
+            raise subprocess.TimeoutExpired(cmd, 120)  # analyze hangs
+
+        with patch.object(hm.subprocess, 'run', side_effect=fake_run):
+            hm.ensure_gitnexus_fresh(job_id="j2")
+        status = json.loads((tmp_path / "jobs" / "j2.json").read_text())
+        assert status.get("gitnexus_analyze") in ("timeout", "failed")
+
     def test_no_communities(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
-        with patch.object(hm, 'ensure_gitnexus_fresh'), \
+        with patch.object(hm, 'is_on_main_branch', return_value=True), \
+             patch.object(hm, 'ensure_gitnexus_fresh'), \
              patch.object(hm, 'get_gitnexus_communities', return_value=None):
             hm.do_main_branch_update("test_project")
         assert not (tmp_path / "CODE_MAP.md").exists()
@@ -568,7 +629,8 @@ class TestDoMainBranchUpdate:
             expected_content, _ = hm.build_codemap_structure(communities, {}, {})
         (tmp_path / "CODE_MAP.md").write_text(expected_content)
 
-        with patch.object(hm, 'ensure_gitnexus_fresh'), \
+        with patch.object(hm, 'is_on_main_branch', return_value=True), \
+             patch.object(hm, 'ensure_gitnexus_fresh'), \
              patch.object(hm, 'get_gitnexus_communities', return_value=communities), \
              patch.object(hm, 'build_codemap_structure', return_value=(expected_content, [])):
             hm.do_main_branch_update("test_project")
@@ -584,7 +646,8 @@ class TestDoMainBranchUpdate:
         desc_script = tmp_path / "generate_descriptions.py"
         desc_script.write_text("pass")
 
-        with patch.object(hm, 'ensure_gitnexus_fresh'), \
+        with patch.object(hm, 'is_on_main_branch', return_value=True), \
+             patch.object(hm, 'ensure_gitnexus_fresh'), \
              patch.object(hm, 'get_gitnexus_communities', return_value=communities), \
              patch.object(hm, 'build_codemap_structure', return_value=(new_content, ["src"])), \
              patch.object(hm, 'update_subdir_docs', return_value=["src"]), \
@@ -610,7 +673,8 @@ class TestDoMainBranchUpdate:
         desc_script = tmp_path / "generate_descriptions.py"
         desc_script.write_text("pass")
 
-        with patch.object(hm, 'ensure_gitnexus_fresh'), \
+        with patch.object(hm, 'is_on_main_branch', return_value=True), \
+             patch.object(hm, 'ensure_gitnexus_fresh'), \
              patch.object(hm, 'get_gitnexus_communities', return_value=communities), \
              patch.object(hm, 'build_codemap_structure', return_value=(new_content, ["src"])), \
              patch.object(hm, 'update_subdir_docs', return_value=["src"]), \
@@ -633,7 +697,8 @@ class TestDoMainBranchUpdate:
         new_content = "# Code Map\n\n### src/ (100 symbols)\n"
         (tmp_path / "CODE_MAP.md").write_text("# Old Code Map")
 
-        with patch.object(hm, 'ensure_gitnexus_fresh'), \
+        with patch.object(hm, 'is_on_main_branch', return_value=True), \
+             patch.object(hm, 'ensure_gitnexus_fresh'), \
              patch.object(hm, 'get_gitnexus_communities', return_value=communities), \
              patch.object(hm, 'build_codemap_structure', return_value=(new_content, [])), \
              patch.object(hm, 'update_subdir_docs', return_value=[]):
@@ -644,7 +709,8 @@ class TestDoMainBranchUpdate:
     def test_lock_released_on_error(self, tmp_path, monkeypatch):
         monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
         monkeypatch.chdir(tmp_path)
-        with patch.object(hm, 'ensure_gitnexus_fresh', side_effect=RuntimeError("boom")):
+        with patch.object(hm, 'is_on_main_branch', return_value=True), \
+             patch.object(hm, 'ensure_gitnexus_fresh', side_effect=RuntimeError("boom")):
             try:
                 hm.do_main_branch_update("test_project")
             except RuntimeError:
@@ -655,7 +721,8 @@ class TestDoMainBranchUpdate:
         monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
         monkeypatch.setattr(hm, 'JOB_DIR', tmp_path / "jobs")
         monkeypatch.chdir(tmp_path)
-        with patch.object(hm, 'ensure_gitnexus_fresh', side_effect=RuntimeError("boom")):
+        with patch.object(hm, 'is_on_main_branch', return_value=True), \
+             patch.object(hm, 'ensure_gitnexus_fresh', side_effect=RuntimeError("boom")):
             try:
                 hm.do_main_branch_update("test_project", job_id="job-1")
             except RuntimeError:
@@ -1121,7 +1188,8 @@ class TestCoverageGaps:
     def test_bg_cli_mode(self, tmp_path, monkeypatch):
         """Cover __main__ --bg entry point."""
         monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
-        with patch.object(hm, 'ensure_gitnexus_fresh'), \
+        with patch.object(hm, 'is_on_main_branch', return_value=True), \
+             patch.object(hm, 'ensure_gitnexus_fresh'), \
              patch.object(hm, 'get_gitnexus_communities', return_value=None):
             hm.do_main_branch_update("test")
 

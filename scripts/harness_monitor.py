@@ -29,8 +29,8 @@ if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8
 
 from harness_shared import (SKIP_DIRS, STALE_THRESHOLD, SOURCE_EXTS, MAIN_BRANCHES,
                     CODEX_EXEC_SANDBOX_ARGS, get_ai_cmd, should_skip, parse_codemap_entry,
-                    parse_codemap, is_acceptable_description, parse_gitnexus_markdown,
-                    gitnexus_markdown_rows, map_areas_to_dirs)
+                    parse_codemap, is_acceptable_description, needs_description_refresh,
+                    parse_gitnexus_markdown, gitnexus_markdown_rows, map_areas_to_dirs)
 
 # ── Config ──
 
@@ -55,6 +55,9 @@ GIT_COMMANDS = re.compile(
 CODEMAP_AI_TIMEOUT = 150
 CODEMAP_REFRESH_SLACK = 60
 CODEMAP_REFRESH_TIMEOUT_MAX = 1800
+# A lock held longer than this is treated as stale and reclaimed even if its recorded
+# PID is alive — guards against a reused PID wedging refreshes forever.
+LOCK_STALE_SECONDS = 1800
 
 
 def codemap_refresh_timeout(stale_count: int) -> int:
@@ -398,7 +401,10 @@ def acquire_lock(project_id):
             pid = int(lock_file.read_text(encoding="utf-8").strip())
             try:
                 os.kill(pid, 0)
-                return False
+                if time.time() - lock_file.stat().st_mtime > LOCK_STALE_SECONDS:
+                    lock_file.unlink(missing_ok=True)  # stale despite a live (likely reused) PID
+                else:
+                    return False
             except OSError:
                 lock_file.unlink(missing_ok=True)
         except (ValueError, OSError):
@@ -440,19 +446,28 @@ def write_job_status(job_id: str | None, payload: dict) -> None:
     atomic_write_text(path, json.dumps(current, indent=2, ensure_ascii=False))
 
 
-def ensure_gitnexus_fresh():
-    """If GitNexus is indexed but stale, run incremental analyze first."""
+def ensure_gitnexus_fresh(job_id=None):
+    """If GitNexus is indexed but stale, run incremental analyze first.
+
+    A failed/timed-out analyze is recorded in the job status rather than silently
+    swallowed, so a repeatedly-failing reindex is visible to whoever inspects jobs/.
+    """
     if not Path(".gitnexus").is_dir():
         return
     try:
         r = subprocess.run(["npx", "gitnexus", "status"],
                            capture_output=True, text=True, timeout=5)
-        output = (r.stdout + r.stderr).lower()
-        if "stale" in output:
-            subprocess.run(["npx", "gitnexus", "analyze"],
-                           capture_output=True, text=True, timeout=120)
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        pass
+        return
+    if "stale" not in (r.stdout + r.stderr).lower():
+        return
+    try:
+        subprocess.run(["npx", "gitnexus", "analyze"],
+                       capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        write_job_status(job_id, {"gitnexus_analyze": "timeout"})
+    except (FileNotFoundError, OSError):
+        write_job_status(job_id, {"gitnexus_analyze": "failed"})
 
 
 def do_main_branch_update(project_id, job_id=None):
@@ -461,6 +476,11 @@ def do_main_branch_update(project_id, job_id=None):
     Runs as a background process (spawned by handle_main_branch_update).
     No timeout pressure — takes as long as it needs.
     """
+    # Re-check the branch: the user may have switched off main between the git op
+    # that spawned this worker and now. The "only write on main" guarantee depends on it.
+    if not is_on_main_branch():
+        write_job_status(job_id, {"status": "skipped_branch_changed", "project_id": project_id})
+        return
     if not acquire_lock(project_id):
         write_job_status(job_id, {
             "status": "skipped_locked",
@@ -474,7 +494,7 @@ def do_main_branch_update(project_id, job_id=None):
         "started_at": time.time(),
     })
     try:
-        _do_main_branch_update_inner()
+        _do_main_branch_update_inner(job_id)
         write_job_status(job_id, {
             "status": "completed",
             "project_id": project_id,
@@ -492,9 +512,9 @@ def do_main_branch_update(project_id, job_id=None):
         release_lock(project_id)
 
 
-def _do_main_branch_update_inner():
+def _do_main_branch_update_inner(job_id=None):
     # Step 0: Ensure GitNexus index is fresh before reading community data
-    ensure_gitnexus_fresh()
+    ensure_gitnexus_fresh(job_id)
 
     codemap_file = Path("CODE_MAP.md")
     old_content = codemap_file.read_text(encoding="utf-8") if codemap_file.exists() else ""
@@ -507,10 +527,16 @@ def _do_main_branch_update_inner():
     else:
         return
 
-    if new_content == old_content and not stale_dirs:
+    # Self-heal: even if structure is byte-identical and nothing is stale, a CODE_MAP entry
+    # with an empty/low-quality description must still trigger a description run (otherwise a
+    # single failed first pass strands that entry's description permanently).
+    entries_need_refresh = any(needs_description_refresh(e.get("desc") or "")
+                               for e in parse_codemap(codemap_file))
+    if new_content == old_content and not stale_dirs and not entries_need_refresh:
         return
 
-    atomic_write_text(codemap_file, new_content)
+    if new_content != old_content:
+        atomic_write_text(codemap_file, new_content)
 
     # Step 2: Generate/refresh descriptions
     desc_script = None
