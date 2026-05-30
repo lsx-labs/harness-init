@@ -28,7 +28,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 from harness_shared import (SKIP_DIRS, STALE_THRESHOLD, SOURCE_EXTS, MAIN_BRANCHES,
-                    CODEX_EXEC_SANDBOX_ARGS, get_ai_cmd, should_skip, parse_codemap_entry,
+                    should_skip, parse_codemap_entry,
                     parse_codemap, is_acceptable_description, needs_description_refresh,
                     parse_gitnexus_markdown, gitnexus_markdown_rows, map_areas_to_dirs)
 
@@ -117,27 +117,6 @@ def get_subdir_list(dir_path) -> str:
     except OSError:
         pass
     return ""
-
-
-def ai_invoke(prompt, timeout=15):
-    """Invoke AI CLI non-interactively. Called from background workers only."""
-    cmd = get_ai_cmd()
-    if not cmd:
-        return ""
-    try:
-        if "claude" in cmd:
-            # No Bash in allowedTools — prompts only need Read + GitNexus MCP
-            r = subprocess.run(
-                [cmd, "-p", prompt, "--allowedTools", "Read,mcp__gitnexus*"],
-                capture_output=True, text=True, timeout=timeout)
-            return r.stdout.strip()
-        else:
-            r = subprocess.run(
-                [cmd, "exec", *CODEX_EXEC_SANDBOX_ARGS, prompt],
-                capture_output=True, text=True, timeout=timeout)
-            return r.stdout.strip()
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return ""
 
 
 # ── Git state ──
@@ -363,31 +342,6 @@ def sync_platform_docs(dir_path):
         return None
 
 
-def update_subdir_docs(stale_dirs):
-    """Update harness:start/end regions in sub-directory docs via AI CLI."""
-    dirs_with_docs = [d for d in stale_dirs
-                      if Path(d, "CLAUDE.md").exists() or Path(d, "AGENTS.md").exists()]
-    if not dirs_with_docs:
-        return []
-
-    project_name = Path(".").resolve().name
-    prompt = (
-        f"你在项目 {project_name} 中。以下 {len(dirs_with_docs)} 个目录的代码发生了较大变动，"
-        f"需要更新其 CLAUDE.md 和 AGENTS.md 中 <!-- harness:start --> 到 <!-- harness:end --> 之间的内容。\n\n"
-        f"规则：\n"
-        f"1. 对每个目录，调用 gitnexus_context 查询其核心函数\n"
-        f"2. 基于 GitNexus 返回的事实更新约束和危险操作\n"
-        f"3. 只改 harness:start/end 之间的内容，其他部分不动\n\n"
-        f"目录：{', '.join(dirs_with_docs)}"
-    )
-
-    result = ai_invoke(prompt, timeout=60)
-    if result:
-        for d in dirs_with_docs:
-            sync_platform_docs(d)
-    return dirs_with_docs if result else []
-
-
 # ══════════════════════════════════════════════════════════
 # Main update handler
 # ══════════════════════════════════════════════════════════
@@ -558,11 +512,7 @@ def _do_main_branch_update_inner(job_id=None):
         except (subprocess.TimeoutExpired, OSError):
             pass
 
-    # Step 3: Update sub-directory CLAUDE.md/AGENTS.md for stale dirs
-    if stale_dirs:
-        update_subdir_docs(stale_dirs)
-
-    # Step 4: Sync root CLAUDE.md ↔ AGENTS.md if both exist
+    # Step 3: Sync root CLAUDE.md ↔ AGENTS.md if both exist
     sync_platform_docs(".")
 
 

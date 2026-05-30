@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
@@ -52,3 +53,15 @@ def test_codex_exec_sandbox_args_are_read_only_and_non_escalating() -> None:
     args = harness_shared.CODEX_EXEC_SANDBOX_ARGS
     assert "read-only" in args
     assert "approval_policy=never" in args
+
+
+class TestGetAiCmd:
+    def test_falls_back_to_codex_app(self):
+        with patch.object(harness_shared.shutil, "which", return_value=None), \
+             patch.object(harness_shared.os.path, "isfile", return_value=True):
+            assert harness_shared.get_ai_cmd() == "/Applications/Codex.app/Contents/Resources/codex"
+
+    def test_returns_empty_when_nothing_available(self):
+        with patch.object(harness_shared.shutil, "which", return_value=None), \
+             patch.object(harness_shared.os.path, "isfile", return_value=False):
+            assert harness_shared.get_ai_cmd() == ""

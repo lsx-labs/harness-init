@@ -77,35 +77,6 @@ class TestIsOnMainBranch:
             assert hm.is_on_main_branch() is False
 
 
-class TestGetAiCmd:
-    def test_finds_claude(self):
-        with patch.object(harness_shared.shutil, 'which', side_effect=lambda x: "/usr/bin/claude" if x == "claude" else None):
-            assert hm.get_ai_cmd() == "claude"
-
-    def test_codex_environment_prefers_codex_over_claude(self, monkeypatch):
-        monkeypatch.setenv("CODEX_THREAD_ID", "thread-1")
-        with patch.object(
-            harness_shared.shutil,
-            'which',
-            side_effect=lambda x: f"/usr/bin/{x}" if x in {"claude", "codex"} else None,
-        ):
-            assert hm.get_ai_cmd() == "codex"
-
-    def test_explicit_claude_platform_overrides_codex_environment(self, monkeypatch):
-        monkeypatch.setenv("HARNESS_PLATFORM", "claude")
-        monkeypatch.setenv("CODEX_THREAD_ID", "thread-1")
-        with patch.object(
-            harness_shared.shutil,
-            'which',
-            side_effect=lambda x: f"/usr/bin/{x}" if x in {"claude", "codex"} else None,
-        ):
-            assert hm.get_ai_cmd() == "claude"
-
-    def test_finds_codex(self):
-        with patch.object(harness_shared.shutil, 'which', side_effect=lambda x: "/usr/bin/codex" if x == "codex" else None):
-            assert hm.get_ai_cmd() == "codex"
-
-
 class TestParseCodemapEntry:
     def test_desc_before_count(self):
         desc, count = harness_shared.parse_codemap_entry("(100 symbols) — My description")
@@ -171,69 +142,6 @@ class TestLoadSaveState:
 
 
 # ── Additional coverage tests ──
-
-
-class TestGetAiCmdCodexApp:
-    """Cover lines 54-57: Codex.app fallback path."""
-
-    def test_finds_codex_app(self):
-        with patch.object(harness_shared.shutil, 'which', return_value=None):
-            with patch.object(harness_shared.os.path, 'isfile', return_value=True):
-                assert hm.get_ai_cmd() == "/Applications/Codex.app/Contents/Resources/codex"
-
-    def test_finds_nothing(self):
-        with patch.object(harness_shared.shutil, 'which', return_value=None):
-            with patch.object(harness_shared.os.path, 'isfile', return_value=False):
-                assert hm.get_ai_cmd() == ""
-
-
-class TestAiInvoke:
-    """Cover lines 62-78: ai_invoke for claude and codex paths."""
-
-    def test_no_cmd(self):
-        """Line 64: no AI command → empty string."""
-        with patch.object(hm, 'get_ai_cmd', return_value=""):
-            assert hm.ai_invoke("test prompt") == ""
-
-    def test_claude_path(self):
-        """Lines 66-71: claude -p with allowedTools."""
-        mock_result = MagicMock(returncode=0, stdout="AI response\n")
-        with patch.object(hm, 'get_ai_cmd', return_value="claude"), \
-             patch.object(hm.subprocess, 'run', return_value=mock_result) as mock_run:
-            result = hm.ai_invoke("test prompt", timeout=10)
-            assert result == "AI response"
-            args = mock_run.call_args[0][0]
-            assert "claude" in args
-            assert "-p" in args
-            assert "--allowedTools" in args
-
-    def test_codex_path(self):
-        """Lines 73-76: codex exec path."""
-        mock_result = MagicMock(returncode=0, stdout="Codex response\n")
-        with patch.object(hm, 'get_ai_cmd', return_value="codex"), \
-             patch.object(hm.subprocess, 'run', return_value=mock_result) as mock_run:
-            result = hm.ai_invoke("test prompt")
-            assert result == "Codex response"
-            args = mock_run.call_args[0][0]
-            assert "codex" in args
-            assert "exec" in args
-            assert "-s" in args
-            assert "read-only" in args
-            assert "-c" in args
-            assert "approval_policy=never" in args
-
-    def test_timeout(self):
-        """Lines 77-78: subprocess timeout → empty string."""
-        with patch.object(hm, 'get_ai_cmd', return_value="claude"), \
-             patch.object(hm.subprocess, 'run',
-                          side_effect=subprocess.TimeoutExpired("claude", 15)):
-            assert hm.ai_invoke("test") == ""
-
-    def test_file_not_found(self):
-        """Lines 77-78: FileNotFoundError → empty string."""
-        with patch.object(hm, 'get_ai_cmd', return_value="claude"), \
-             patch.object(hm.subprocess, 'run', side_effect=FileNotFoundError):
-            assert hm.ai_invoke("test") == ""
 
 
 class TestGetProjectId:
@@ -426,33 +334,6 @@ class TestBuildCodemapStructure:
         with patch.object(hm, 'build_area_to_dir', return_value=area_to_dir):
             content, stale = hm.build_codemap_structure(communities, {}, {})
             assert "### scripts/" in content
-
-
-class TestUpdateSubdirDocs:
-    """Cover lines 278-296: update_subdir_docs."""
-
-    def test_no_docs_dirs(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        result = hm.update_subdir_docs(["nonexistent"])
-        assert result == []
-
-    def test_with_claude_md(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        d = tmp_path / "src"
-        d.mkdir()
-        (d / "CLAUDE.md").write_text("<!-- harness:start -->\nold\n<!-- harness:end -->\n")
-        with patch.object(hm, 'ai_invoke', return_value="updated content"):
-            result = hm.update_subdir_docs(["src"])
-            assert result == ["src"]
-
-    def test_ai_invoke_fails(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        d = tmp_path / "src"
-        d.mkdir()
-        (d / "CLAUDE.md").write_text("content")
-        with patch.object(hm, 'ai_invoke', return_value=""):
-            result = hm.update_subdir_docs(["src"])
-            assert result == []
 
 
 class TestSyncPlatformDocs:
@@ -650,7 +531,6 @@ class TestDoMainBranchUpdate:
              patch.object(hm, 'ensure_gitnexus_fresh'), \
              patch.object(hm, 'get_gitnexus_communities', return_value=communities), \
              patch.object(hm, 'build_codemap_structure', return_value=(new_content, ["src"])), \
-             patch.object(hm, 'update_subdir_docs', return_value=["src"]), \
              patch.object(hm, 'DESC_SCRIPT', desc_script), \
              patch.object(hm.subprocess, 'run', return_value=MagicMock(returncode=0)) as mock_run:
             hm.do_main_branch_update("test_project")
@@ -677,7 +557,6 @@ class TestDoMainBranchUpdate:
              patch.object(hm, 'ensure_gitnexus_fresh'), \
              patch.object(hm, 'get_gitnexus_communities', return_value=communities), \
              patch.object(hm, 'build_codemap_structure', return_value=(new_content, ["src"])), \
-             patch.object(hm, 'update_subdir_docs', return_value=["src"]), \
              patch.object(hm, 'DESC_SCRIPT', desc_script), \
              patch.object(hm.subprocess, 'run', return_value=MagicMock(returncode=0)) as mock_run:
             hm.do_main_branch_update("test_project")
@@ -700,8 +579,7 @@ class TestDoMainBranchUpdate:
         with patch.object(hm, 'is_on_main_branch', return_value=True), \
              patch.object(hm, 'ensure_gitnexus_fresh'), \
              patch.object(hm, 'get_gitnexus_communities', return_value=communities), \
-             patch.object(hm, 'build_codemap_structure', return_value=(new_content, [])), \
-             patch.object(hm, 'update_subdir_docs', return_value=[]):
+             patch.object(hm, 'build_codemap_structure', return_value=(new_content, [])):
             hm.do_main_branch_update("test_project")
 
         assert (tmp_path / "CODE_MAP.md").read_text() == new_content
