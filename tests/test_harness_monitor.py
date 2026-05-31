@@ -385,6 +385,43 @@ class TestSyncPlatformDocs:
         assert claude.read_text(encoding="utf-8") == "claude content"
         assert agents.read_text(encoding="utf-8") == "agent content"
 
+    def test_newer_claude_overwrites_agents(self, tmp_path):
+        # This production path overwrites real files; the newer file's content must win.
+        # A swapped copy direction (silent data loss) fails this assertion.
+        claude = tmp_path / "CLAUDE.md"
+        agents = tmp_path / "AGENTS.md"
+        claude.write_text("NEW from claude", encoding="utf-8")
+        agents.write_text("OLD agents", encoding="utf-8")
+        os.utime(agents, (1_700_000_000, 1_700_000_000))
+        os.utime(claude, (1_700_000_500, 1_700_000_500))  # claude is newer
+
+        assert hm.sync_platform_docs(tmp_path) == "claude_to_agents"
+        assert agents.read_text(encoding="utf-8") == "NEW from claude"
+        assert claude.read_text(encoding="utf-8") == "NEW from claude"
+
+    def test_newer_agents_overwrites_claude(self, tmp_path):
+        claude = tmp_path / "CLAUDE.md"
+        agents = tmp_path / "AGENTS.md"
+        claude.write_text("OLD claude", encoding="utf-8")
+        agents.write_text("NEW from agents", encoding="utf-8")
+        os.utime(claude, (1_700_000_000, 1_700_000_000))
+        os.utime(agents, (1_700_000_500, 1_700_000_500))  # agents is newer
+
+        assert hm.sync_platform_docs(tmp_path) == "agents_to_claude"
+        assert claude.read_text(encoding="utf-8") == "NEW from agents"
+        assert agents.read_text(encoding="utf-8") == "NEW from agents"
+
+    def test_identical_content_is_noop(self, tmp_path):
+        claude = tmp_path / "CLAUDE.md"
+        agents = tmp_path / "AGENTS.md"
+        claude.write_text("same", encoding="utf-8")
+        agents.write_text("same", encoding="utf-8")
+        assert hm.sync_platform_docs(tmp_path) is None
+
+    def test_missing_file_is_noop(self, tmp_path):
+        (tmp_path / "CLAUDE.md").write_text("only claude", encoding="utf-8")
+        assert hm.sync_platform_docs(tmp_path) is None
+
 
 class TestBackgroundDispatch:
     """Cover handle_main_branch_update (dispatcher) + lock mechanism."""
@@ -468,6 +505,37 @@ class TestBackgroundDispatch:
         os.utime(lock_file, (old, old))
         assert hm.acquire_lock("proj_stale")  # reclaimed despite the live PID
         hm.release_lock("proj_stale")
+
+    def test_concurrent_acquire_grants_exactly_one(self, tmp_path, monkeypatch):
+        # O_EXCL must be the mutual-exclusion primitive. The unconditional pre-create
+        # unlink lets a racing worker's freshly-created lock be deleted, so >1 worker wins.
+        import threading
+        locks = tmp_path / "locks"
+        locks.mkdir()
+        monkeypatch.setattr(hm, 'LOCK_DIR', locks)
+        offenders = []
+        for _ in range(30):
+            for f in locks.glob("*.lock"):
+                f.unlink()
+            n = 16
+            barrier = threading.Barrier(n)
+            winners = []
+            guard = threading.Lock()
+
+            def worker():
+                barrier.wait()
+                if hm.acquire_lock("proj"):
+                    with guard:
+                        winners.append(1)
+
+            ts = [threading.Thread(target=worker) for _ in range(n)]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join()
+            if sum(winners) != 1:
+                offenders.append(sum(winners))
+        assert not offenders, f"rounds where !=1 worker acquired the lock: {offenders}"
 
 
 class TestCodemapRefreshTimeout:
@@ -1094,17 +1162,33 @@ class TestCoverageGaps:
         assert "### docs/" in content
         assert "api" in content
 
-    def test_handle_main_branch_update_lock_corrupt(self, tmp_path, monkeypatch, capsys):
-        """Cover L520-521: corrupt lock file value."""
+    def test_handle_main_branch_update_stale_corrupt_lock_reclaimed(self, tmp_path, monkeypatch, capsys):
+        """A corrupt lock past LOCK_STALE_SECONDS is reclaimed — it must not wedge updates forever."""
         monkeypatch.chdir(tmp_path)
         lock_dir = tmp_path / "locks"
         lock_dir.mkdir()
-        (lock_dir / "test.lock").write_text("not_a_pid")
+        lock = lock_dir / "test.lock"
+        lock.write_text("not_a_pid")
+        old = time.time() - (hm.LOCK_STALE_SECONDS + 60)
+        os.utime(lock, (old, old))
         monkeypatch.setattr(hm, 'LOCK_DIR', lock_dir)
         with patch.object(hm.subprocess, 'Popen'):
             hm.handle_main_branch_update("test")
         context = read_post_tool_context(capsys.readouterr().out)
         assert "Harness 更新已在后台启动" in context
+
+    def test_handle_main_branch_update_skips_on_fresh_unwritten_lock(self, tmp_path, monkeypatch, capsys):
+        """Race safety: a just-created (still-empty) lock is treated as held, never stolen."""
+        monkeypatch.chdir(tmp_path)
+        lock_dir = tmp_path / "locks"
+        lock_dir.mkdir()
+        (lock_dir / "test.lock").write_text("")  # O_EXCL winner is mid-create, PID not written yet
+        monkeypatch.setattr(hm, 'LOCK_DIR', lock_dir)
+        with patch.object(hm.subprocess, 'Popen') as popen:
+            hm.handle_main_branch_update("test")
+        context = read_post_tool_context(capsys.readouterr().out)
+        assert "已在后台运行" in context
+        popen.assert_not_called()
 
     def test_bg_cli_mode(self, tmp_path, monkeypatch):
         """Cover __main__ --bg entry point."""

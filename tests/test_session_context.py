@@ -176,6 +176,13 @@ class TestCheckCodemapStale:
         (tmp_path / "CODE_MAP.md").write_text("### src/ (100 symbols) — Core module\n")
         assert check_codemap_stale() is None
 
+    def test_invalid_utf8_does_not_crash(self, tmp_path, monkeypatch):
+        # a corrupt CODE_MAP.md must not blow up the whole SessionStart hook (must not raise)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_bytes(b"### src/ (10 symbols)\n\xff\xfe\n")
+        result = check_codemap_stale()
+        assert result is None or isinstance(result, str)
+
 
 # ── Additional coverage tests ──
 

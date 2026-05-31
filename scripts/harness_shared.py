@@ -175,7 +175,7 @@ def parse_codemap(codemap_path: Path) -> list[dict]:
         return []
     entries = []
     current = ""
-    for line in codemap_path.read_text(encoding="utf-8").split("\n"):
+    for line in codemap_path.read_text(encoding="utf-8", errors="replace").split("\n"):
         m = re.match(r'^###\s+(\S+)/?(.*)$', line)
         if m:
             current = m.group(1).rstrip("/")

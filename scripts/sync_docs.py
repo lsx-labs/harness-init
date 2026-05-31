@@ -26,8 +26,8 @@ def sync_one(dir_path: str, own_file: str, other_file: str) -> dict | None:
 
     if own.exists() and other.exists():
         try:
-            own_text = own.read_text(encoding="utf-8")
-            other_text = other.read_text(encoding="utf-8")
+            own_text = own.read_text(encoding="utf-8", errors="replace")
+            other_text = other.read_text(encoding="utf-8", errors="replace")
             if own_text == other_text:
                 return None
             own_mtime = own.stat().st_mtime_ns
@@ -47,7 +47,7 @@ def sync_one(dir_path: str, own_file: str, other_file: str) -> dict | None:
 
     if not own.exists() and other.exists():
         try:
-            own.write_text(other.read_text(encoding="utf-8"), encoding="utf-8")
+            own.write_text(other.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
             return {"dir": dir_path, "action": "copy", "from": other_file, "to": own_file}
         except OSError:
             return None

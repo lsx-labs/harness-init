@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Install harness-init: deploy scripts, skills, and hooks to Claude Code / Codex."""
 
+from __future__ import annotations
+
 import json
 import os
 import platform

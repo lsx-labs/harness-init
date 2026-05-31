@@ -171,6 +171,14 @@ class TestWriteDescriptions:
         changes = write_descriptions({"src": "数" * 55 + "、" + "尾巴尾巴尾巴尾巴"})
         assert changes[0]["desc"] == "数" * 55
 
+    def test_truncate_does_not_leave_trailing_boundary_on_hard_cut(self, tmp_path, monkeypatch):
+        # when the cut lands on a separator, the kept text must not end with it
+        # (else "desc  (N symbols)" gets a double space)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text("### src/ (100 symbols)\n")
+        changes = write_descriptions({"src": "a" * 59 + " " + "x" * 5})
+        assert changes[0]["desc"] == "a" * 59
+
     def test_write_top_level_without_symbol_count(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "CODE_MAP.md").write_text("### docs/\n")

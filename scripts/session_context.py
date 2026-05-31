@@ -141,7 +141,7 @@ def check_codemap_stale() -> str | None:
                     if needs_description_refresh(entry.get("desc") or ""))
         if count > 0:
             return f"⚠️ CODE_MAP.md: {count} 个目录描述待更新"
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         pass
     return None
 

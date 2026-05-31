@@ -303,8 +303,8 @@ def sync_platform_docs(dir_path):
     if not claude.exists() or not agents.exists():
         return None
     try:
-        claude_text = claude.read_text(encoding="utf-8")
-        agents_text = agents.read_text(encoding="utf-8")
+        claude_text = claude.read_text(encoding="utf-8", errors="replace")
+        agents_text = agents.read_text(encoding="utf-8", errors="replace")
         if claude_text == agents_text:
             return None
         claude_mtime = claude.stat().st_mtime_ns
@@ -326,34 +326,53 @@ def sync_platform_docs(dir_path):
 # ══════════════════════════════════════════════════════════
 
 def _lock_active(lock_file: Path) -> bool:
-    """True iff the lock exists, names a live PID, and is younger than LOCK_STALE_SECONDS.
+    """True iff the lock is held: it exists, is younger than LOCK_STALE_SECONDS, and either
+    names a live PID or is too fresh to have its PID parsed yet (a worker mid-create).
 
-    A lock failing any of these is reclaimable (dead PID, reused-PID-but-stale, or absent).
+    Reclaimable cases (→ False): absent, stale (old mtime, even with a reused-live PID), or
+    fresh-but-dead-PID. A fresh lock with an empty/corrupt PID is treated as HELD — the
+    O_EXCL winner creates the file empty then writes its PID, and a racing reader catching
+    that microsecond window must not delete it.
     """
     if not lock_file.exists():
         return False
     try:
-        pid = int(lock_file.read_text(encoding="utf-8").strip())
-        os.kill(pid, 0)
-        return time.time() - lock_file.stat().st_mtime <= LOCK_STALE_SECONDS
-    except (ValueError, OSError):
+        fresh = time.time() - lock_file.stat().st_mtime <= LOCK_STALE_SECONDS
+    except OSError:
         return False
+    if not fresh:
+        return False
+    try:
+        pid = int(lock_file.read_text(encoding="utf-8").strip())
+    except (ValueError, OSError):
+        return True  # fresh but not-yet-written/corrupt → a worker is mid-create; hold it
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False  # fresh lock but its PID is dead → reclaimable
+    return True
 
 
 def acquire_lock(project_id):
-    """Try to acquire a lock file atomically. Returns True if acquired."""
+    """Try to acquire a lock file atomically. Returns True if acquired.
+
+    O_EXCL create is the mutual-exclusion primitive — we NEVER unlink before creating,
+    or a racing worker's freshly-created lock could be silently deleted (two winners).
+    A pre-existing lock is reclaimed (unlink + retry once) only when confirmed dead/stale.
+    """
     LOCK_DIR.mkdir(parents=True, exist_ok=True)
     lock_file = LOCK_DIR / f"{project_id}.lock"
-    if _lock_active(lock_file):
-        return False
-    lock_file.unlink(missing_ok=True)  # reclaim a dead/stale lock before re-creating
-    try:
-        fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
-        return True
-    except FileExistsError:
-        return False
+    for attempt in (1, 2):
+        try:
+            fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            return True
+        except FileExistsError:
+            if attempt == 2 or _lock_active(lock_file):
+                return False
+            lock_file.unlink(missing_ok=True)  # dead/stale lock → reclaim, then retry once
+    return False
 
 
 def release_lock(project_id):
@@ -464,7 +483,7 @@ def _do_main_branch_update_inner(job_id=None):
     ensure_gitnexus_fresh(job_id)
 
     codemap_file = Path("CODE_MAP.md")
-    old_content = codemap_file.read_text(encoding="utf-8") if codemap_file.exists() else ""
+    old_content = codemap_file.read_text(encoding="utf-8", errors="replace") if codemap_file.exists() else ""
     existing_descs, old_counts = parse_existing_codemap(codemap_file)
 
     # Step 1: Update CODE_MAP.md structure (now with fresh index)

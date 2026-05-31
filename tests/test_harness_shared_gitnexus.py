@@ -64,6 +64,15 @@ class TestReadDirDocstring:
         assert harness_shared.read_dir_docstring(str(tmp_path)) == "Utilities for x-ray image pre-processing."
 
 
+class TestParseCodemapEncoding:
+    def test_tolerates_invalid_utf8(self, tmp_path) -> None:
+        # a botched manual edit / merge / wrong-encoding save must not raise UnicodeDecodeError
+        p = tmp_path / "CODE_MAP.md"
+        p.write_bytes(b"### src/ (10 symbols)\n\xff\xfe garbage\n- **api/** (2 symbols)\n")
+        entries = harness_shared.parse_codemap(p)
+        assert any(e["dir"] == "src" for e in entries)
+
+
 class TestPathKey:
     def test_sanitizes_absolute_path(self) -> None:
         assert harness_shared.path_key("/a/b/c") == "a_b_c"

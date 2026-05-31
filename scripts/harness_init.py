@@ -137,7 +137,7 @@ def check_existing() -> dict:
     existing = {}
     for name, fpath in [("claude_md", "CLAUDE.md"), ("agents_md", "AGENTS.md")]:
         p = Path(fpath)
-        txt = p.read_text(encoding="utf-8") if p.exists() else ""
+        txt = p.read_text(encoding="utf-8", errors="replace") if p.exists() else ""
         existing[name] = {
             "exists": p.exists(),
             "has_codemap": "@CODE_MAP.md" in txt or "<!-- codemap:start -->" in txt,

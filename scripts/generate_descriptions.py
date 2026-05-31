@@ -136,7 +136,7 @@ def _read_readme_summary(dir_path: str) -> str:
         if not readme.is_file():
             continue
         try:
-            for line in readme.read_text(encoding="utf-8").splitlines():
+            for line in readme.read_text(encoding="utf-8", errors="replace").splitlines():
                 stripped = line.strip().lstrip("#").strip()
                 if stripped:
                     return stripped[:80]
@@ -729,13 +729,13 @@ def _truncate_desc(text: str, limit: int = 60) -> str:
         for i in range(len(head) - 1, limit - 12, -1):
             if head[i] in _TRUNC_BOUNDARY:
                 return head[:i].rstrip()
-    return head
+    return head.rstrip("".join(_TRUNC_BOUNDARY))  # don't end on a separator (avoids a double space)
 
 
 def write_descriptions(descriptions: dict[str, str]) -> list[dict]:
     """Write descriptions to CODE_MAP.md, return list of changes."""
     codemap = Path("CODE_MAP.md")
-    lines = codemap.read_text(encoding="utf-8").splitlines(keepends=True)
+    lines = codemap.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
     changes = []
     normalized = {}
     for dir_path, raw_desc in descriptions.items():

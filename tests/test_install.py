@@ -11,6 +11,14 @@ from install import (install_file, install_dir, check_command, register_hooks,
                      register_codex_gitnexus_wrapper)
 
 
+def test_install_uses_postponed_annotations_for_python39():
+    # install.py uses PEP 604 `X | None` annotations; without this it hard-crashes at
+    # import on Python 3.9 (the runtime scripts already have the import).
+    source = Path(os.path.join(os.path.dirname(__file__), '..', 'install.py')).read_text()
+    assert "from __future__ import annotations" in source
+    assert source.index("from __future__ import annotations") < source.index("def check_command")
+
+
 class TestInstallFile:
     def test_copy_mode(self, tmp_path):
         src = tmp_path / "source.txt"
