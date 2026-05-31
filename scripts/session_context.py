@@ -31,7 +31,9 @@ def run_git(*args, default="") -> str:
 
 
 def get_branch() -> str:
-    return run_git("branch", "--show-current", default="detached HEAD")
+    # `git branch --show-current` exits 0 with empty output in detached HEAD, so the
+    # run_git default never fires — coalesce the empty string here instead.
+    return run_git("branch", "--show-current") or "detached HEAD"
 
 
 def _baseline_ref() -> str:
@@ -75,13 +77,20 @@ def _porcelain_module(line: str) -> str:
     return rest.split("/")[0] if rest else ""
 
 
+def _sanitize_line(text: str, limit: int = 120) -> str:
+    """Strip control chars and cap length — git data (commit messages especially) is
+    attacker-influenceable and gets injected verbatim into the SessionStart model context."""
+    return "".join(ch for ch in text if ch.isprintable())[:limit]
+
+
 def get_dirty_files() -> tuple[int, str]:
     """Return (count, space-separated top-level module names)."""
     raw = run_git("status", "--porcelain")
     if not raw:
         return 0, ""
     lines = [l for l in raw.split("\n") if l.strip()]
-    modules = sorted({m for l in lines[:10] if (m := _porcelain_module(l))})
+    # modules from ALL dirty lines (not just the first 10) so count and module list agree
+    modules = sorted({m for l in lines if (m := _porcelain_module(l))})
     return len(lines), " ".join(modules)
 
 
@@ -101,7 +110,7 @@ def get_recent_commits(limit=5) -> list[dict]:
         first = module.split("\n")[0]
         module = first.rsplit("/", 1)[0] if "/" in first else "root"
         ago = run_git("log", "-1", "--format=%cr", hash_id).replace(" ago", "")
-        commits.append({"hash": hash_id, "msg": msg, "module": module, "ago": ago})
+        commits.append({"hash": hash_id, "msg": _sanitize_line(msg), "module": module, "ago": ago})
     return commits
 
 

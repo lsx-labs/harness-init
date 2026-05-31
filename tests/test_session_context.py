@@ -41,7 +41,8 @@ class TestGetBranch:
             assert get_branch() == "feature/auth"
 
     def test_detached(self):
-        with patch('session_context.run_git', return_value="detached HEAD"):
+        # in detached HEAD, `git branch --show-current` exits 0 with EMPTY stdout
+        with patch('session_context.run_git', return_value=""):
             assert get_branch() == "detached HEAD"
 
 
@@ -100,6 +101,14 @@ class TestGetDirtyFiles:
         with patch('session_context.run_git', return_value=raw):
             count, _ = get_dirty_files()
             assert count == 15
+
+    def test_modules_reflect_all_changes_not_just_first_10(self):
+        # 10 files in a/, then 2 in b/ → b must still appear so count and module list agree
+        raw = "\n".join([f" M a/f{i}.py" for i in range(10)] + [" M b/x.py", " M b/y.py"])
+        with patch('session_context.run_git', return_value=raw):
+            count, modules = get_dirty_files()
+        assert count == 12
+        assert "a" in modules.split() and "b" in modules.split()
 
     def test_handles_renames_and_quoted_paths(self):
         raw = 'R  "old.py" -> "src/new.py"\n?? "lib dir/x.py"'
@@ -245,6 +254,24 @@ class TestGetRecentCommitsEdgeCases:
             commits = get_recent_commits(limit=1)
             assert len(commits) == 1
             assert commits[0]["module"] == "root"
+
+    def test_sanitizes_hostile_commit_message(self):
+        # a commit message is attacker-influenced; control chars must be stripped and length capped
+        evil = "feat: ok\x07\x1b[31m" + "X" * 300
+        with patch('session_context.run_git') as mock:
+            def side_effect(*args, **kwargs):
+                if args[0] == "log":
+                    if "--format=%cr" in args:
+                        return "1 min"
+                    return f"abc1234 {evil}"
+                if args[0] == "diff-tree":
+                    return "src/x.py"
+                return ""
+            mock.side_effect = side_effect
+            commits = get_recent_commits(limit=1)
+        msg = commits[0]["msg"]
+        assert "\x07" not in msg and "\x1b" not in msg
+        assert len(msg) <= 120
 
     def test_root_level_file_labeled_root(self):
         """A commit touching only a root-level file → module is "root", not the filename."""

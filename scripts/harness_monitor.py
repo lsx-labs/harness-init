@@ -69,10 +69,13 @@ def get_readme_first_line(dir_path) -> str:
     readme = Path(dir_path) / "README.md"
     if not readme.exists():
         return ""
+    # skip headings/underlines (# =), table rows (|), blockquotes (>) and HTML (<) —
+    # none are prose descriptions
+    skip_prefixes = ("#", "=", "|", ">", "<")
     try:
         for line in readme.read_text(encoding="utf-8", errors="ignore").split("\n"):
             stripped = line.strip()
-            if stripped and not stripped.startswith("#") and not stripped.startswith("="):
+            if stripped and not stripped.startswith(skip_prefixes):
                 return stripped[:80]
     except OSError:
         pass
@@ -80,7 +83,7 @@ def get_readme_first_line(dir_path) -> str:
 
 
 def get_init_docstring(dir_path) -> str:
-    """Read __init__.py / index.ts docstring first line."""
+    """First line of a directory's __init__.py package docstring (delegates to read_dir_docstring)."""
     return read_dir_docstring(dir_path)
 
 
@@ -312,10 +315,10 @@ def sync_platform_docs(dir_path):
         if claude_mtime == agents_mtime:
             return "conflict"
         if claude_mtime > agents_mtime:
-            agents.write_text(claude_text, encoding="utf-8")
+            atomic_write_text(agents, claude_text)  # atomic: never truncate a user-authored doc
             return "claude_to_agents"
         else:
-            claude.write_text(agents_text, encoding="utf-8")
+            atomic_write_text(claude, agents_text)
             return "agents_to_claude"
     except OSError:
         return None
@@ -376,8 +379,15 @@ def acquire_lock(project_id):
 
 
 def release_lock(project_id):
+    """Remove the lock only if we still own it — never delete a lock another worker
+    reclaimed and re-acquired (e.g. after ours went stale)."""
     lock_file = LOCK_DIR / f"{project_id}.lock"
-    lock_file.unlink(missing_ok=True)
+    try:
+        owner = int(lock_file.read_text(encoding="utf-8").strip())
+    except (ValueError, OSError):
+        return  # empty/corrupt/missing → not provably ours; leave it for staleness reclaim
+    if owner == os.getpid():
+        lock_file.unlink(missing_ok=True)
 
 
 JOB_RETENTION = 50
@@ -622,13 +632,13 @@ def handle_growth_check(state, state_file):
 
 def do_growth_check(state_file_path, project_dir):
     """Background worker: run diagnostic + save notifications."""
-    project_id = Path(project_dir).name
-    if not acquire_lock(f"{project_id}_growth"):
+    lock_id = f"{path_key(project_dir)}_growth"  # full path, not basename → collision-safe
+    if not acquire_lock(lock_id):
         return
     try:
         _do_growth_check_inner(state_file_path, project_dir)
     finally:
-        release_lock(f"{project_id}_growth")
+        release_lock(lock_id)
 
 
 def _do_growth_check_inner(state_file_path, project_dir):

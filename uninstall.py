@@ -73,9 +73,10 @@ def main():
     rm_dir(share / "jobs")
     rm_dir(share / "projects")
 
-    # Codex GitNexus wrapper + the Claude GitNexus hook it delegates to (install.py section 4)
+    # Codex GitNexus wrapper (always installed by us → safe to remove). We deliberately do
+    # NOT remove ~/.claude/hooks/gitnexus/gitnexus-hook.cjs: install.py only copies it when
+    # absent, so it may be GitNexus's own file — deleting it could break the user's GitNexus.
     rm_file(HOME / ".codex" / "hooks" / "gitnexus-codex-hook.cjs")
-    rm_file(HOME / ".claude" / "hooks" / "gitnexus" / "gitnexus-hook.cjs")
 
     # Skills
     rm_dir(HOME / ".claude" / "skills" / "harness-init")

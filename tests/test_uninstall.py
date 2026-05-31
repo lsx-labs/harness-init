@@ -51,11 +51,13 @@ class TestUninstallMain:
         assert not (share / "jobs").exists()
         assert not (share / "projects").exists()
 
-    def test_removes_claude_gitnexus_hook(self, tmp_path, monkeypatch):
+    def test_preserves_claude_gitnexus_hook(self, tmp_path, monkeypatch):
+        # install.py only copies this hook when it's absent — if it already existed it is
+        # GitNexus's OWN file, so uninstall must NOT delete it (would break GitNexus).
         import uninstall
         hook = tmp_path / ".claude" / "hooks" / "gitnexus" / "gitnexus-hook.cjs"
         hook.parent.mkdir(parents=True)
-        hook.write_text("// gitnexus hook copied by install.py section 4a")
+        hook.write_text("// belongs to GitNexus")
         monkeypatch.setattr(uninstall, "HOME", tmp_path)
         uninstall.main()
-        assert not hook.exists()
+        assert hook.exists()

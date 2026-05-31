@@ -522,6 +522,25 @@ class TestBackgroundDispatch:
         assert hm.acquire_lock("proj_stale")  # reclaimed despite the live PID
         hm.release_lock("proj_stale")
 
+    def test_release_only_removes_own_lock(self, tmp_path, monkeypatch):
+        # if our lock was reclaimed (stale) and another worker now holds it, finishing
+        # must NOT delete the new holder's lock.
+        locks = tmp_path / "locks"
+        locks.mkdir()
+        monkeypatch.setattr(hm, 'LOCK_DIR', locks)
+        lf = locks / "proj.lock"
+        lf.write_text("99999", encoding="utf-8")  # a different worker's PID
+        hm.release_lock("proj")
+        assert lf.exists()  # not ours → left intact
+
+    def test_release_removes_own_lock(self, tmp_path, monkeypatch):
+        locks = tmp_path / "locks"
+        locks.mkdir()
+        monkeypatch.setattr(hm, 'LOCK_DIR', locks)
+        assert hm.acquire_lock("proj")  # writes our PID
+        hm.release_lock("proj")
+        assert not (locks / "proj.lock").exists()
+
     def test_concurrent_acquire_grants_exactly_one(self, tmp_path, monkeypatch):
         # O_EXCL must be the mutual-exclusion primitive. The unconditional pre-create
         # unlink lets a racing worker's freshly-created lock be deleted, so >1 worker wins.
@@ -987,6 +1006,15 @@ class TestDoGrowthCheck:
         notify_file = notify_dir / f"{hm.path_key(str(tmp_path))}.json"
         assert not notify_file.exists()
 
+    def test_growth_lock_keyed_on_full_path(self, tmp_path, monkeypatch):
+        # two repos with the same basename must not share a growth-check lock
+        captured = []
+        monkeypatch.setattr(hm, 'acquire_lock', lambda pid: captured.append(pid) or False)
+        hm.do_growth_check(str(tmp_path / "s.json"), "/home/a/proj")
+        hm.do_growth_check(str(tmp_path / "s.json"), "/home/b/proj")
+        assert captured[0] != captured[1]
+        assert all("proj" in c for c in captured)
+
     def test_grep_failure_sentinel_does_not_retire(self, tmp_path, monkeypatch):
         # A failed grep returns -1 — inconclusive, NOT "low noise". It must not permanently
         # retire growth detection (a transient failure would otherwise disable it forever).
@@ -1014,7 +1042,7 @@ class TestDoGrowthCheck:
         lock_dir = tmp_path / "locks"
         lock_dir.mkdir()
         monkeypatch.setattr(hm, 'LOCK_DIR', lock_dir)
-        lock_file = lock_dir / f"{tmp_path.name}_growth.lock"
+        lock_file = lock_dir / f"{hm.path_key(str(tmp_path))}_growth.lock"
         lock_file.write_text(str(os.getpid()))
         state_file = tmp_path / "state.json"
         state_file.write_text(json.dumps({"file_count": 25, "retired": False}))
@@ -1107,6 +1135,12 @@ class TestGetReadmeFirstLine:
         (tmp_path / "README.md").write_text("# H\n" + "x" * 200 + "\n")
         result = hm.get_readme_first_line(tmp_path)
         assert len(result) <= 80
+
+    def test_skips_table_rows_blockquotes_and_html(self, tmp_path):
+        # markdown table rows / blockquotes / HTML are not prose descriptions
+        (tmp_path / "README.md").write_text(
+            "# Title\n\n<!-- comment -->\n| col | val |\n|---|---|\n> a quote\n真正的项目描述\n")
+        assert hm.get_readme_first_line(tmp_path) == "真正的项目描述"
 
 
 class TestGetInitDocstring:

@@ -654,6 +654,11 @@ class TestDirectoryClassification:
 
         assert gd.classify_directory(evidence, has_override=False, existing_desc="") == "code_symbols"
 
+    def test_code_symbols_provider_is_ai_not_phantom(self):
+        # code_symbols dirs flow through ai_generate_batched like code_process; the provider
+        # label must reflect that, not a never-implemented "local_code_summary".
+        assert gd.select_provider("code_symbols") == "ai_gitnexus"
+
     def test_classifier_preserves_manual_and_override(self):
         evidence = make_evidence("src/", file_count=1, py_count=1, gitnexus_processes=2)
 
@@ -760,6 +765,42 @@ class TestDeterministicSummaries:
         assert data["count"] == 1
         assert data["pending_dirs"] == ["src"]
         assert "测试" in (tmp_path / "CODE_MAP.md").read_text()
+
+    def test_main_falls_back_for_dirs_ai_missed(self, tmp_path, monkeypatch, capsys):
+        # AI succeeds for some dirs but not others → the missed dirs must still get a fallback,
+        # not be stranded by an early return.
+        for name in ("a", "b"):
+            (tmp_path / name).mkdir()
+            (tmp_path / name / "x.py").write_text("def f():\n    pass\n")
+        (tmp_path / "CODE_MAP.md").write_text("### a/\n### b/\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["generate_descriptions.py", str(tmp_path), "--generate"])
+        classification = {
+            "a": {"category": "code_process", "provider": "ai_gitnexus", "file_count": 1, "gitnexus_files": 1, "gitnexus_processes": 1},
+            "b": {"category": "code_process", "provider": "ai_gitnexus", "file_count": 1, "gitnexus_files": 1, "gitnexus_processes": 1},
+        }
+        with patch("generate_descriptions.build_classification_report", return_value=classification), \
+             patch("generate_descriptions.ai_generate_batched",
+                   return_value=({"a": "AI 描述 a 的核心逻辑"},
+                                 {"attempted": True, "failed_dirs": ["b"], "success_dirs": ["a"], "batches": []})), \
+             patch("generate_descriptions.fallback_generate", return_value={"b": "⚠️ 回退描述 b"}):
+            gd_main()
+
+        content = (tmp_path / "CODE_MAP.md").read_text()
+        assert "AI 描述 a" in content     # AI-covered dir
+        assert "回退描述 b" in content     # AI-missed dir still got a fallback
+
+    def test_ai_evidence_payload_reuses_supplied_evidence(self):
+        # the AI path must reuse already-collected evidence, not re-query GitNexus per dir
+        ev = make_evidence("src/", file_count=1, py_count=1, gitnexus_files=1)
+        with patch("generate_descriptions.collect_directory_evidence",
+                   side_effect=AssertionError("should not re-collect")):
+            payload = gd._ai_evidence_payload(
+                ["src"],
+                evidence_by_dir={"src": ev},
+                classification={"src": {"category": "code_process", "provider": "ai_gitnexus"}},
+            )
+        assert payload[0]["dir"] == "src"
 
     def test_deterministic_generate_reuses_evidence_without_gitnexus_queries(self, tmp_path, monkeypatch):
         (tmp_path / "tests").mkdir()
@@ -1231,7 +1272,7 @@ class TestGitnexusQuery:
             assert rows == []
 
     def test_stderr_fallback(self):
-        """Cover output = r.stdout.strip() or r.stderr.strip()."""
+        """GitNexus sometimes emits the table on stderr with returncode 0 — still parse it."""
         md_output = json.dumps({
             "markdown": "| f.name |\n| --- |\n| func_one |"
         })
@@ -1239,6 +1280,13 @@ class TestGitnexusQuery:
         with patch('generate_descriptions.subprocess.run', return_value=mock_result):
             rows = gitnexus_query("MATCH (f:Function) RETURN f.name")
             assert len(rows) == 1
+
+    def test_nonzero_returncode_not_parsed_as_data(self):
+        # on a real error, stderr is an error message, not a table — must not be parsed
+        md_output = json.dumps({"markdown": "| f.name |\n| --- |\n| oops |"})
+        mock_result = MagicMock(returncode=1, stdout="", stderr=md_output)
+        with patch('generate_descriptions.subprocess.run', return_value=mock_result):
+            assert gitnexus_query("MATCH (f:Function) RETURN f.name") == []
 
 
 class TestGetDocstringSyntaxError:
