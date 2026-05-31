@@ -432,9 +432,11 @@ def _topic_from_tokens(tokens: list[str]) -> list[str]:
         ("distributed", "分布式"),
         ("doctor", "诊断"),
     )
-    text = " ".join(tokens).lower()
+    # split on "_"/punctuation/space into whole words, then match — so "gate" fires on
+    # test_release_gate but NOT on "aggregates"/"navigate" (substring false positives)
+    words = set(re.split(r"[^a-z0-9]+", " ".join(tokens).lower()))
     for needle, label in mapping:
-        if needle in text and label not in topics:
+        if needle in words and label not in topics:
             topics.append(label)
     return topics[:4]
 
@@ -443,7 +445,9 @@ def summarize_test_dir(evidence: DirectoryEvidence) -> str:
     key = normalize_dir_key(evidence.dir_path)
     leaf = key.rsplit("/", 1)[-1] if key and key != "tests" else ""
     label = f"{leaf.replace('_', ' ')} 测试" if leaf else "测试套件"
-    topics = _topic_from_tokens(list(evidence.test_names) + list(evidence.child_dirs) + [key])
+    # only mine topics for a focused subdir; the root tests/ aggregates the whole suite, so one
+    # incidental "cache"/"gate" test must not relabel the entire directory
+    topics = _topic_from_tokens(list(evidence.test_names) + list(evidence.child_dirs) + [key]) if leaf else []
     if topics:
         return f"{label}：{'、'.join(topics)}"
     return f"{label}：行为校验、边界条件与回归覆盖"
@@ -451,10 +455,15 @@ def summarize_test_dir(evidence: DirectoryEvidence) -> str:
 
 def summarize_docs_dir(evidence: DirectoryEvidence) -> str:
     key = normalize_dir_key(evidence.dir_path)
-    topics = _topic_from_tokens(list(evidence.markdown_titles) + [key])
+    is_root = (not key) or key in {"doc", "docs"}
+    # the docs root aggregates everything; topic-guessing from a single title there is noise
+    # (one "Quality Gate" section ≠ the dir is about gating)
+    topics = [] if is_root else _topic_from_tokens(list(evidence.markdown_titles) + [key])
     if topics:
         return f"项目文档：{'、'.join(topics)}"
-    leaf = key.rsplit("/", 1)[-1] if key and key not in {"doc", "docs"} else "项目"
+    if is_root:
+        return "项目文档：说明、设计记录与操作参考"
+    leaf = key.rsplit("/", 1)[-1]
     return f"{leaf.replace('_', ' ')} 文档：说明、设计记录与操作参考"
 
 

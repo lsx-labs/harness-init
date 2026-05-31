@@ -709,6 +709,21 @@ class TestDeterministicSummaries:
         assert desc == "research 文档：说明、设计记录与操作参考"
         assert gd.is_acceptable_description(desc)
 
+    def test_summarize_test_root_does_not_cherry_pick_topic(self):
+        # the whole-suite tests/ must not be relabeled by one incidental cache test
+        ev = make_evidence("tests/", test_names=("test_data_cache_eviction",))
+        assert gd.summarize_test_dir(ev) == "测试套件：行为校验、边界条件与回归覆盖"
+
+    def test_summarize_docs_root_does_not_cherry_pick_topic(self):
+        # one "Quality Gate" section doesn't make the docs root "about gating"
+        ev = make_evidence("docs/", markdown_titles=("Description Quality Gate",))
+        assert gd.summarize_docs_dir(ev) == "项目文档：说明、设计记录与操作参考"
+
+    def test_topic_extraction_requires_word_boundary(self):
+        # "aggregates"/"navigate" contain "gate" as a substring but are NOT the gate topic
+        ev = make_evidence("tests/pipeline/", test_names=("test_aggregates_rows", "test_navigate_tree"))
+        assert "门禁" not in gd.summarize_test_dir(ev)
+
     def test_summarize_artifact_dir_uses_path_contract(self):
         evidence = make_evidence("data/results/", file_count=20, json_count=12, gitignored=True)
 
