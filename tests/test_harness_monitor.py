@@ -532,12 +532,31 @@ class TestBackgroundDispatch:
         monkeypatch.setattr(hm, 'JOB_DIR', tmp_path / "jobs")
         with patch.object(hm, 'get_project_id', return_value="proj"), \
              patch.object(hm, '_lock_held', return_value=False), \
+             patch.object(hm, '_current_branch', return_value="feature/x"), \
              patch.object(hm.subprocess, 'Popen') as popen:
             hm.handle_skill_refresh(str(tmp_path))
         out = json.loads(capsys.readouterr().out)
         assert out["status"] == "started"
         assert out["job_id"]
-        assert "--bg-skill" in popen.call_args[0][0]  # any-branch worker, not --bg
+        argv = popen.call_args[0][0]
+        assert "--bg-skill" in argv          # skill worker, not --bg
+        assert "feature/x" in argv           # pinned to the dispatch branch
+
+    def test_cli_refresh_bg_routes_to_skill_dispatcher(self, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(hm, 'handle_skill_refresh', lambda d=".": seen.update(dir=d))
+        hm._cli_main(["prog", "--refresh-bg", "/x/proj"])
+        assert seen["dir"] == "/x/proj"
+
+    def test_cli_bg_skill_routes_require_main_false_with_branch_pin(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(hm.os, 'chdir', lambda p: None)
+        monkeypatch.setattr(hm, 'do_main_branch_update',
+                            lambda pid, job=None, **kw: captured.update(pid=pid, job=job, **kw))
+        hm._cli_main(["prog", "--bg-skill", "proj", "/x/proj", "jobX", "feature/y"])
+        assert captured["pid"] == "proj"
+        assert captured["require_main"] is False        # skill worker, not main-only
+        assert captured["expected_branch"] == "feature/y"  # branch pin threaded from argv
 
     def test_handle_skill_refresh_skips_when_already_running(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(hm, 'JOB_DIR', tmp_path / "jobs")
@@ -651,20 +670,38 @@ class TestDoMainBranchUpdate:
         assert (tmp_path / "CODE_MAP.md").read_text() == "# Old\n"  # not overwritten on feature branch
         sync.assert_not_called()
 
-    def test_skill_path_refreshes_off_main_branch(self, tmp_path, monkeypatch):
-        # require_main=False (the /harness-init skill path) refreshes on the CURRENT branch
-        # instead of bailing like the hook path does off-main.
+    def test_skill_path_refreshes_on_dispatch_branch(self, tmp_path, monkeypatch):
+        # the skill path refreshes on the branch the user dispatched from (a feature branch),
+        # not just main — and writes when the branch hasn't drifted.
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
         monkeypatch.setattr(hm, 'JOB_DIR', tmp_path / "jobs")
         (tmp_path / "CODE_MAP.md").write_text("# Old\n")
-        with patch.object(hm, 'is_on_main_branch', return_value=False), \
+        with patch.object(hm, '_current_branch', return_value="feature/x"), \
              patch.object(hm, 'ensure_gitnexus_fresh'), \
              patch.object(hm, 'get_gitnexus_communities', return_value={"x": 1}), \
              patch.object(hm, 'build_codemap_structure', return_value=("# New\n", [])), \
              patch.object(hm, 'sync_platform_docs'):
-            hm.do_main_branch_update("test_project", job_id="j", require_main=False)
-        assert (tmp_path / "CODE_MAP.md").read_text() == "# New\n"  # written despite feature branch
+            hm.do_main_branch_update("test_project", job_id="j",
+                                     require_main=False, expected_branch="feature/x")
+        assert (tmp_path / "CODE_MAP.md").read_text() == "# New\n"  # written on the dispatch branch
+
+    def test_skill_path_skips_write_when_branch_drifts_mid_run(self, tmp_path, monkeypatch):
+        # M1: if the user checks out a different branch while the detached skill worker runs,
+        # it must NOT write CODE_MAP/docs onto that branch — pin to the dispatch branch.
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
+        monkeypatch.setattr(hm, 'JOB_DIR', tmp_path / "jobs")
+        (tmp_path / "CODE_MAP.md").write_text("# Old\n")
+        with patch.object(hm, '_current_branch', side_effect=["feature/x", "feature/y"]), \
+             patch.object(hm, 'ensure_gitnexus_fresh'), \
+             patch.object(hm, 'get_gitnexus_communities', return_value={"x": 1}), \
+             patch.object(hm, 'build_codemap_structure', return_value=("# New\n", [])), \
+             patch.object(hm, 'sync_platform_docs') as sync:
+            hm.do_main_branch_update("test_project", job_id="j",
+                                     require_main=False, expected_branch="feature/x")
+        assert (tmp_path / "CODE_MAP.md").read_text() == "# Old\n"  # branch drifted → no write
+        sync.assert_not_called()
 
     def test_refreshes_descriptions_when_entries_need_refresh_despite_unchanged_structure(self, tmp_path, monkeypatch):
         # Self-healing: an entry with an empty/low-quality description must still trigger a

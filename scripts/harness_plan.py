@@ -43,7 +43,7 @@ def plan_codemap(entries: list[dict], live_counts: dict) -> dict:
     live_counts: fresh symbol counts from GitNexus/filesystem (current state)
     """
     if not entries:
-        return {"action": "skip", "dirs_needing": []}
+        return {"action": "skip", "dirs_needing": [], "background": False}
     needing = []
     for e in entries:
         desc = e.get("desc") or ""

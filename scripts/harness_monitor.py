@@ -117,13 +117,28 @@ def is_git_operation(ctx):
     return bool(GIT_COMMANDS.search(unquoted))
 
 
-def is_on_main_branch():
+def _current_branch():
     try:
         r = subprocess.run(["git", "branch", "--show-current"],
                            capture_output=True, text=True, timeout=3)
-        return r.returncode == 0 and r.stdout.strip() in MAIN_BRANCHES
+        return r.stdout.strip() if r.returncode == 0 else ""
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return False
+        return ""
+
+
+def is_on_main_branch():
+    return _current_branch() in MAIN_BRANCHES
+
+
+def _branch_ok(require_main, expected_branch):
+    """Branch guard for background writes. Hook path (require_main=True): must be on a main-like
+    branch. Skill path (expected_branch set): the branch the user dispatched from must still be
+    checked out — so a mid-run `git checkout` can't land the refresh on the wrong branch."""
+    if require_main:
+        return is_on_main_branch()
+    if expected_branch is not None:
+        return _current_branch() == expected_branch
+    return True
 
 
 # ── State management ──
@@ -452,16 +467,15 @@ def ensure_gitnexus_fresh(job_id=None):
         write_job_status(job_id, {"gitnexus_analyze": "failed"})
 
 
-def do_main_branch_update(project_id, job_id=None, *, require_main=True):
+def do_main_branch_update(project_id, job_id=None, *, require_main=True, expected_branch=None):
     """Heavy work: reindex → CODE_MAP structure → descriptions → root CLAUDE↔AGENTS sync.
 
-    Runs as a background process. The PostToolUse path passes require_main=True (only write on
-    the main branch); the /harness-init skill path passes require_main=False (the user explicitly
-    asked to refresh on whatever branch they're on).
+    Runs as a background process. The PostToolUse path passes require_main=True (only write on a
+    main-like branch); the /harness-init skill path passes require_main=False + expected_branch
+    (refresh the branch the user dispatched from, bail if they switched away mid-run).
     """
-    # Re-check the branch: the user may have switched off main between the git op
-    # that spawned this worker and now. The "only write on main" guarantee depends on it.
-    if require_main and not is_on_main_branch():
+    # Re-check the branch: the user may have switched branches between dispatch and now.
+    if not _branch_ok(require_main, expected_branch):
         write_job_status(job_id, {"status": "skipped_branch_changed", "project_id": project_id})
         return
     if not acquire_lock(project_id):
@@ -477,7 +491,7 @@ def do_main_branch_update(project_id, job_id=None, *, require_main=True):
         "started_at": time.time(),
     })
     try:
-        _do_main_branch_update_inner(job_id, require_main=require_main)
+        _do_main_branch_update_inner(job_id, require_main=require_main, expected_branch=expected_branch)
         write_job_status(job_id, {
             "status": "completed",
             "project_id": project_id,
@@ -495,7 +509,7 @@ def do_main_branch_update(project_id, job_id=None, *, require_main=True):
         release_lock(project_id)
 
 
-def _do_main_branch_update_inner(job_id=None, *, require_main=True):
+def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_branch=None):
     # Step 0: Ensure GitNexus index is fresh before reading community data
     ensure_gitnexus_fresh(job_id)
 
@@ -518,11 +532,11 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True):
     if new_content == old_content and not stale_dirs and not entries_need_refresh:
         return
 
-    # Re-check before mutating: the reindex + structure prelude above can run for a while,
-    # and we must never write CODE_MAP.md / CLAUDE.md / AGENTS.md onto a feature branch the
-    # user switched to mid-run. (The worker-start check in do_main_branch_update can go stale.)
-    # The skill path (require_main=False) deliberately refreshes on the current branch.
-    if require_main and not is_on_main_branch():
+    # Re-check before mutating: the reindex + structure prelude above can run for a while, and we
+    # must never write CODE_MAP.md / CLAUDE.md / AGENTS.md onto a branch the user switched to
+    # mid-run — for the hook path that means "still on main", for the skill path "still on the
+    # branch you dispatched from". (The worker-start check can go stale over a multi-minute run.)
+    if not _branch_ok(require_main, expected_branch):
         return
 
     if new_content != old_content:
@@ -551,9 +565,9 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True):
     sync_platform_docs(".")
 
 
-def _spawn_bg_worker(project_id, project_dir, bg_flag) -> str:
+def _spawn_bg_worker(project_id, project_dir, bg_flag, extra_args=()) -> str:
     """Queue a detached background worker (returns its job_id). Shared by the PostToolUse
-    dispatcher (--bg, main-only) and the /harness-init skill dispatcher (--bg-skill, any branch)."""
+    dispatcher (--bg, main-only) and the /harness-init skill dispatcher (--bg-skill, branch-pinned)."""
     job_id = make_job_id(project_id)
     _prune_old_jobs()  # bound jobs/ — it is otherwise append-only
     write_job_status(job_id, {
@@ -563,7 +577,8 @@ def _spawn_bg_worker(project_id, project_dir, bg_flag) -> str:
         "queued_at": time.time(),
     })
     subprocess.Popen(
-        [sys.executable, str(Path(__file__).resolve()), bg_flag, project_id, project_dir, job_id],
+        [sys.executable, str(Path(__file__).resolve()), bg_flag, project_id, project_dir, job_id,
+         *extra_args],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
@@ -593,7 +608,8 @@ def handle_skill_refresh(project_dir="."):
     if _lock_held(project_id):
         print(json.dumps({"status": "already_running", "project_id": project_id}, ensure_ascii=False))
         return
-    job_id = _spawn_bg_worker(project_id, project_dir, "--bg-skill")
+    # pin to the branch the user dispatched from → the worker bails if they switch away mid-run
+    job_id = _spawn_bg_worker(project_id, project_dir, "--bg-skill", extra_args=(_current_branch(),))
     print(json.dumps({"status": "started", "job_id": job_id,
                       "jobs_dir": str(JOB_DIR)}, ensure_ascii=False))
 
@@ -734,21 +750,27 @@ def main():
         handle_growth_check(state, state_file)
 
 
-if __name__ == "__main__":
-    if len(sys.argv) >= 4 and sys.argv[1] == "--bg":
+def _cli_main(argv):
+    """Dispatch the CLI by argv (testable without a subprocess)."""
+    if len(argv) >= 4 and argv[1] == "--bg":
         # Background mode: harness_monitor.py --bg <project_id> <project_dir> [job_id]
-        os.chdir(sys.argv[3])
-        do_main_branch_update(sys.argv[2], sys.argv[4] if len(sys.argv) >= 5 else None)
-    elif len(sys.argv) >= 4 and sys.argv[1] == "--bg-skill":
-        # Skill-initiated worker (any branch): --bg-skill <project_id> <project_dir> [job_id]
-        os.chdir(sys.argv[3])
-        do_main_branch_update(sys.argv[2], sys.argv[4] if len(sys.argv) >= 5 else None,
-                              require_main=False)
-    elif len(sys.argv) >= 2 and sys.argv[1] == "--refresh-bg":
+        os.chdir(argv[3])
+        do_main_branch_update(argv[2], argv[4] if len(argv) >= 5 else None)
+    elif len(argv) >= 4 and argv[1] == "--bg-skill":
+        # Skill-initiated worker (branch-pinned): --bg-skill <project_id> <project_dir> [job_id] [branch]
+        os.chdir(argv[3])
+        do_main_branch_update(argv[2], argv[4] if len(argv) >= 5 else None,
+                              require_main=False,
+                              expected_branch=argv[5] if len(argv) >= 6 else None)
+    elif len(argv) >= 2 and argv[1] == "--refresh-bg":
         # Skill dispatcher: --refresh-bg [project_dir] → detach worker, print job JSON
-        handle_skill_refresh(sys.argv[2] if len(sys.argv) >= 3 else ".")
-    elif len(sys.argv) >= 4 and sys.argv[1] == "--bg-growth":
+        handle_skill_refresh(argv[2] if len(argv) >= 3 else ".")
+    elif len(argv) >= 4 and argv[1] == "--bg-growth":
         # Background growth check: --bg-growth <state_file> <project_dir>
-        do_growth_check(sys.argv[2], sys.argv[3])
+        do_growth_check(argv[2], argv[3])
     else:
         main()
+
+
+if __name__ == "__main__":
+    _cli_main(sys.argv)

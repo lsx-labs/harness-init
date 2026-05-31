@@ -111,6 +111,21 @@ class TestPlanCodemap:
         assert result["action"] == "refresh"
         assert result["background"] is True
 
+    def test_threshold_boundary_below_is_inline(self):
+        # exactly one under the threshold → inline (pins the ==6 boundary against drift)
+        entries = [{"dir": f"d{i}", "desc": "", "symbols": 100}
+                   for i in range(hp.CODEMAP_BG_DIRS_THRESHOLD - 1)]
+        assert hp.plan_codemap(entries, {})["background"] is False
+
+    def test_threshold_boundary_at_is_backgrounded(self):
+        entries = [{"dir": f"d{i}", "desc": "", "symbols": 100}
+                   for i in range(hp.CODEMAP_BG_DIRS_THRESHOLD)]
+        assert hp.plan_codemap(entries, {})["background"] is True
+
+    def test_empty_entries_skip_carries_background_key(self):
+        # JSON shape consistency: every plan_codemap return path has `background`
+        assert hp.plan_codemap([], {})["background"] is False
+
     def test_no_entries(self):
         result = hp.plan_codemap([], {})
         assert result["action"] == "skip"

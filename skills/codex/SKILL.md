@@ -75,7 +75,7 @@ python3 ~/.local/bin/harness-plan.py . --platform codex
 | action | 执行 |
 |---|---|
 | `skip` | 无操作 |
-| `analyze` | `npx gitnexus analyze`（但若 `plan.codemap.background == true`，跳过——由 2.3 的后台 worker 一并做） |
+| `analyze` | `npx gitnexus analyze` |
 | `install_and_index` | 询问用户是否安装，确认后执行 |
 | `suggest_install` | 提示用户（不强制） |
 
@@ -93,9 +93,11 @@ python3 ~/.local/bin/harness-plan.py . --platform codex
 |---|---|---|
 | `skip` | — | 无操作 |
 | `refresh` | `false`（小仓库，待刷新目录 < 6） | 对 `dirs_needing` 中的目录按 provider **同步**生成描述 |
-| `refresh` | `true`（大仓库，待刷新目录 ≥ 6，AI 批次会阻塞数分钟） | 派发后台 worker，**立即返回不阻塞**：`python3 ~/.local/share/harness-hooks/harness_monitor.py --refresh-bg .`，打印 `{"status":"started","job_id":...}`，告知用户「CODE_MAP 描述已在后台生成，状态见 `jobs/<job_id>.json`」 |
+| `refresh` | `true`（大仓库，待刷新目录 ≥ 6，AI 批次会阻塞数分钟） | 派发后台 worker，**立即返回不阻塞**：`python3 ~/.local/share/harness-hooks/harness_monitor.py --refresh-bg .` |
 
-> `--refresh-bg` 派发的 worker 跑完整链：`ensure_gitnexus_fresh`（含 `plan.gitnexus.action == "analyze"` 的增量索引）→ CODE_MAP 结构 → 描述 → 根文档同步，flock 锁保护、原子写。**故 `background == true` 时，2.1 的 `analyze` 不必再同步执行（worker 会做）；但 `install_and_index` / `suggest_install` 仍按 2.1 交互处理。**
+后台分支的返回 JSON 有三种 `status`：`started`（已派发，附 `job_id`，告知用户「CODE_MAP 描述已在后台生成，状态见 `jobs/<job_id>.json`」）、`already_running`（已有 worker 在跑，无需重复派发）、`error`（如 `not_a_git_repo`，回退到同步生成或提示用户）。
+
+> `--refresh-bg` 的 worker 跑：CODE_MAP 结构 → 描述 → 根文档同步（即耗时的 AI 部分），flock 锁保护、原子写，并**钉定到派发时的分支**（中途 `git checkout` 不会把刷新写到别的分支）。GitNexus `analyze` 已在 2.1 按 plan 同步完成（worker 内部的 `ensure_gitnexus_fresh` 只做一次幂等复查）。
 
 描述规则：
 1. 先识别目录类型：code_process / code_symbols / test / docs / example / artifact
