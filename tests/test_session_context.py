@@ -79,10 +79,21 @@ class TestGetDirtyFiles:
             assert modules == ""
 
     def test_dirty(self):
-        with patch('session_context.run_git', return_value=" M src/auth.py\n M src/api/routes.py\n?? README.md"):
+        # run_git returns .strip()'d output, so the FIRST line has no leading space.
+        with patch('session_context.run_git', return_value="M src/auth.py\n M src/api/routes.py\n?? README.md"):
             count, modules = get_dirty_files()
             assert count == 3
             assert "src" in modules
+
+    def test_first_line_module_survives_run_git_strip(self):
+        # Drive the REAL run_git (.strip()) via subprocess so the leading-space loss on the
+        # first porcelain line is exercised — the first file's module must not lose a char.
+        raw = " M tests/a.py\n M src/b.py\n"  # what `git status --porcelain` emits
+        with patch('session_context.subprocess.run',
+                   return_value=MagicMock(returncode=0, stdout=raw, stderr="")):
+            count, modules = get_dirty_files()
+        assert count == 2
+        assert sorted(modules.split()) == ["src", "tests"]  # first module not truncated to 'ests'
 
     def test_count_not_capped_at_10(self):
         raw = "\n".join(f" M src/file{i}.py" for i in range(15))
@@ -228,6 +239,22 @@ class TestGetRecentCommitsEdgeCases:
             assert len(commits) == 1
             assert commits[0]["module"] == "root"
 
+    def test_root_level_file_labeled_root(self):
+        """A commit touching only a root-level file → module is "root", not the filename."""
+        log_output = "abc1234 docs: tweak readme"
+        with patch('session_context.run_git') as mock:
+            def side_effect(*args, **kwargs):
+                if args[0] == "log":
+                    if "--format=%cr" in args:
+                        return "5 minutes"
+                    return log_output
+                if args[0] == "diff-tree":
+                    return "README.md"  # top-level file → "root"
+                return ""
+            mock.side_effect = side_effect
+            commits = get_recent_commits(limit=1)
+            assert commits[0]["module"] == "root"
+
 
 class TestCheckGitnexusStaleTimeout:
     """timeout during gitnexus status."""
@@ -266,7 +293,7 @@ class TestReadPendingNotifications:
         monkeypatch.chdir(tmp_path)
         notify_dir = tmp_path / "notifications"
         notify_dir.mkdir()
-        notify_file = notify_dir / f"{tmp_path.name}.json"
+        notify_file = notify_dir / f"{sc.path_key(str(tmp_path))}.json"
         messages = ["📊 GitNexus 建议", "📊 LSP 建议"]
         notify_file.write_text(json.dumps(messages))
         monkeypatch.setattr(sc, 'NOTIFY_DIR', notify_dir)
@@ -279,7 +306,7 @@ class TestReadPendingNotifications:
         monkeypatch.chdir(tmp_path)
         notify_dir = tmp_path / "notifications"
         notify_dir.mkdir()
-        (notify_dir / f"{tmp_path.name}.json").write_text("not json{")
+        (notify_dir / f"{sc.path_key(str(tmp_path))}.json").write_text("not json{")
         monkeypatch.setattr(sc, 'NOTIFY_DIR', notify_dir)
         assert read_pending_notifications() == []
 

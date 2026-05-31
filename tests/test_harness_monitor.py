@@ -13,6 +13,14 @@ import harness_monitor as hm
 import harness_shared
 
 
+def read_post_tool_context(stdout: str) -> str:
+    payload = json.loads(stdout)
+    assert set(payload) <= {"continue", "hookSpecificOutput", "suppressOutput", "systemMessage"}
+    hook_output = payload["hookSpecificOutput"]
+    assert hook_output["hookEventName"] == "PostToolUse"
+    return hook_output["additionalContext"]
+
+
 def test_monitor_uses_postponed_annotations_for_python39() -> None:
     source = Path(hm.__file__).read_text(encoding="utf-8")
     assert "from __future__ import annotations" in source
@@ -390,12 +398,14 @@ class TestBackgroundDispatch:
         mock_popen.assert_called_once()
         args = mock_popen.call_args
         assert "--bg" in args[0][0]
-        out = json.loads(capsys.readouterr().out)
-        assert out["status"] == "background"
-        assert out["job_id"].startswith("test_project-")
-        job = tmp_path / "jobs" / f"{out['job_id']}.json"
+        context = read_post_tool_context(capsys.readouterr().out)
+        assert "Harness 更新已在后台启动" in context
+        jobs = list((tmp_path / "jobs").glob("*.json"))
+        assert len(jobs) == 1
+        job = jobs[0]
         assert job.exists()
         payload = json.loads(job.read_text(encoding="utf-8"))
+        assert f"job_id={payload['job_id']}" in context
         assert payload["status"] == "queued"
         assert payload["project_id"] == "test_project"
 
@@ -410,8 +420,8 @@ class TestBackgroundDispatch:
         with patch.object(hm.subprocess, 'Popen') as mock_popen:
             hm.handle_main_branch_update("test_project")
         mock_popen.assert_not_called()
-        out = json.loads(capsys.readouterr().out)
-        assert out["status"] == "skipped_locked"
+        context = read_post_tool_context(capsys.readouterr().out)
+        assert "跳过重复启动" in context
 
     def test_replaces_stale_lock(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
@@ -422,8 +432,24 @@ class TestBackgroundDispatch:
         monkeypatch.setattr(hm, 'JOB_DIR', tmp_path / "jobs")
         with patch.object(hm.subprocess, 'Popen'):
             hm.handle_main_branch_update("test_project")
-        out = json.loads(capsys.readouterr().out)
-        assert out["status"] == "background"
+        context = read_post_tool_context(capsys.readouterr().out)
+        assert "Harness 更新已在后台启动" in context
+
+    def test_dispatcher_spawns_on_stale_lock_with_live_pid(self, tmp_path, monkeypatch, capsys):
+        # foreground guard must honor LOCK_STALE_SECONDS too (not just os.kill), else a
+        # reused-PID stale lock wedges main-updates forever (the worker's reclaim is never reached).
+        monkeypatch.chdir(tmp_path)
+        lock_dir = tmp_path / "locks"; lock_dir.mkdir()
+        lock = lock_dir / "test_project.lock"
+        lock.write_text(str(os.getpid()))  # a live PID
+        old = time.time() - (hm.LOCK_STALE_SECONDS + 60)
+        os.utime(lock, (old, old))  # but stale
+        monkeypatch.setattr(hm, 'LOCK_DIR', lock_dir)
+        monkeypatch.setattr(hm, 'JOB_DIR', tmp_path / "jobs")
+        with patch.object(hm.subprocess, 'Popen'):
+            hm.handle_main_branch_update("test_project")
+        context = read_post_tool_context(capsys.readouterr().out)
+        assert "Harness 更新已在后台启动" in context
 
     def test_acquire_release_lock(self, tmp_path, monkeypatch):
         monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
@@ -449,6 +475,11 @@ class TestCodemapRefreshTimeout:
 
     def test_cap_covers_initial_plus_retry(self):
         assert hm.CODEMAP_REFRESH_TIMEOUT >= hm.CODEMAP_AI_TIMEOUT + max(hm.CODEMAP_AI_TIMEOUT, 240)
+
+    def test_lock_outlives_a_full_refresh(self):
+        # A lock must not be declared stale while its own refresh is still legitimately running,
+        # or a second git op would spawn a duplicate worker on top of the first.
+        assert hm.LOCK_STALE_SECONDS > hm.CODEMAP_REFRESH_TIMEOUT
 
 
 class TestDoMainBranchUpdate:
@@ -766,7 +797,7 @@ class TestDoGrowthCheck:
             hm.do_growth_check(str(state_file), str(tmp_path))
         saved = json.loads(state_file.read_text())
         assert saved["gitnexus_recommended"] is True
-        notify_file = notify_dir / f"{tmp_path.name}.json"
+        notify_file = notify_dir / f"{hm.path_key(str(tmp_path))}.json"
         assert notify_file.exists()
         messages = json.loads(notify_file.read_text())
         assert any("GitNexus" in m for m in messages)
@@ -791,7 +822,7 @@ class TestDoGrowthCheck:
         with patch.object(hm, 'DIAG_SCRIPT', tmp_path / "diag.sh"), \
              patch.object(hm.subprocess, 'run', return_value=mock_result):
             hm.do_growth_check(str(state_file), str(tmp_path))
-        notify_file = notify_dir / f"{tmp_path.name}.json"
+        notify_file = notify_dir / f"{hm.path_key(str(tmp_path))}.json"
         assert notify_file.exists()
         messages = json.loads(notify_file.read_text())
         assert any("Python" in m for m in messages)
@@ -818,7 +849,7 @@ class TestDoGrowthCheck:
             hm.do_growth_check(str(state_file), str(tmp_path))
         saved = json.loads(state_file.read_text())
         assert saved["retired"] is True
-        notify_file = notify_dir / f"{tmp_path.name}.json"
+        notify_file = notify_dir / f"{hm.path_key(str(tmp_path))}.json"
         assert not notify_file.exists()
 
     def test_skips_if_locked(self, tmp_path, monkeypatch):
@@ -1072,8 +1103,8 @@ class TestCoverageGaps:
         monkeypatch.setattr(hm, 'LOCK_DIR', lock_dir)
         with patch.object(hm.subprocess, 'Popen'):
             hm.handle_main_branch_update("test")
-        out = json.loads(capsys.readouterr().out)
-        assert out["status"] == "background"
+        context = read_post_tool_context(capsys.readouterr().out)
+        assert "Harness 更新已在后台启动" in context
 
     def test_bg_cli_mode(self, tmp_path, monkeypatch):
         """Cover __main__ --bg entry point."""

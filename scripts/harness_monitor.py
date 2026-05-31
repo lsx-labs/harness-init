@@ -7,8 +7,9 @@ Triggered via PostToolUse [Bash], only on git operations:
   - Git on main/master → background update:
     1. GitNexus reindex (if stale)
     2. CODE_MAP.md structure + descriptions (via generate_descriptions.py)
-    3. Sub-directory CLAUDE.md/AGENTS.md harness regions (via AI CLI + GitNexus)
-    4. Growth check (GitNexus/LSP recommendations)
+    3. Root CLAUDE.md ↔ AGENTS.md sync (deterministic, mtime-based)
+  - Growth check (GitNexus/LSP recommendations) runs on every git op, both branches.
+    (Sub-directory constraint files are generated only by the manual /harness-init skill.)
 
 All heavy work runs as detached background processes. Hook returns in <500ms.
 """
@@ -27,11 +28,11 @@ from pathlib import Path
 if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-from harness_shared import (SKIP_DIRS, STALE_THRESHOLD, SOURCE_EXTS, MAIN_BRANCHES,
-                    should_skip, parse_codemap_entry,
-                    parse_codemap, is_acceptable_description, needs_description_refresh,
-                    parse_gitnexus_markdown, gitnexus_markdown_rows, map_areas_to_dirs,
-                    read_dir_docstring)
+from harness_shared import (STALE_THRESHOLD, SOURCE_EXTS, MAIN_BRANCHES,
+                    should_skip, parse_codemap, is_acceptable_description,
+                    needs_description_refresh, parse_gitnexus_markdown,
+                    gitnexus_markdown_rows, map_areas_to_dirs, read_dir_docstring,
+                    path_key)
 
 # ── Config ──
 
@@ -56,8 +57,9 @@ GIT_COMMANDS = re.compile(
 CODEMAP_AI_TIMEOUT = 150
 CODEMAP_REFRESH_TIMEOUT = 1800
 # A lock held longer than this is treated as stale and reclaimed even if its recorded
-# PID is alive — guards against a reused PID wedging refreshes forever.
-LOCK_STALE_SECONDS = 1800
+# PID is alive — guards against a reused PID wedging refreshes forever. Must EXCEED
+# CODEMAP_REFRESH_TIMEOUT so a legitimately long refresh can't have its own lock reclaimed.
+LOCK_STALE_SECONDS = CODEMAP_REFRESH_TIMEOUT + 600
 
 
 # ── Directory description helpers (deterministic, no AI) ──
@@ -88,7 +90,9 @@ def get_subdir_list(dir_path) -> str:
         subs = sorted(d.name for d in Path(dir_path).iterdir()
                       if d.is_dir() and not should_skip(d.name))
         if subs:
-            return " / ".join(subs[:8])
+            # "、"-join (not " / "): the quality gate flags " / " as low-quality, which would
+            # put this description in a perpetual refresh loop.
+            return "、".join(subs[:8])
     except OSError:
         pass
     return ""
@@ -289,7 +293,7 @@ def build_codemap_structure(communities, existing_descs, old_counts):
 
 
 # ══════════════════════════════════════════════════════════
-# Sub-directory CLAUDE.md/AGENTS.md update via AI CLI
+# CLAUDE.md ↔ AGENTS.md sync (deterministic, mtime-based)
 # ══════════════════════════════════════════════════════════
 
 def sync_platform_docs(dir_path):
@@ -321,23 +325,28 @@ def sync_platform_docs(dir_path):
 # Main update handler
 # ══════════════════════════════════════════════════════════
 
+def _lock_active(lock_file: Path) -> bool:
+    """True iff the lock exists, names a live PID, and is younger than LOCK_STALE_SECONDS.
+
+    A lock failing any of these is reclaimable (dead PID, reused-PID-but-stale, or absent).
+    """
+    if not lock_file.exists():
+        return False
+    try:
+        pid = int(lock_file.read_text(encoding="utf-8").strip())
+        os.kill(pid, 0)
+        return time.time() - lock_file.stat().st_mtime <= LOCK_STALE_SECONDS
+    except (ValueError, OSError):
+        return False
+
+
 def acquire_lock(project_id):
     """Try to acquire a lock file atomically. Returns True if acquired."""
     LOCK_DIR.mkdir(parents=True, exist_ok=True)
     lock_file = LOCK_DIR / f"{project_id}.lock"
-    if lock_file.exists():
-        try:
-            pid = int(lock_file.read_text(encoding="utf-8").strip())
-            try:
-                os.kill(pid, 0)
-                if time.time() - lock_file.stat().st_mtime > LOCK_STALE_SECONDS:
-                    lock_file.unlink(missing_ok=True)  # stale despite a live (likely reused) PID
-                else:
-                    return False
-            except OSError:
-                lock_file.unlink(missing_ok=True)
-        except (ValueError, OSError):
-            lock_file.unlink(missing_ok=True)
+    if _lock_active(lock_file):
+        return False
+    lock_file.unlink(missing_ok=True)  # reclaim a dead/stale lock before re-creating
     try:
         fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         os.write(fd, str(os.getpid()).encode())
@@ -375,6 +384,15 @@ def write_job_status(job_id: str | None, payload: dict) -> None:
     atomic_write_text(path, json.dumps(current, indent=2, ensure_ascii=False))
 
 
+def emit_post_tool_context(message: str) -> None:
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": message,
+        }
+    }, ensure_ascii=False))
+
+
 def ensure_gitnexus_fresh(job_id=None):
     """If GitNexus is indexed but stale, run incremental analyze first.
 
@@ -400,7 +418,7 @@ def ensure_gitnexus_fresh(job_id=None):
 
 
 def do_main_branch_update(project_id, job_id=None):
-    """Heavy work: reindex → CODE_MAP → descriptions → sub-dir docs.
+    """Heavy work: reindex → CODE_MAP structure → descriptions → root CLAUDE↔AGENTS sync.
 
     Runs as a background process (spawned by handle_main_branch_update).
     No timeout pressure — takes as long as it needs.
@@ -493,20 +511,9 @@ def _do_main_branch_update_inner(job_id=None):
 def handle_main_branch_update(project_id):
     """Spawn background process for heavy update work. Returns immediately."""
     lock_file = LOCK_DIR / f"{project_id}.lock"
-    if lock_file.exists():
-        try:
-            pid = int(lock_file.read_text(encoding="utf-8").strip())
-            try:
-                os.kill(pid, 0)
-                print(json.dumps({
-                    "status": "skipped_locked",
-                    "action": "Harness 更新已在后台运行，跳过重复启动"
-                }, ensure_ascii=False))
-                return
-            except OSError:
-                pass
-        except (ValueError, OSError):
-            pass
+    if _lock_active(lock_file):
+        emit_post_tool_context("Harness 更新已在后台运行，跳过重复启动")
+        return
 
     project_dir = str(Path(".").resolve())
     job_id = make_job_id(project_id)
@@ -521,11 +528,9 @@ def handle_main_branch_update(project_id):
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    print(json.dumps({
-        "status": "background",
-        "job_id": job_id,
-        "action": "Harness 更新已在后台启动（GitNexus 索引 + CODE_MAP + 描述生成）"
-    }, ensure_ascii=False))
+    emit_post_tool_context(
+        f"Harness 更新已在后台启动（GitNexus 索引 + CODE_MAP + 描述生成），job_id={job_id}"
+    )
 
 
 # ══════════════════════════════════════════════════════════
@@ -627,9 +632,8 @@ def _do_growth_check_inner(state_file_path, project_dir):
     save_state(state_file, state)
 
     if messages:
-        project_id = Path(project_dir).name
         NOTIFY_DIR.mkdir(parents=True, exist_ok=True)
-        (NOTIFY_DIR / f"{project_id}.json").write_text(
+        (NOTIFY_DIR / f"{path_key(project_dir)}.json").write_text(
             json.dumps(messages, ensure_ascii=False), encoding="utf-8")
 
 

@@ -16,7 +16,7 @@ from pathlib import Path
 if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-from harness_shared import MAIN_BRANCHES, needs_description_refresh, parse_codemap
+from harness_shared import MAIN_BRANCHES, needs_description_refresh, parse_codemap, path_key
 
 NOTIFY_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "notifications"
 
@@ -61,10 +61,14 @@ def get_ahead_behind() -> str:
 def _porcelain_module(line: str) -> str:
     """Top-level dir/file from a `git status --porcelain` line.
 
-    Drops the 2-char XY status + space, takes the rename destination (after ' -> '),
-    strips git's surrounding quotes, then the first path segment.
+    Splits the status code off by whitespace (robust to an upstream .strip() that drops
+    the first line's leading space), takes the rename destination (after ' -> '), strips
+    git's surrounding quotes, then the first path segment.
     """
-    rest = line[3:] if len(line) >= 3 else ""
+    parts = line.strip().split(None, 1)  # [status, path] — status may be 1-2 chars
+    if len(parts) < 2:
+        return ""
+    rest = parts[1]
     if " -> " in rest:
         rest = rest.split(" -> ", 1)[1]
     rest = rest.strip().strip('"')
@@ -94,7 +98,8 @@ def get_recent_commits(limit=5) -> list[dict]:
             continue
         hash_id, msg = parts
         module = run_git("diff-tree", "--no-commit-id", "--name-only", "-r", hash_id)
-        module = module.split("\n")[0].rsplit("/", 1)[0] if module else "root"
+        first = module.split("\n")[0]
+        module = first.rsplit("/", 1)[0] if "/" in first else "root"
         ago = run_git("log", "-1", "--format=%cr", hash_id).replace(" ago", "")
         commits.append({"hash": hash_id, "msg": msg, "module": module, "ago": ago})
     return commits
@@ -116,8 +121,7 @@ def check_gitnexus_stale() -> str | None:
 
 def read_pending_notifications() -> list[str]:
     """Read and consume pending notifications from background processes."""
-    project_name = Path(".").resolve().name
-    notify_file = NOTIFY_DIR / f"{project_name}.json"
+    notify_file = NOTIFY_DIR / f"{path_key('.')}.json"
     if not notify_file.exists():
         return []
     try:

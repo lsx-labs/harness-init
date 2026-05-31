@@ -13,7 +13,7 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from harness_shared import SKIP_DIRS, should_skip
+from harness_shared import should_skip
 
 # ── Config ──
 TEST_DIRS = {"tests", "test"}

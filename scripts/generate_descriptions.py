@@ -459,14 +459,14 @@ def summarize_docs_dir(evidence: DirectoryEvidence) -> str:
 def summarize_artifact_dir(evidence: DirectoryEvidence) -> str:
     key = normalize_dir_key(evidence.dir_path)
     parts = set(key.split("/"))
-    if key == "data":
-        return "本地数据目录：数据文件、缓存与生成产物"
     if "cache" in parts:
         return "本地缓存产物：计算中间结果与可复用运行状态"
     if {"result", "results", "report", "reports"} & parts:
         return "结果产物目录：运行输出、汇总与审计记录"
     if {"release", "gate", "release_gate"} & parts:
         return "发布检查产物：检查结果、判定与审计记录"
+    if "data" in parts:
+        return "本地数据目录：数据文件、缓存与生成产物"
     return "生成产物目录：缓存、结果与运行审计文件"
 
 
@@ -711,6 +711,27 @@ def build_quality_report(
     return report
 
 
+_TRUNC_BOUNDARY = set(" \t，、；。：/|·")
+
+
+def _truncate_desc(text: str, limit: int = 60) -> str:
+    """Cap a description at `limit` chars without ending mid-token.
+
+    If the cut lands inside a token, back off to the nearest boundary char within a
+    short window (works for both ASCII spaces and CJK punctuation); otherwise accept
+    the hard cut rather than chop off too much.
+    """
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    if text[limit] not in _TRUNC_BOUNDARY and head[-1] not in _TRUNC_BOUNDARY:
+        for i in range(len(head) - 1, limit - 12, -1):
+            if head[i] in _TRUNC_BOUNDARY:
+                return head[:i].rstrip()
+    return head
+
+
 def write_descriptions(descriptions: dict[str, str]) -> list[dict]:
     """Write descriptions to CODE_MAP.md, return list of changes."""
     codemap = Path("CODE_MAP.md")
@@ -720,7 +741,7 @@ def write_descriptions(descriptions: dict[str, str]) -> list[dict]:
     for dir_path, raw_desc in descriptions.items():
         if not raw_desc or not isinstance(raw_desc, str):
             continue
-        normalized[dir_path.strip("/")] = raw_desc.strip()[:60]
+        normalized[dir_path.strip("/")] = _truncate_desc(raw_desc)
     if not normalized:
         return []
 

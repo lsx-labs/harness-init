@@ -42,11 +42,35 @@ class TestMapAreasToDirs:
     def test_underscore_prefix_normalized(self) -> None:
         assert harness_shared.map_areas_to_dirs(["_lib"], ["src/lib"]) == {"_lib": "src/lib"}
 
-    def test_first_matching_folder_wins(self) -> None:
-        assert harness_shared.map_areas_to_dirs(["utils"], ["a/utils", "b/utils"]) == {"utils": "a/utils"}
+    def test_ambiguous_leaf_is_omitted(self) -> None:
+        # two folders share the leaf "utils" → ambiguous → skip (don't mis-attribute symbols)
+        assert harness_shared.map_areas_to_dirs(["utils"], ["a/utils", "b/utils"]) == {}
 
     def test_unmatched_area_omitted(self) -> None:
         assert harness_shared.map_areas_to_dirs(["ghost"], ["src/api"]) == {}
+
+
+class TestReadDirDocstring:
+    def test_em_dash_prefix_stripped(self, tmp_path) -> None:
+        (tmp_path / "__init__.py").write_text('"""mypkg — does the thing."""\n')
+        assert harness_shared.read_dir_docstring(str(tmp_path)) == "does the thing."
+
+    def test_spaced_hyphen_prefix_stripped(self, tmp_path) -> None:
+        (tmp_path / "__init__.py").write_text('"""mypkg - core utilities."""\n')
+        assert harness_shared.read_dir_docstring(str(tmp_path)) == "core utilities."
+
+    def test_internal_hyphen_preserved(self, tmp_path) -> None:
+        (tmp_path / "__init__.py").write_text('"""Utilities for x-ray image pre-processing."""\n')
+        assert harness_shared.read_dir_docstring(str(tmp_path)) == "Utilities for x-ray image pre-processing."
+
+
+class TestPathKey:
+    def test_sanitizes_absolute_path(self) -> None:
+        assert harness_shared.path_key("/a/b/c") == "a_b_c"
+
+    def test_distinguishes_same_basename(self) -> None:
+        # the whole point: two repos named "myproject" under different parents must not collide
+        assert harness_shared.path_key("/home/x/myproject") != harness_shared.path_key("/home/y/myproject")
 
 
 def test_codex_exec_sandbox_args_are_read_only_and_non_escalating() -> None:

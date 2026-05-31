@@ -158,6 +158,19 @@ class TestWriteDescriptions:
         changes = write_descriptions({"src": "x" * 100})
         assert len(changes[0]["desc"]) <= 60
 
+    def test_truncate_backs_off_to_ascii_word_boundary(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text("### src/ (100 symbols)\n")
+        # a space sits just before the 60-char cap; a naive [:60] would split the next word
+        changes = write_descriptions({"src": "a" * 58 + " supercalifragilistic"})
+        assert changes[0]["desc"] == "a" * 58
+
+    def test_truncate_backs_off_to_cjk_punctuation(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text("### src/ (100 symbols)\n")
+        changes = write_descriptions({"src": "数" * 55 + "、" + "尾巴尾巴尾巴尾巴"})
+        assert changes[0]["desc"] == "数" * 55
+
     def test_write_top_level_without_symbol_count(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "CODE_MAP.md").write_text("### docs/\n")
@@ -604,6 +617,16 @@ class TestDirectoryClassification:
 
         assert gd.classify_directory(evidence, has_override=False, existing_desc="") == "artifact"
         assert gd.select_provider("artifact") == "artifact_summary"
+
+    def test_summarize_artifact_data_dir_at_any_depth(self):
+        # de-hardcoded: a "data" dir gets the data label regardless of position, not just top-level
+        ev = make_evidence("src/data/", file_count=5, json_count=2, gitignored=True)
+        assert gd.summarize_artifact_dir(ev) == "本地数据目录：数据文件、缓存与生成产物"
+
+    def test_summarize_artifact_data_cache_prefers_cache(self):
+        # more-specific token wins: data/cache → cache label, not the generic data label
+        ev = make_evidence("data/cache/", file_count=5, gitignored=True)
+        assert gd.summarize_artifact_dir(ev) == "本地缓存产物：计算中间结果与可复用运行状态"
 
     def test_classifier_does_not_force_nongitignored_data_as_artifact(self):
         # De-genericized: artifact = gitignored. A top-level data/ that is NOT gitignored
