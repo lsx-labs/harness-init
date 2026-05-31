@@ -139,6 +139,13 @@ class TestCheckExisting:
         result = check_existing()
         assert result["gitnexus"]["indexed"] is True
 
+    def test_invalid_utf8_gitignore_does_not_crash(self, tmp_path, monkeypatch):
+        # an invalid-UTF-8 .gitignore (or config file) must not crash the diagnostic
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".gitignore").write_bytes(b".gitnexus\n\xff\xfe\n")
+        result = check_existing()  # must not raise UnicodeDecodeError
+        assert result["gitnexus"]["in_gitignore"] is True
+
 
 class TestAssessLsp:
     def test_python_high_coverage(self):

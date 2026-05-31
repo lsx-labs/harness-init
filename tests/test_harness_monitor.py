@@ -1,5 +1,6 @@
 """Tests for harness_monitor.py"""
 
+import fcntl
 import json
 import os
 import subprocess
@@ -11,6 +12,15 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 import harness_monitor as hm
 import harness_shared
+
+
+def _hold_flock(lock_dir, lock_name):
+    """Hold a real flock on a lock file (simulates another process holding it).
+    Returns the fd — close it to release."""
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_dir / lock_name), os.O_CREAT | os.O_RDWR, 0o644)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return fd
 
 
 def read_post_tool_context(stdout: str) -> str:
@@ -466,15 +476,17 @@ class TestBackgroundDispatch:
         monkeypatch.chdir(tmp_path)
         lock_dir = tmp_path / "locks"
         lock_dir.mkdir()
-        # Write current PID as lock (simulates running process)
-        (lock_dir / "test_project.lock").write_text(str(os.getpid()))
         monkeypatch.setattr(hm, 'LOCK_DIR', lock_dir)
         monkeypatch.setattr(hm, 'JOB_DIR', tmp_path / "jobs")
-        with patch.object(hm.subprocess, 'Popen') as mock_popen:
-            hm.handle_main_branch_update("test_project")
-        mock_popen.assert_not_called()
-        context = read_post_tool_context(capsys.readouterr().out)
-        assert "跳过重复启动" in context
+        fd = _hold_flock(lock_dir, "test_project.lock")  # another process holds the flock
+        try:
+            with patch.object(hm.subprocess, 'Popen') as mock_popen:
+                hm.handle_main_branch_update("test_project")
+            mock_popen.assert_not_called()
+            context = read_post_tool_context(capsys.readouterr().out)
+            assert "跳过重复启动" in context
+        finally:
+            os.close(fd)
 
     def test_replaces_stale_lock(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
@@ -488,70 +500,43 @@ class TestBackgroundDispatch:
         context = read_post_tool_context(capsys.readouterr().out)
         assert "Harness 更新已在后台启动" in context
 
-    def test_dispatcher_spawns_on_stale_lock_with_live_pid(self, tmp_path, monkeypatch, capsys):
-        # foreground guard must honor LOCK_STALE_SECONDS too (not just os.kill), else a
-        # reused-PID stale lock wedges main-updates forever (the worker's reclaim is never reached).
-        monkeypatch.chdir(tmp_path)
-        lock_dir = tmp_path / "locks"; lock_dir.mkdir()
-        lock = lock_dir / "test_project.lock"
-        lock.write_text(str(os.getpid()))  # a live PID
-        old = time.time() - (hm.LOCK_STALE_SECONDS + 60)
-        os.utime(lock, (old, old))  # but stale
-        monkeypatch.setattr(hm, 'LOCK_DIR', lock_dir)
-        monkeypatch.setattr(hm, 'JOB_DIR', tmp_path / "jobs")
-        with patch.object(hm.subprocess, 'Popen'):
-            hm.handle_main_branch_update("test_project")
-        context = read_post_tool_context(capsys.readouterr().out)
-        assert "Harness 更新已在后台启动" in context
-
     def test_acquire_release_lock(self, tmp_path, monkeypatch):
         monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
         assert hm.acquire_lock("proj1")
-        assert not hm.acquire_lock("proj1")  # same PID, still alive
+        assert not hm.acquire_lock("proj1")  # we already hold the flock (different fd → denied)
         hm.release_lock("proj1")
-        assert hm.acquire_lock("proj1")
+        assert hm.acquire_lock("proj1")       # re-acquirable after release
         hm.release_lock("proj1")
 
-    def test_reclaims_stale_lock_even_with_live_pid(self, tmp_path, monkeypatch):
-        # A reused PID could otherwise wedge refreshes forever; an old lock is reclaimed.
-        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
-        assert hm.acquire_lock("proj_stale")  # lock now holds our (live) PID
-        lock_file = (tmp_path / "locks") / "proj_stale.lock"
-        old = time.time() - (hm.LOCK_STALE_SECONDS + 60)
-        os.utime(lock_file, (old, old))
-        assert hm.acquire_lock("proj_stale")  # reclaimed despite the live PID
-        hm.release_lock("proj_stale")
-
-    def test_release_only_removes_own_lock(self, tmp_path, monkeypatch):
-        # if our lock was reclaimed (stale) and another worker now holds it, finishing
-        # must NOT delete the new holder's lock.
+    def test_release_of_unheld_lock_is_a_noop(self, tmp_path, monkeypatch):
+        # releasing a lock we never acquired must not touch a file another process owns
         locks = tmp_path / "locks"
         locks.mkdir()
         monkeypatch.setattr(hm, 'LOCK_DIR', locks)
         lf = locks / "proj.lock"
-        lf.write_text("99999", encoding="utf-8")  # a different worker's PID
-        hm.release_lock("proj")
-        assert lf.exists()  # not ours → left intact
+        lf.write_text("99999", encoding="utf-8")
+        hm.release_lock("proj")  # we don't hold it → no-op
+        assert lf.exists()
 
-    def test_release_removes_own_lock(self, tmp_path, monkeypatch):
+    def test_release_frees_the_lock(self, tmp_path, monkeypatch):
         locks = tmp_path / "locks"
         locks.mkdir()
         monkeypatch.setattr(hm, 'LOCK_DIR', locks)
-        assert hm.acquire_lock("proj")  # writes our PID
+        assert hm.acquire_lock("proj")
+        assert hm._lock_held("proj") is True   # we hold it
         hm.release_lock("proj")
-        assert not (locks / "proj.lock").exists()
+        assert hm._lock_held("proj") is False   # freed
 
     def test_concurrent_acquire_grants_exactly_one(self, tmp_path, monkeypatch):
-        # O_EXCL must be the mutual-exclusion primitive. The unconditional pre-create
-        # unlink lets a racing worker's freshly-created lock be deleted, so >1 worker wins.
+        # flock guarantees mutual exclusion across racing acquirers — including when a leftover
+        # lock FILE from a dead process pre-exists (no stale-reclaim race to lose).
         import threading
         locks = tmp_path / "locks"
         locks.mkdir()
         monkeypatch.setattr(hm, 'LOCK_DIR', locks)
         offenders = []
-        for _ in range(30):
-            for f in locks.glob("*.lock"):
-                f.unlink()
+        for _ in range(20):
+            (locks / "proj.lock").write_text("999999999")  # leftover unheld file from a "prev run"
             n = 16
             barrier = threading.Barrier(n)
             winners = []
@@ -570,6 +555,7 @@ class TestBackgroundDispatch:
                 t.join()
             if sum(winners) != 1:
                 offenders.append(sum(winners))
+            hm.release_lock("proj")  # free for the next round
         assert not offenders, f"rounds where !=1 worker acquired the lock: {offenders}"
 
 
@@ -578,11 +564,6 @@ class TestCodemapRefreshTimeout:
 
     def test_cap_covers_initial_plus_retry(self):
         assert hm.CODEMAP_REFRESH_TIMEOUT >= hm.CODEMAP_AI_TIMEOUT + max(hm.CODEMAP_AI_TIMEOUT, 240)
-
-    def test_lock_outlives_a_full_refresh(self):
-        # A lock must not be declared stale while its own refresh is still legitimately running,
-        # or a second git op would spawn a duplicate worker on top of the first.
-        assert hm.LOCK_STALE_SECONDS > hm.CODEMAP_REFRESH_TIMEOUT
 
 
 class TestJobPruning:
@@ -790,7 +771,10 @@ class TestDoMainBranchUpdate:
                 hm.do_main_branch_update("test_project")
             except RuntimeError:
                 pass
-        assert not (tmp_path / "locks" / "test_project.lock").exists()
+        # the finally released the flock → re-acquirable (flock leaves the file in place)
+        assert hm._lock_held("test_project") is False
+        assert hm.acquire_lock("test_project")
+        hm.release_lock("test_project")
 
     def test_job_status_records_failure(self, tmp_path, monkeypatch):
         monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
@@ -1042,14 +1026,16 @@ class TestDoGrowthCheck:
         lock_dir = tmp_path / "locks"
         lock_dir.mkdir()
         monkeypatch.setattr(hm, 'LOCK_DIR', lock_dir)
-        lock_file = lock_dir / f"{hm.path_key(str(tmp_path))}_growth.lock"
-        lock_file.write_text(str(os.getpid()))
+        fd = _hold_flock(lock_dir, f"{hm.path_key(str(tmp_path))}_growth.lock")  # another holder
         state_file = tmp_path / "state.json"
         state_file.write_text(json.dumps({"file_count": 25, "retired": False}))
-        with patch.object(hm, 'DIAG_SCRIPT', tmp_path / "diag.sh"), \
-             patch.object(hm.subprocess, 'run') as mock_run:
-            hm.do_growth_check(str(state_file), str(tmp_path))
-        mock_run.assert_not_called()
+        try:
+            with patch.object(hm, 'DIAG_SCRIPT', tmp_path / "diag.sh"), \
+                 patch.object(hm.subprocess, 'run') as mock_run:
+                hm.do_growth_check(str(state_file), str(tmp_path))
+            mock_run.assert_not_called()
+        finally:
+            os.close(fd)
 
 
 class TestMainFunction:
@@ -1289,33 +1275,18 @@ class TestCoverageGaps:
         assert "### docs/" in content
         assert "api" in content
 
-    def test_handle_main_branch_update_stale_corrupt_lock_reclaimed(self, tmp_path, monkeypatch, capsys):
-        """A corrupt lock past LOCK_STALE_SECONDS is reclaimed — it must not wedge updates forever."""
+    def test_handle_main_branch_update_leftover_lock_file_does_not_wedge(self, tmp_path, monkeypatch, capsys):
+        """A lock FILE left by a dead process (no flock held) must not wedge updates — flock
+        auto-released on death, so the dispatcher proceeds."""
         monkeypatch.chdir(tmp_path)
         lock_dir = tmp_path / "locks"
         lock_dir.mkdir()
-        lock = lock_dir / "test.lock"
-        lock.write_text("not_a_pid")
-        old = time.time() - (hm.LOCK_STALE_SECONDS + 60)
-        os.utime(lock, (old, old))
+        (lock_dir / "test.lock").write_text("999999999")  # leftover from a crashed worker
         monkeypatch.setattr(hm, 'LOCK_DIR', lock_dir)
         with patch.object(hm.subprocess, 'Popen'):
             hm.handle_main_branch_update("test")
         context = read_post_tool_context(capsys.readouterr().out)
         assert "Harness 更新已在后台启动" in context
-
-    def test_handle_main_branch_update_skips_on_fresh_unwritten_lock(self, tmp_path, monkeypatch, capsys):
-        """Race safety: a just-created (still-empty) lock is treated as held, never stolen."""
-        monkeypatch.chdir(tmp_path)
-        lock_dir = tmp_path / "locks"
-        lock_dir.mkdir()
-        (lock_dir / "test.lock").write_text("")  # O_EXCL winner is mid-create, PID not written yet
-        monkeypatch.setattr(hm, 'LOCK_DIR', lock_dir)
-        with patch.object(hm.subprocess, 'Popen') as popen:
-            hm.handle_main_branch_update("test")
-        context = read_post_tool_context(capsys.readouterr().out)
-        assert "已在后台运行" in context
-        popen.assert_not_called()
 
     def test_bg_cli_mode(self, tmp_path, monkeypatch):
         """Cover __main__ --bg entry point."""

@@ -16,6 +16,7 @@ All heavy work runs as detached background processes. Hook returns in <500ms.
 
 from __future__ import annotations
 
+import fcntl
 import io
 import json
 import os
@@ -56,10 +57,6 @@ GIT_COMMANDS = re.compile(
 # indefinitely. CODEMAP_AI_TIMEOUT is the per-AI-call budget passed via --ai-timeout.
 CODEMAP_AI_TIMEOUT = 150
 CODEMAP_REFRESH_TIMEOUT = 1800
-# A lock held longer than this is treated as stale and reclaimed even if its recorded
-# PID is alive — guards against a reused PID wedging refreshes forever. Must EXCEED
-# CODEMAP_REFRESH_TIMEOUT so a legitimately long refresh can't have its own lock reclaimed.
-LOCK_STALE_SECONDS = CODEMAP_REFRESH_TIMEOUT + 600
 
 
 # ── Directory description helpers (deterministic, no AI) ──
@@ -328,66 +325,63 @@ def sync_platform_docs(dir_path):
 # Main update handler
 # ══════════════════════════════════════════════════════════
 
-def _lock_active(lock_file: Path) -> bool:
-    """True iff the lock is held: it exists, is younger than LOCK_STALE_SECONDS, and either
-    names a live PID or is too fresh to have its PID parsed yet (a worker mid-create).
+# Locking uses fcntl.flock — an advisory lock tied to an open fd. The kernel releases it
+# automatically when the holding process dies (even on SIGKILL), so there are NO stale
+# locks to detect or reclaim: no PID liveness checks, no mtime staleness, no reclaim race.
+_held_locks: dict[str, int] = {}  # project_id → open fd holding the flock (this process)
 
-    Reclaimable cases (→ False): absent, stale (old mtime, even with a reused-live PID), or
-    fresh-but-dead-PID. A fresh lock with an empty/corrupt PID is treated as HELD — the
-    O_EXCL winner creates the file empty then writes its PID, and a racing reader catching
-    that microsecond window must not delete it.
-    """
-    if not lock_file.exists():
-        return False
+
+def _open_lock_fd(project_id):
+    LOCK_DIR.mkdir(parents=True, exist_ok=True)
+    return os.open(str(LOCK_DIR / f"{project_id}.lock"), os.O_CREAT | os.O_RDWR, 0o644)
+
+
+def _lock_held(project_id) -> bool:
+    """Best-effort probe: True iff another process currently holds the lock. (The real
+    guarantee is acquire_lock's own flock; this just lets the dispatcher avoid spawning a
+    worker that would immediately exit.)"""
     try:
-        fresh = time.time() - lock_file.stat().st_mtime <= LOCK_STALE_SECONDS
+        fd = _open_lock_fd(project_id)
     except OSError:
         return False
-    if not fresh:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_UN)  # we were only probing
         return False
-    try:
-        pid = int(lock_file.read_text(encoding="utf-8").strip())
-    except (ValueError, OSError):
-        return True  # fresh but not-yet-written/corrupt → a worker is mid-create; hold it
-    try:
-        os.kill(pid, 0)
     except OSError:
-        return False  # fresh lock but its PID is dead → reclaimable
-    return True
+        return True
+    finally:
+        os.close(fd)
 
 
 def acquire_lock(project_id):
-    """Try to acquire a lock file atomically. Returns True if acquired.
-
-    O_EXCL create is the mutual-exclusion primitive — we NEVER unlink before creating,
-    or a racing worker's freshly-created lock could be silently deleted (two winners).
-    A pre-existing lock is reclaimed (unlink + retry once) only when confirmed dead/stale.
-    """
-    LOCK_DIR.mkdir(parents=True, exist_ok=True)
-    lock_file = LOCK_DIR / f"{project_id}.lock"
-    for attempt in (1, 2):
-        try:
-            fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, str(os.getpid()).encode())
-            os.close(fd)
-            return True
-        except FileExistsError:
-            if attempt == 2 or _lock_active(lock_file):
-                return False
-            lock_file.unlink(missing_ok=True)  # dead/stale lock → reclaim, then retry once
-    return False
+    """Acquire an exclusive flock for project_id. Returns True if acquired. The lock is held
+    by an open fd for this process's lifetime and auto-released on exit/death."""
+    try:
+        fd = _open_lock_fd(project_id)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return False
+    os.ftruncate(fd, 0)
+    os.write(fd, str(os.getpid()).encode())  # content is informational only
+    _held_locks[project_id] = fd
+    return True
 
 
 def release_lock(project_id):
-    """Remove the lock only if we still own it — never delete a lock another worker
-    reclaimed and re-acquired (e.g. after ours went stale)."""
-    lock_file = LOCK_DIR / f"{project_id}.lock"
+    """Release our flock (a no-op if we don't hold it)."""
+    fd = _held_locks.pop(project_id, None)
+    if fd is None:
+        return
     try:
-        owner = int(lock_file.read_text(encoding="utf-8").strip())
-    except (ValueError, OSError):
-        return  # empty/corrupt/missing → not provably ours; leave it for staleness reclaim
-    if owner == os.getpid():
-        lock_file.unlink(missing_ok=True)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    os.close(fd)
 
 
 JOB_RETENTION = 50
@@ -557,8 +551,7 @@ def _do_main_branch_update_inner(job_id=None):
 
 def handle_main_branch_update(project_id):
     """Spawn background process for heavy update work. Returns immediately."""
-    lock_file = LOCK_DIR / f"{project_id}.lock"
-    if _lock_active(lock_file):
+    if _lock_held(project_id):
         emit_post_tool_context("Harness 更新已在后台运行，跳过重复启动")
         return
 
