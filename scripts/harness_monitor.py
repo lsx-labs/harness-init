@@ -452,15 +452,16 @@ def ensure_gitnexus_fresh(job_id=None):
         write_job_status(job_id, {"gitnexus_analyze": "failed"})
 
 
-def do_main_branch_update(project_id, job_id=None):
+def do_main_branch_update(project_id, job_id=None, *, require_main=True):
     """Heavy work: reindex → CODE_MAP structure → descriptions → root CLAUDE↔AGENTS sync.
 
-    Runs as a background process (spawned by handle_main_branch_update).
-    No timeout pressure — takes as long as it needs.
+    Runs as a background process. The PostToolUse path passes require_main=True (only write on
+    the main branch); the /harness-init skill path passes require_main=False (the user explicitly
+    asked to refresh on whatever branch they're on).
     """
     # Re-check the branch: the user may have switched off main between the git op
     # that spawned this worker and now. The "only write on main" guarantee depends on it.
-    if not is_on_main_branch():
+    if require_main and not is_on_main_branch():
         write_job_status(job_id, {"status": "skipped_branch_changed", "project_id": project_id})
         return
     if not acquire_lock(project_id):
@@ -476,7 +477,7 @@ def do_main_branch_update(project_id, job_id=None):
         "started_at": time.time(),
     })
     try:
-        _do_main_branch_update_inner(job_id)
+        _do_main_branch_update_inner(job_id, require_main=require_main)
         write_job_status(job_id, {
             "status": "completed",
             "project_id": project_id,
@@ -494,7 +495,7 @@ def do_main_branch_update(project_id, job_id=None):
         release_lock(project_id)
 
 
-def _do_main_branch_update_inner(job_id=None):
+def _do_main_branch_update_inner(job_id=None, *, require_main=True):
     # Step 0: Ensure GitNexus index is fresh before reading community data
     ensure_gitnexus_fresh(job_id)
 
@@ -520,7 +521,8 @@ def _do_main_branch_update_inner(job_id=None):
     # Re-check before mutating: the reindex + structure prelude above can run for a while,
     # and we must never write CODE_MAP.md / CLAUDE.md / AGENTS.md onto a feature branch the
     # user switched to mid-run. (The worker-start check in do_main_branch_update can go stale.)
-    if not is_on_main_branch():
+    # The skill path (require_main=False) deliberately refreshes on the current branch.
+    if require_main and not is_on_main_branch():
         return
 
     if new_content != old_content:
@@ -549,13 +551,9 @@ def _do_main_branch_update_inner(job_id=None):
     sync_platform_docs(".")
 
 
-def handle_main_branch_update(project_id):
-    """Spawn background process for heavy update work. Returns immediately."""
-    if _lock_held(project_id):
-        emit_post_tool_context("Harness 更新已在后台运行，跳过重复启动")
-        return
-
-    project_dir = str(Path(".").resolve())
+def _spawn_bg_worker(project_id, project_dir, bg_flag) -> str:
+    """Queue a detached background worker (returns its job_id). Shared by the PostToolUse
+    dispatcher (--bg, main-only) and the /harness-init skill dispatcher (--bg-skill, any branch)."""
     job_id = make_job_id(project_id)
     _prune_old_jobs()  # bound jobs/ — it is otherwise append-only
     write_job_status(job_id, {
@@ -565,13 +563,39 @@ def handle_main_branch_update(project_id):
         "queued_at": time.time(),
     })
     subprocess.Popen(
-        [sys.executable, str(Path(__file__).resolve()), "--bg", project_id, project_dir, job_id],
+        [sys.executable, str(Path(__file__).resolve()), bg_flag, project_id, project_dir, job_id],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+    return job_id
+
+
+def handle_main_branch_update(project_id):
+    """Spawn background process for heavy update work. Returns immediately."""
+    if _lock_held(project_id):
+        emit_post_tool_context("Harness 更新已在后台运行，跳过重复启动")
+        return
+    job_id = _spawn_bg_worker(project_id, str(Path(".").resolve()), "--bg")
     emit_post_tool_context(
         f"Harness 更新已在后台启动（GitNexus 索引 + CODE_MAP + 描述生成），job_id={job_id}"
     )
+
+
+def handle_skill_refresh(project_dir="."):
+    """Branch-agnostic dispatcher for /harness-init: queue the CODE_MAP refresh chain in a
+    detached worker and print its status as JSON, so a large manual init doesn't block the turn."""
+    project_dir = str(Path(project_dir).resolve())
+    os.chdir(project_dir)
+    project_id = get_project_id()
+    if not project_id:
+        print(json.dumps({"status": "error", "reason": "not_a_git_repo"}, ensure_ascii=False))
+        return
+    if _lock_held(project_id):
+        print(json.dumps({"status": "already_running", "project_id": project_id}, ensure_ascii=False))
+        return
+    job_id = _spawn_bg_worker(project_id, project_dir, "--bg-skill")
+    print(json.dumps({"status": "started", "job_id": job_id,
+                      "jobs_dir": str(JOB_DIR)}, ensure_ascii=False))
 
 
 # ══════════════════════════════════════════════════════════
@@ -715,6 +739,14 @@ if __name__ == "__main__":
         # Background mode: harness_monitor.py --bg <project_id> <project_dir> [job_id]
         os.chdir(sys.argv[3])
         do_main_branch_update(sys.argv[2], sys.argv[4] if len(sys.argv) >= 5 else None)
+    elif len(sys.argv) >= 4 and sys.argv[1] == "--bg-skill":
+        # Skill-initiated worker (any branch): --bg-skill <project_id> <project_dir> [job_id]
+        os.chdir(sys.argv[3])
+        do_main_branch_update(sys.argv[2], sys.argv[4] if len(sys.argv) >= 5 else None,
+                              require_main=False)
+    elif len(sys.argv) >= 2 and sys.argv[1] == "--refresh-bg":
+        # Skill dispatcher: --refresh-bg [project_dir] → detach worker, print job JSON
+        handle_skill_refresh(sys.argv[2] if len(sys.argv) >= 3 else ".")
     elif len(sys.argv) >= 4 and sys.argv[1] == "--bg-growth":
         # Background growth check: --bg-growth <state_file> <project_dir>
         do_growth_check(sys.argv[2], sys.argv[3])

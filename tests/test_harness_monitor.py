@@ -527,6 +527,28 @@ class TestBackgroundDispatch:
         hm.release_lock("proj")
         assert hm._lock_held("proj") is False   # freed
 
+    def test_handle_skill_refresh_spawns_branch_agnostic_worker(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
+        monkeypatch.setattr(hm, 'JOB_DIR', tmp_path / "jobs")
+        with patch.object(hm, 'get_project_id', return_value="proj"), \
+             patch.object(hm, '_lock_held', return_value=False), \
+             patch.object(hm.subprocess, 'Popen') as popen:
+            hm.handle_skill_refresh(str(tmp_path))
+        out = json.loads(capsys.readouterr().out)
+        assert out["status"] == "started"
+        assert out["job_id"]
+        assert "--bg-skill" in popen.call_args[0][0]  # any-branch worker, not --bg
+
+    def test_handle_skill_refresh_skips_when_already_running(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(hm, 'JOB_DIR', tmp_path / "jobs")
+        with patch.object(hm, 'get_project_id', return_value="proj"), \
+             patch.object(hm, '_lock_held', return_value=True), \
+             patch.object(hm.subprocess, 'Popen') as popen:
+            hm.handle_skill_refresh(str(tmp_path))
+        out = json.loads(capsys.readouterr().out)
+        assert out["status"] == "already_running"
+        popen.assert_not_called()
+
     def test_concurrent_acquire_grants_exactly_one(self, tmp_path, monkeypatch):
         # flock guarantees mutual exclusion across racing acquirers — including when a leftover
         # lock FILE from a dead process pre-exists (no stale-reclaim race to lose).
@@ -628,6 +650,21 @@ class TestDoMainBranchUpdate:
             hm.do_main_branch_update("test_project", job_id="j_mid")
         assert (tmp_path / "CODE_MAP.md").read_text() == "# Old\n"  # not overwritten on feature branch
         sync.assert_not_called()
+
+    def test_skill_path_refreshes_off_main_branch(self, tmp_path, monkeypatch):
+        # require_main=False (the /harness-init skill path) refreshes on the CURRENT branch
+        # instead of bailing like the hook path does off-main.
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
+        monkeypatch.setattr(hm, 'JOB_DIR', tmp_path / "jobs")
+        (tmp_path / "CODE_MAP.md").write_text("# Old\n")
+        with patch.object(hm, 'is_on_main_branch', return_value=False), \
+             patch.object(hm, 'ensure_gitnexus_fresh'), \
+             patch.object(hm, 'get_gitnexus_communities', return_value={"x": 1}), \
+             patch.object(hm, 'build_codemap_structure', return_value=("# New\n", [])), \
+             patch.object(hm, 'sync_platform_docs'):
+            hm.do_main_branch_update("test_project", job_id="j", require_main=False)
+        assert (tmp_path / "CODE_MAP.md").read_text() == "# New\n"  # written despite feature branch
 
     def test_refreshes_descriptions_when_entries_need_refresh_despite_unchanged_structure(self, tmp_path, monkeypatch):
         # Self-healing: an entry with an empty/low-quality description must still trigger a

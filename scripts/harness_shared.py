@@ -17,6 +17,10 @@ SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".gitnexus"
 
 STALE_THRESHOLD = 0.2
 SYMBOL_THRESHOLD = 100
+# When this many directories need AI descriptions, /harness-init delegates the CODE_MAP
+# refresh to a detached background worker instead of blocking the agent's turn (each dir is
+# ~half an AI batch at ~150-180s, so beyond this the in-turn wait runs into many minutes).
+CODEMAP_BG_DIRS_THRESHOLD = 6
 MANUAL_MARKER = "📌"
 LOW_CONFIDENCE_MARKER = "⚠️"
 

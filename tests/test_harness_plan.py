@@ -97,6 +97,20 @@ class TestPlanCodemap:
         result = hp.plan_codemap(entries, {"src": 100})
         assert result["action"] == "skip"
 
+    def test_small_refresh_runs_inline(self):
+        # few dirs needing description → fast enough to run in the agent's turn
+        entries = [{"dir": f"d{i}", "desc": "", "symbols": 100} for i in range(3)]
+        result = hp.plan_codemap(entries, {})
+        assert result["action"] == "refresh"
+        assert result["background"] is False
+
+    def test_large_refresh_is_backgrounded(self):
+        # many dirs needing AI descriptions would block the turn for minutes → background it
+        entries = [{"dir": f"d{i}", "desc": "", "symbols": 100} for i in range(8)]
+        result = hp.plan_codemap(entries, {})
+        assert result["action"] == "refresh"
+        assert result["background"] is True
+
     def test_no_entries(self):
         result = hp.plan_codemap([], {})
         assert result["action"] == "skip"

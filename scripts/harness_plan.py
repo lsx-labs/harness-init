@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 
 from harness_shared import (MANUAL_MARKER, STALE_THRESHOLD, SYMBOL_THRESHOLD,
+                    CODEMAP_BG_DIRS_THRESHOLD,
                     gitnexus_markdown_rows, map_areas_to_dirs, needs_description_refresh,
                     parse_codemap, parse_gitnexus_markdown, platform_files)
 
@@ -61,8 +62,10 @@ def plan_codemap(entries: list[dict], live_counts: dict) -> dict:
         if abs(live - recorded) / denom >= STALE_THRESHOLD:
             needing.append(e["dir"])
     if not needing:
-        return {"action": "skip", "dirs_needing": []}
-    return {"action": "refresh", "dirs_needing": needing}
+        return {"action": "skip", "dirs_needing": [], "background": False}
+    # large refresh → /harness-init hands it to a detached worker instead of blocking the turn
+    return {"action": "refresh", "dirs_needing": needing,
+            "background": len(needing) >= CODEMAP_BG_DIRS_THRESHOLD}
 
 
 _WRAPPER_FIX_REASONS = {
