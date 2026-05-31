@@ -56,3 +56,8 @@ def test_semantic_chinese_description_is_acceptable() -> None:
 
 def test_low_confidence_descriptions_need_refresh() -> None:
     assert harness_shared.needs_description_refresh("⚠️ run_combo / load_data")
+
+
+def test_slash_separated_list_is_low_quality() -> None:
+    # a " / "-joined dir listing is navigation noise, not a description → must refresh
+    assert harness_shared.is_low_quality_description("unit / integration / e2e")

@@ -111,11 +111,11 @@ python3 ~/.local/bin/harness-plan.py . --platform codex
 - Hook 只调度后台 CODE_MAP job，不同步等待 GitNexus/AI
 - 后台 job 状态写入 `~/.local/share/harness-hooks/jobs/*.json`
 - CODE_MAP 写入使用临时文件 + 原子替换，失败时保留旧文件
-- AI+GitNexus 描述生成按小批次执行，默认 `--batch-size 2 --ai-timeout 180`
+- AI+GitNexus 描述生成按小批次执行；后台 hook 固定用 `--ai-timeout 150`（手动 CLI 默认 `--batch-size 2 --ai-timeout 180`）
 - 失败或超时的 AI batch 会自动拆成单目录 retry（顺序执行），timeout 不低于 240 秒
 - 大项目可显式运行：`python3 ~/.local/share/harness-hooks/generate_descriptions.py . --generate --refresh-dir src/core --batch-size 2 --ai-timeout 180`
 - 指纹增量检查：`python3 ~/.local/share/harness-hooks/generate_descriptions.py . --dry-run --use-fingerprints`
-- 可用 `HARNESS_CODEMAP_AI_BATCH_SIZE`、`HARNESS_CODEMAP_AI_TIMEOUT` 调整后台默认值
+- `HARNESS_CODEMAP_AI_BATCH_SIZE` 调整 batch size（含后台）；`HARNESS_CODEMAP_AI_TIMEOUT` 只作用于手动 CLI（后台 timeout 固定 150s）
 - AI 已尝试但失败时不写关键词 fallback，避免函数名列表冒充刷新结果
 - 运行输出包含 `classification`、`ai_report`、`quality_before` / `quality_after`，用于审计刷新质量
 

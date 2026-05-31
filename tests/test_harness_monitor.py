@@ -93,6 +93,22 @@ class TestIsGitOperation:
         assert hm.is_git_operation({"tool_input": {"command": command}}) is False
         assert time.perf_counter() - started < 0.5
 
+    def test_git_C_path_with_separate_value(self):
+        assert hm.is_git_operation({"tool_input": {"command": "git -C /repo commit -m x"}}) is True
+
+    def test_git_c_config_with_separate_value(self):
+        assert hm.is_git_operation({"tool_input": {"command": "git -c user.name=x commit -m y"}}) is True
+
+    def test_leading_whitespace_before_git(self):
+        assert hm.is_git_operation({"tool_input": {"command": "   git commit -m x"}}) is True
+
+    def test_bare_parenthesized_subshell(self):
+        assert hm.is_git_operation({"tool_input": {"command": "(git commit -m x)"}}) is True
+
+    def test_config_subkey_named_commit_is_not_an_operation(self):
+        # false-positive guard: `commit.gpgsign` is a config key, not the commit verb
+        assert hm.is_git_operation({"tool_input": {"command": "git config commit.gpgsign true"}}) is False
+
 
 class TestIsOnMainBranch:
     def test_on_main(self):
@@ -550,6 +566,34 @@ class TestCodemapRefreshTimeout:
         assert hm.LOCK_STALE_SECONDS > hm.CODEMAP_REFRESH_TIMEOUT
 
 
+class TestJobPruning:
+    def test_prunes_to_most_recent(self, tmp_path, monkeypatch):
+        jobs = tmp_path / "jobs"
+        jobs.mkdir()
+        monkeypatch.setattr(hm, 'JOB_DIR', jobs)
+        for i in range(60):
+            f = jobs / f"proj-{i}.json"
+            f.write_text("{}")
+            os.utime(f, (1000 + i, 1000 + i))  # strictly increasing mtime
+        hm._prune_old_jobs(keep=50)
+        names = {p.name for p in jobs.glob("*.json")}
+        assert len(names) == 50
+        assert "proj-0.json" not in names    # oldest pruned
+        assert "proj-59.json" in names       # newest kept
+
+    def test_dispatch_prunes_jobs(self, tmp_path, monkeypatch):
+        # a new dispatch must bound the jobs/ directory, not just append forever
+        jobs = tmp_path / "jobs"
+        jobs.mkdir()
+        monkeypatch.setattr(hm, 'JOB_DIR', jobs)
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
+        for i in range(60):
+            (jobs / f"old-{i}.json").write_text("{}")
+        with patch.object(hm.subprocess, 'Popen'):
+            hm.handle_main_branch_update("test")
+        assert len(list(jobs.glob("*.json"))) <= hm.JOB_RETENTION + 1
+
+
 class TestDoMainBranchUpdate:
     """Cover do_main_branch_update (background worker)."""
 
@@ -568,6 +612,22 @@ class TestDoMainBranchUpdate:
         gc.assert_not_called()
         status = json.loads((tmp_path / "jobs" / "j1.json").read_text())
         assert status["status"] == "skipped_branch_changed"
+
+    def test_skips_writes_when_branch_changes_mid_run(self, tmp_path, monkeypatch):
+        # main at worker start, but the user checks out a feature branch during the
+        # reindex/structure prelude → CODE_MAP/docs must NOT be written on the feature branch.
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
+        monkeypatch.setattr(hm, 'JOB_DIR', tmp_path / "jobs")
+        (tmp_path / "CODE_MAP.md").write_text("# Old\n")
+        with patch.object(hm, 'is_on_main_branch', side_effect=[True, False]), \
+             patch.object(hm, 'ensure_gitnexus_fresh'), \
+             patch.object(hm, 'get_gitnexus_communities', return_value={"communities": "x"}), \
+             patch.object(hm, 'build_codemap_structure', return_value=("# New\n", [])), \
+             patch.object(hm, 'sync_platform_docs') as sync:
+            hm.do_main_branch_update("test_project", job_id="j_mid")
+        assert (tmp_path / "CODE_MAP.md").read_text() == "# Old\n"  # not overwritten on feature branch
+        sync.assert_not_called()
 
     def test_refreshes_descriptions_when_entries_need_refresh_despite_unchanged_structure(self, tmp_path, monkeypatch):
         # Self-healing: an entry with an empty/low-quality description must still trigger a
@@ -612,20 +672,27 @@ class TestDoMainBranchUpdate:
             hm.do_main_branch_update("test_project")
         assert not (tmp_path / "CODE_MAP.md").exists()
 
-    def test_no_changes(self, tmp_path, monkeypatch):
+    def test_no_changes_is_a_noop(self, tmp_path, monkeypatch):
+        # byte-identical structure, no stale dirs, all descriptions acceptable → early return.
+        # The file must be left untouched and the mid-run write guard must never be reached.
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
         communities = {"scripts": {"symbols": 100, "clusters": 2}}
-        area_to_dir = {"scripts": "scripts"}
-        with patch.object(hm, 'build_area_to_dir', return_value=area_to_dir):
-            expected_content, _ = hm.build_codemap_structure(communities, {}, {})
-        (tmp_path / "CODE_MAP.md").write_text(expected_content)
+        content = "# Code Map\n\n### scripts/ (100 symbols) — 核心脚本：诊断与生成\n"
+        (tmp_path / "CODE_MAP.md").write_text(content)
 
-        with patch.object(hm, 'is_on_main_branch', return_value=True), \
+        with patch.object(hm, 'is_on_main_branch', return_value=True) as main_mock, \
              patch.object(hm, 'ensure_gitnexus_fresh'), \
              patch.object(hm, 'get_gitnexus_communities', return_value=communities), \
-             patch.object(hm, 'build_codemap_structure', return_value=(expected_content, [])):
+             patch.object(hm, 'build_codemap_structure', return_value=(content, [])), \
+             patch.object(hm, 'sync_platform_docs') as sync:
             hm.do_main_branch_update("test_project")
+
+        assert (tmp_path / "CODE_MAP.md").read_text() == content  # untouched
+        # the no-op early-return fires before the mid-run write guard, so branch is checked
+        # only once (at worker start), and the doc sync never runs
+        assert main_mock.call_count == 1
+        sync.assert_not_called()
 
     def test_full_update_with_descriptions(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -920,6 +987,28 @@ class TestDoGrowthCheck:
         notify_file = notify_dir / f"{hm.path_key(str(tmp_path))}.json"
         assert not notify_file.exists()
 
+    def test_grep_failure_sentinel_does_not_retire(self, tmp_path, monkeypatch):
+        # A failed grep returns -1 — inconclusive, NOT "low noise". It must not permanently
+        # retire growth detection (a transient failure would otherwise disable it forever).
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
+        monkeypatch.setattr(hm, 'NOTIFY_DIR', tmp_path / "notifications")
+        state_file = tmp_path / "state.json"
+        state = {"file_count": 25, "retired": False,
+                 "gitnexus_recommended": False, "lsp_recommended": []}
+        state_file.write_text(json.dumps(state))
+        diag = {
+            "grep_noise": {"grep_noise_files": -1, "most_imported": "auth"},
+            "existing": {"gitnexus": {"indexed": False}},
+            "lsp_assessment": [],
+        }
+        mock_result = MagicMock(returncode=0, stdout=json.dumps(diag))
+        with patch.object(hm, 'DIAG_SCRIPT', tmp_path / "diag.sh"), \
+             patch.object(hm.subprocess, 'run', return_value=mock_result):
+            hm.do_growth_check(str(state_file), str(tmp_path))
+        saved = json.loads(state_file.read_text())
+        assert saved["retired"] is False
+
     def test_skips_if_locked(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         lock_dir = tmp_path / "locks"
@@ -1056,6 +1145,10 @@ class TestGetSubdirList:
         assert "integration" in result
         assert "unit" in result
         assert "__pycache__" not in result
+        # must join with "、" (not " / ", which the quality gate flags → refresh loop)
+        assert "、" in result
+        assert " / " not in result
+        assert harness_shared.is_acceptable_description(result)
 
     def test_empty_dir(self, tmp_path):
         d = tmp_path / "empty"

@@ -45,9 +45,9 @@ DIAG_SCRIPT = Path.home() / ".local" / "bin" / "harness-init.py"
 DESC_SCRIPT = Path.home() / ".local" / "share" / "harness-hooks" / "generate_descriptions.py"
 GITNEXUS_TIMEOUT = 15
 GIT_COMMANDS = re.compile(
-    r'(?:^|(?:&&|\|\||[;|]|\$\()\s*)'                              # start / shell separator / $( subshell
+    r'(?:^\s*|(?:&&|\|\||[;|]|\$\(|\()\s*)'                        # start / shell separator / $( or ( subshell
     r'(?:(?:\w+=\S+|sudo|env|time|nohup|command|exec|xargs)\s+)*'  # optional env-assignments / wrappers
-    r'git(?:\s+-[^\s;|&]+)*\s+'
+    r'git(?:\s+(?:-[Cc]\s+\S+|-[^\s;|&]+))*\s+'                    # git + global opts (incl. -C/-c <value>)
     r'(commit|merge|rebase|pull|checkout|switch|cherry-pick)\b'
 )
 # CODE_MAP description refresh budget. generate_descriptions runs AI batches and the
@@ -380,9 +380,22 @@ def release_lock(project_id):
     lock_file.unlink(missing_ok=True)
 
 
+JOB_RETENTION = 50
+
+
 def make_job_id(project_id: str) -> str:
     safe = re.sub(r'[^A-Za-z0-9_.-]+', "_", project_id).strip("_") or "project"
     return f"{safe}-{int(time.time() * 1000)}"
+
+
+def _prune_old_jobs(keep: int = JOB_RETENTION) -> None:
+    """Keep only the most recent `keep` job-status files; jobs/ is otherwise write-only."""
+    try:
+        files = sorted(JOB_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return
+    for stale in files[keep:]:
+        stale.unlink(missing_ok=True)
 
 
 def write_job_status(job_id: str | None, payload: dict) -> None:
@@ -398,7 +411,6 @@ def write_job_status(job_id: str | None, payload: dict) -> None:
             current = {}
     current.update(payload)
     current.setdefault("job_id", job_id)
-    current.setdefault("updated_at", time.time())
     current["updated_at"] = time.time()
     atomic_write_text(path, json.dumps(current, indent=2, ensure_ascii=False))
 
@@ -501,6 +513,12 @@ def _do_main_branch_update_inner(job_id=None):
     if new_content == old_content and not stale_dirs and not entries_need_refresh:
         return
 
+    # Re-check before mutating: the reindex + structure prelude above can run for a while,
+    # and we must never write CODE_MAP.md / CLAUDE.md / AGENTS.md onto a feature branch the
+    # user switched to mid-run. (The worker-start check in do_main_branch_update can go stale.)
+    if not is_on_main_branch():
+        return
+
     if new_content != old_content:
         atomic_write_text(codemap_file, new_content)
 
@@ -536,6 +554,7 @@ def handle_main_branch_update(project_id):
 
     project_dir = str(Path(".").resolve())
     job_id = make_job_id(project_id)
+    _prune_old_jobs()  # bound jobs/ — it is otherwise append-only
     write_job_status(job_id, {
         "status": "queued",
         "project_id": project_id,
@@ -643,7 +662,9 @@ def _do_growth_check_inner(state_file_path, project_dir):
             messages.append(f"📊 {a['language']} LSP 建议：{a['reason']}")
     state["lsp_recommended"] = list(already)
 
-    gitnexus_done = gitnexus_indexed or grep_noise <= 20
+    # grep_noise == -1 is a measurement failure sentinel, not "low noise" — treat it as
+    # inconclusive so a transient grep failure can't permanently retire growth detection.
+    gitnexus_done = gitnexus_indexed or 0 <= grep_noise <= 20
     lsp_needed = {a["language"] for a in diag.get("lsp_assessment", []) if a["recommend"]}
     if gitnexus_done and (lsp_needed.issubset(already) or not lsp_needed) and not messages:
         state["retired"] = True
