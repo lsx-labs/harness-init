@@ -11,6 +11,19 @@ from install import (install_file, install_dir, check_command, register_hooks,
                      register_codex_gitnexus_wrapper)
 
 
+def test_codex_wrapper_inner_timeout_below_registration(tmp_path):
+    # the .cjs bounds the child (DEFAULT_TIMEOUT_MS) BELOW the Codex registration timeout so it
+    # can normalize output before Codex kills the wrapper — keep the margin if either changes.
+    import re
+    cjs = Path(os.path.join(os.path.dirname(__file__), '..', 'hooks', 'gitnexus-codex-hook.cjs')).read_text()
+    inner = int(re.search(r"DEFAULT_TIMEOUT_MS = (\d+)", cjs).group(1))
+    hooks_file = tmp_path / "hooks.json"
+    register_codex_gitnexus_wrapper(hooks_file, "/x/wrapper.cjs")
+    reg = json.loads(hooks_file.read_text())
+    outer = reg["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"]
+    assert inner < outer, f"wrapper inner timeout {inner}ms must be < registration {outer}ms"
+
+
 def test_install_uses_postponed_annotations_for_python39():
     # install.py uses PEP 604 `X | None` annotations; without this it hard-crashes at
     # import on Python 3.9 (the runtime scripts already have the import).

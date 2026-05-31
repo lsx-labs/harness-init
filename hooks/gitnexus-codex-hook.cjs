@@ -17,6 +17,9 @@ const HOME = process.env.HOME || os.homedir();
 const LOG_DIR = path.join(HOME, '.codex', 'hooks', 'logs');
 const LOG_PATH = path.join(LOG_DIR, 'gitnexus-codex-hook.log');
 const MAX_LOG_BYTES = 1024 * 1024;
+// Must stay BELOW the Codex hook-registration timeout (8000ms in install.py's
+// register_codex_gitnexus_wrapper) so we bound + normalize the child's output before
+// Codex kills the wrapper. Keep the ~400ms margin if you change either value.
 const DEFAULT_TIMEOUT_MS = 7600;
 
 const ALLOWED_TOP_LEVEL = new Set([
