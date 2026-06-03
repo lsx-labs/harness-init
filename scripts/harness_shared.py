@@ -7,6 +7,8 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 # ── Constants ──
@@ -23,6 +25,8 @@ SYMBOL_THRESHOLD = 100
 CODEMAP_BG_DIRS_THRESHOLD = 6
 MANUAL_MARKER = "📌"
 LOW_CONFIDENCE_MARKER = "⚠️"
+CODEMAP_FILENAME = "CODE_MAP.md"
+CODEMAP_CACHE_ROOT = Path.home() / ".local" / "share" / "harness-hooks" / "codemaps"
 
 SOURCE_EXTS = {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".kt",
                ".rb", ".c", ".h", ".cpp", ".cs", ".swift", ".php"}
@@ -71,6 +75,134 @@ def path_key(path) -> str:
     (e.g. ~/a/api and ~/b/api) don't read each other's state.
     """
     return str(Path(path).resolve()).replace("/", "_").lstrip("_")
+
+
+def _git_common_dir(project_dir: str | Path = ".") -> Path | None:
+    """Return the repository common git dir for sharing cache across linked worktrees."""
+    root = Path(project_dir)
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    stdout = getattr(result, "stdout", "")
+    if not isinstance(stdout, str):
+        return None
+    raw = stdout.strip()
+    if not raw:
+        return None
+    common = Path(raw)
+    if not common.is_absolute():
+        common = root / common
+    return common.resolve()
+
+
+def codemap_cache_path(project_dir: str | Path = ".") -> Path:
+    """Shared CODE_MAP cache path for a repo, stable across linked worktrees."""
+    common = _git_common_dir(project_dir)
+    cache_key = path_key(common if common is not None else project_dir)
+    return CODEMAP_CACHE_ROOT / cache_key / CODEMAP_FILENAME
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp, path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def cache_codemap_projection(project_dir: str | Path = ".", content: str | None = None) -> bool:
+    """Persist the worktree CODE_MAP projection into the shared harness cache."""
+    root = Path(project_dir)
+    local = root / CODEMAP_FILENAME
+    if content is None:
+        if not local.exists():
+            return False
+        try:
+            content = local.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+    try:
+        _atomic_write_text(codemap_cache_path(root), content)
+    except OSError:
+        return False
+    return True
+
+
+def materialize_codemap_projection(project_dir: str | Path = ".") -> bool:
+    """Copy CODE_MAP from shared cache into this worktree when the local projection is absent."""
+    root = Path(project_dir)
+    local = root / CODEMAP_FILENAME
+    if local.exists():
+        return False
+    cache = codemap_cache_path(root)
+    if not cache.exists():
+        return False
+    try:
+        _atomic_write_text(local, cache.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return False
+    return True
+
+
+def codemap_is_ignored(project_dir: str | Path = ".") -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(project_dir), "check-ignore", "--no-index", "-q", CODEMAP_FILENAME],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+    return result.returncode == 0
+
+
+def codemap_is_tracked(project_dir: str | Path = ".") -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(project_dir), "ls-files", "--error-unmatch", CODEMAP_FILENAME],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+    return result.returncode == 0
+
+
+def ensure_codemap_gitignore(project_dir: str | Path = ".") -> bool:
+    """Ensure CODE_MAP.md is ignored in this repo. Returns True when it edits .gitignore."""
+    root = Path(project_dir)
+    if codemap_is_ignored(root):
+        return False
+    gitignore = root / ".gitignore"
+    try:
+        text = gitignore.read_text(encoding="utf-8", errors="replace") if gitignore.exists() else ""
+    except OSError:
+        return False
+    patterns = {line.strip() for line in text.splitlines()}
+    if CODEMAP_FILENAME in patterns or f"/{CODEMAP_FILENAME}" in patterns:
+        return False
+    prefix = "" if not text or text.endswith("\n") else "\n"
+    addition = f"{prefix}\n# Harness generated local projection\n{CODEMAP_FILENAME}\n"
+    try:
+        gitignore.write_text(text + addition, encoding="utf-8")
+    except OSError:
+        return False
+    return True
 
 
 # ── GitNexus output parsing (shared by monitor / plan / description generator) ──

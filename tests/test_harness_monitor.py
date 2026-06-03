@@ -719,8 +719,11 @@ class TestDoMainBranchUpdate:
              patch.object(hm, 'DESC_SCRIPT', desc_script), \
              patch.object(hm.subprocess, 'run', return_value=MagicMock(returncode=0)) as mock_run:
             hm.do_main_branch_update("test_project")
-        assert mock_run.called
-        assert "--generate" in mock_run.call_args.args[0]
+        desc_cmd = next(
+            call.args[0] for call in mock_run.call_args_list
+            if any("generate_descriptions.py" in str(part) for part in call.args[0])
+        )
+        assert "--generate" in desc_cmd
 
     def test_ensure_gitnexus_fresh_records_analyze_timeout(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -771,6 +774,7 @@ class TestDoMainBranchUpdate:
     def test_full_update_with_descriptions(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
+        monkeypatch.setattr(harness_shared, 'CODEMAP_CACHE_ROOT', tmp_path / "cache")
         old_content = "# Old Code Map\n"
         (tmp_path / "CODE_MAP.md").write_text(old_content)
         communities = {"auth": {"symbols": 100, "clusters": 2}}
@@ -789,10 +793,14 @@ class TestDoMainBranchUpdate:
 
         assert (tmp_path / "CODE_MAP.md").read_text() == new_content
         assert not (tmp_path / "CODE_MAP.md.tmp").exists()
-        desc_cmd = mock_run.call_args.args[0]
+        desc_cmd = next(
+            call.args[0] for call in mock_run.call_args_list
+            if any("generate_descriptions.py" in str(part) for part in call.args[0])
+        )
         assert "--use-fingerprints" in desc_cmd
         assert "--refresh-dir" in desc_cmd
         assert "src" in desc_cmd
+        assert harness_shared.codemap_cache_path(tmp_path).read_text(encoding="utf-8") == new_content
 
     def test_desc_subprocess_timeout_accommodates_ai_timeout(self, tmp_path, monkeypatch):
         """The refresh subprocess cap must exceed the AI per-call budget it requests,
@@ -813,10 +821,14 @@ class TestDoMainBranchUpdate:
              patch.object(hm.subprocess, 'run', return_value=MagicMock(returncode=0)) as mock_run:
             hm.do_main_branch_update("test_project")
 
-        desc_cmd = mock_run.call_args.args[0]
+        desc_call = next(
+            call for call in mock_run.call_args_list
+            if any("generate_descriptions.py" in str(part) for part in call.args[0])
+        )
+        desc_cmd = desc_call.args[0]
         assert "--ai-timeout" in desc_cmd
         ai_timeout = int(desc_cmd[desc_cmd.index("--ai-timeout") + 1])
-        sub_timeout = mock_run.call_args.kwargs.get("timeout")
+        sub_timeout = desc_call.kwargs.get("timeout")
         assert sub_timeout is not None
         # Cap must cover one AI call PLUS its retry (max(ai_timeout, 240)), not just one call.
         assert sub_timeout >= ai_timeout + max(ai_timeout, 240)

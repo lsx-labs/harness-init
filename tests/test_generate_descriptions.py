@@ -14,6 +14,7 @@ from generate_descriptions import (
     gitnexus_query, MANUAL_MARKER, filter_generated_descriptions,
     batch_dirs, ai_generate_batched, build_quality_report, _run_ai_command,
 )
+import harness_shared
 from harness_shared import parse_codemap_entry
 
 
@@ -137,6 +138,16 @@ class TestWriteDescriptions:
         assert len(changes) == 1
         content = (tmp_path / "CODE_MAP.md").read_text()
         assert "Core business logic" in content
+
+    def test_write_updates_shared_cache(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(harness_shared, "CODEMAP_CACHE_ROOT", tmp_path / "cache")
+        (tmp_path / "CODE_MAP.md").write_text("### src/ (100 symbols)\n")
+
+        write_descriptions({"src": "Core business logic"})
+
+        cache = harness_shared.codemap_cache_path(tmp_path)
+        assert "Core business logic" in cache.read_text(encoding="utf-8")
 
     def test_write_sub_level(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)

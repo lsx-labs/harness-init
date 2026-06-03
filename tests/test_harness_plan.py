@@ -131,6 +131,30 @@ class TestPlanCodemap:
         assert result["action"] == "skip"
 
 
+class TestPlanCodemapLocalProjection:
+    def test_reports_tracked_codemap_migration_when_not_ignored(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        with patch.object(hp, "codemap_is_tracked", return_value=True), \
+             patch.object(hp, "codemap_is_ignored", return_value=False), \
+             patch.object(hp, "codemap_cache_path", return_value=Path("/tmp/cache/CODE_MAP.md")):
+            result = hp.plan_codemap_local_projection()
+
+        assert result["mode"] == "local_projection"
+        assert result["tracked"] is True
+        assert result["ignored"] is False
+        assert result["migration"] == "git_rm_cached"
+
+    def test_reports_ready_when_codemap_is_ignored_and_untracked(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        with patch.object(hp, "codemap_is_tracked", return_value=False), \
+             patch.object(hp, "codemap_is_ignored", return_value=True), \
+             patch.object(hp, "codemap_cache_path", return_value=Path("/tmp/cache/CODE_MAP.md")):
+            result = hp.plan_codemap_local_projection()
+
+        assert result["migration"] == "none"
+        assert result["cache_path"] == "/tmp/cache/CODE_MAP.md"
+
+
 class TestLiveSymbolCounts:
     def test_uses_gitnexus_symbols_for_nested_directories(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)

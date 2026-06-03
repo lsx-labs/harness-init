@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
@@ -80,6 +81,57 @@ class TestPathKey:
     def test_distinguishes_same_basename(self) -> None:
         # the whole point: two repos named "myproject" under different parents must not collide
         assert harness_shared.path_key("/home/x/myproject") != harness_shared.path_key("/home/y/myproject")
+
+
+class TestCodemapLocalProjection:
+    def test_cache_key_uses_git_common_dir_for_worktree_sharing(self, tmp_path, monkeypatch) -> None:
+        project = tmp_path / "repo" / "worktree"
+        project.mkdir(parents=True)
+        common = tmp_path / "repo" / ".git"
+        common.mkdir()
+        monkeypatch.setattr(harness_shared, "CODEMAP_CACHE_ROOT", tmp_path / "cache")
+
+        def fake_run(args, **kwargs):
+            assert args[:3] == ["git", "-C", str(project)]
+            return type("Result", (), {"returncode": 0, "stdout": str(common) + "\n"})()
+
+        with patch.object(harness_shared.subprocess, "run", side_effect=fake_run):
+            cache_path = harness_shared.codemap_cache_path(project)
+
+        assert cache_path == tmp_path / "cache" / harness_shared.path_key(common) / "CODE_MAP.md"
+
+    def test_materializes_missing_local_codemap_from_shared_cache(self, tmp_path, monkeypatch) -> None:
+        project = tmp_path / "repo"
+        project.mkdir()
+        monkeypatch.setattr(harness_shared, "CODEMAP_CACHE_ROOT", tmp_path / "cache")
+        cache = harness_shared.codemap_cache_path(project)
+        cache.parent.mkdir(parents=True)
+        cache.write_text("# Code Map\n\n### src/ — Cached\n", encoding="utf-8")
+
+        assert harness_shared.materialize_codemap_projection(project) is True
+
+        assert (project / "CODE_MAP.md").read_text(encoding="utf-8") == cache.read_text(encoding="utf-8")
+
+    def test_cache_codemap_projection_updates_shared_cache(self, tmp_path, monkeypatch) -> None:
+        project = tmp_path / "repo"
+        project.mkdir()
+        monkeypatch.setattr(harness_shared, "CODEMAP_CACHE_ROOT", tmp_path / "cache")
+        (project / "CODE_MAP.md").write_text("# Code Map\n\n### src/ — Local\n", encoding="utf-8")
+
+        assert harness_shared.cache_codemap_projection(project) is True
+
+        cache = harness_shared.codemap_cache_path(project)
+        assert cache.read_text(encoding="utf-8") == "# Code Map\n\n### src/ — Local\n"
+
+    def test_ensure_codemap_gitignore_appends_once(self, tmp_path) -> None:
+        (tmp_path / ".gitignore").write_text("dist/\n", encoding="utf-8")
+
+        assert harness_shared.ensure_codemap_gitignore(tmp_path) is True
+        assert harness_shared.ensure_codemap_gitignore(tmp_path) is False
+
+        text = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+        assert text.count("CODE_MAP.md") == 1
+        assert "Harness generated local projection" in text
 
 
 def test_codex_exec_sandbox_args_are_read_only_and_non_escalating() -> None:

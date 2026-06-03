@@ -36,6 +36,7 @@ from harness_shared import (
     parse_codemap as _parse_codemap,
     parse_gitnexus_markdown,
     read_dir_docstring,
+    cache_codemap_projection,
 )
 
 # GitNexus cypher queries run inside the background generator (not a hook response), so a
@@ -798,6 +799,7 @@ def write_descriptions(descriptions: dict[str, str]) -> list[dict]:
         tmp = codemap.with_suffix(codemap.suffix + ".tmp")
         tmp.write_text(content, encoding="utf-8")
         os.replace(tmp, codemap)
+        cache_codemap_projection(".", content)
     return changes
 
 

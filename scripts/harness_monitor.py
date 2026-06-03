@@ -33,7 +33,8 @@ from harness_shared import (STALE_THRESHOLD, SOURCE_EXTS, MAIN_BRANCHES,
                     should_skip, parse_codemap, is_acceptable_description,
                     needs_description_refresh, parse_gitnexus_markdown,
                     gitnexus_markdown_rows, map_areas_to_dirs, read_dir_docstring,
-                    path_key)
+                    path_key, cache_codemap_projection, ensure_codemap_gitignore,
+                    materialize_codemap_projection)
 
 # ── Config ──
 
@@ -512,6 +513,8 @@ def do_main_branch_update(project_id, job_id=None, *, require_main=True, expecte
 def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_branch=None):
     # Step 0: Ensure GitNexus index is fresh before reading community data
     ensure_gitnexus_fresh(job_id)
+    ensure_codemap_gitignore(".")
+    materialize_codemap_projection(".")
 
     codemap_file = Path("CODE_MAP.md")
     old_content = codemap_file.read_text(encoding="utf-8", errors="replace") if codemap_file.exists() else ""
@@ -530,6 +533,7 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
     entries_need_refresh = any(needs_description_refresh(e.get("desc") or "")
                                for e in parse_codemap(codemap_file))
     if new_content == old_content and not stale_dirs and not entries_need_refresh:
+        cache_codemap_projection(".")
         return
 
     # Re-check before mutating: the reindex + structure prelude above can run for a while, and we
@@ -541,6 +545,7 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
 
     if new_content != old_content:
         atomic_write_text(codemap_file, new_content)
+        cache_codemap_projection(".", new_content)
 
     # Step 2: Generate/refresh descriptions
     desc_script = None
@@ -560,6 +565,7 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
             subprocess.run(cmd, capture_output=True, text=True, timeout=CODEMAP_REFRESH_TIMEOUT)
         except (subprocess.TimeoutExpired, OSError):
             pass
+    cache_codemap_projection(".")
 
     # Step 3: Sync root CLAUDE.md ↔ AGENTS.md if both exist
     sync_platform_docs(".")

@@ -19,7 +19,8 @@ disable-model-invocation: true
 ├── ~/.local/share/harness-hooks/harness_monitor.py          ← PostToolUse Hook（CODE_MAP + 子目录 + 成长检测）
 ├── ~/.local/share/harness-hooks/generate_descriptions.py    ← CODE_MAP 描述生成（AI+GitNexus / fallback）
 ├── ~/.local/share/harness-hooks/session_context.py          ← SessionStart Hook（git 状态注入）
-└── 项目/CODE_MAP.md                                         ← 独立导航文件，两边引用
+├── ~/.local/share/harness-hooks/codemaps/<project>/CODE_MAP.md ← CODE_MAP 共享缓存
+└── 项目/CODE_MAP.md                                         ← ignored 本地投影，两边引用
 
 平台入口
 ├── ~/.claude/skills/harness-init/SKILL.md                   ← 本文件
@@ -30,7 +31,7 @@ disable-model-invocation: true
 
 - **渐进式构建**：根据实测复杂度信号判断，不提前堆叠
 - **多语言感知**：每种语言独立评估 LSP 价值
-- **跨平台对等**：CLAUDE.md / AGENTS.md 同时维护，CODE_MAP.md 共享
+- **跨平台对等**：CLAUDE.md / AGENTS.md 同时维护，CODE_MAP.md 以 harness cache 共享、worktree 本地投影
 - **实测优于拍数字**：grep 噪声度、类型覆盖率
 - **确定性执行**：Hook 通过 AI CLI（claude -p / codex exec）直接完成更新，不依赖概率性消息
 
@@ -52,6 +53,13 @@ python3 ~/.local/bin/harness-plan.py . --platform claude
   "doc_file": "CLAUDE.md",
   "root_doc": {"action": "copy", "from": "AGENTS.md"},
   "codemap": {"action": "refresh", "dirs_needing": ["src/core"]},
+  "codemap_local_projection": {
+    "mode": "local_projection",
+    "tracked": false,
+    "ignored": true,
+    "migration": "none",
+    "cache_path": "~/.local/share/harness-hooks/codemaps/.../CODE_MAP.md"
+  },
   "gitnexus": {"action": "analyze"},
   "subdirs": {
     "copy": [{"dir": "src/api", "from": "AGENTS.md"}],
@@ -97,7 +105,13 @@ python3 ~/.local/bin/harness-plan.py . --platform claude
 
 后台分支的返回 JSON 有三种 `status`：`started`（已派发，附 `job_id`，告知用户「CODE_MAP 描述已在后台生成，状态见 `jobs/<job_id>.json`」）、`already_running`（已有 worker 在跑，无需重复派发）、`error`（如 `not_a_git_repo`，回退到同步生成或提示用户）。
 
-> `--refresh-bg` 的 worker 跑：CODE_MAP 结构 → 描述 → 根文档同步（即耗时的 AI 部分），flock 锁保护、原子写，并**钉定到派发时的分支**（中途 `git checkout` 不会把刷新写到别的分支）。GitNexus `analyze` 已在 2.1 按 plan 同步完成（worker 内部的 `ensure_gitnexus_fresh` 只做一次幂等复查）。
+> `--refresh-bg` 的 worker 跑：CODE_MAP 结构 → 描述 → 共享缓存同步 → 根文档同步（即耗时的 AI 部分），flock 锁保护、原子写，并**钉定到派发时的分支**（中途 `git checkout` 不会把刷新写到别的分支）。GitNexus `analyze` 已在 2.1 按 plan 同步完成（worker 内部的 `ensure_gitnexus_fresh` 只做一次幂等复查）。
+
+CODE_MAP 存储模型：
+- `CODE_MAP.md` 是 ignored local projection，不应作为 tracked 文件提交。
+- 真实共享副本在 `~/.local/share/harness-hooks/codemaps/<project-key>/CODE_MAP.md`，`project-key` 基于 Git common dir，因此同一 repo 的 linked worktree 共享一份 cache。
+- SessionStart 发现当前 worktree 缺少 `CODE_MAP.md` 时，会从共享 cache materialize 一份本地投影；cache 不存在时仅跳过，不阻塞会话。
+- 如果 plan 的 `codemap_local_projection.tracked == true`，提示用户执行 `git rm --cached CODE_MAP.md` 后提交；后台 hook 不自动修改 git index。
 
 描述规则：
 1. 先识别目录类型：code_process / code_symbols / test / docs / example / artifact
@@ -115,7 +129,8 @@ python3 ~/.local/bin/harness-plan.py . --platform claude
 执行规则：
 - Hook 只调度后台 CODE_MAP job，不同步等待 GitNexus/AI
 - 后台 job 状态写入 `~/.local/share/harness-hooks/jobs/*.json`
-- CODE_MAP 写入使用临时文件 + 原子替换，失败时保留旧文件
+- CODE_MAP 本地投影写入使用临时文件 + 原子替换，失败时保留旧文件；写入后同步 harness cache
+- Hook 会确保 `.gitignore` 包含 `CODE_MAP.md`；若历史上已 tracked，仍需显式 `git rm --cached CODE_MAP.md`
 - AI+GitNexus 描述生成按小批次执行；后台 hook 固定用 `--ai-timeout 150`（手动 CLI 默认 `--batch-size 2 --ai-timeout 180`）
 - 失败或超时的 AI batch 会自动拆成单目录 retry（顺序执行），timeout 不低于 240 秒
 - 大项目可显式运行：`python3 ~/.local/share/harness-hooks/generate_descriptions.py . --generate --refresh-dir src/core --batch-size 2 --ai-timeout 180`
@@ -306,7 +321,7 @@ LSP 插件参考表：
 
 | 产出物 | 共享 | Claude Code | Codex |
 |---|---|---|---|
-| CODE_MAP.md | ✅ 一份 | @引用 | @引用 |
+| CODE_MAP.md | ✅ cache + ignored 投影 | @引用 | @引用 |
 | .gitnexus/ | ✅ 一份 | | |
 | Hook 脚本 | ✅ ~/.local/share/ | | |
 | CLAUDE.md | | ✅ 生成 | 可读 |
@@ -322,7 +337,7 @@ LSP 插件参考表：
 根 CLAUDE.md / AGENTS.md                            ← 手动维护
 子目录 手动区域（harness 标记外）                     ← 手动维护
 子目录 <!-- harness:start/end -->                    ← 自动生成
-CODE_MAP.md                                          ← 自动生成
+CODE_MAP.md                                          ← 自动生成的 ignored 本地投影
 ```
 
 ## 注意事项

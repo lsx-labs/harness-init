@@ -16,7 +16,8 @@ from pathlib import Path
 if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-from harness_shared import MAIN_BRANCHES, needs_description_refresh, parse_codemap, path_key
+from harness_shared import (MAIN_BRANCHES, materialize_codemap_projection,
+                            needs_description_refresh, parse_codemap, path_key)
 
 NOTIFY_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "notifications"
 
@@ -142,6 +143,7 @@ def read_pending_notifications() -> list[str]:
 
 
 def check_codemap_stale() -> str | None:
+    materialize_codemap_projection(".")
     codemap = Path("CODE_MAP.md")
     if not codemap.exists():
         return None

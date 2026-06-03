@@ -8,6 +8,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+import harness_shared
 from session_context import (
     run_git, get_branch, get_ahead_behind, get_dirty_files,
     get_recent_commits, check_gitnexus_stale, check_codemap_stale,
@@ -167,6 +168,17 @@ class TestCheckCodemapStale:
     def test_no_codemap(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         assert check_codemap_stale() is None
+
+    def test_materializes_missing_codemap_from_shared_cache(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(harness_shared, "CODEMAP_CACHE_ROOT", tmp_path / "cache")
+        cache = harness_shared.codemap_cache_path(tmp_path)
+        cache.parent.mkdir(parents=True)
+        cache.write_text("### src/ (100 symbols) — Core module\n", encoding="utf-8")
+
+        assert check_codemap_stale() is None
+
+        assert (tmp_path / "CODE_MAP.md").read_text(encoding="utf-8") == cache.read_text(encoding="utf-8")
 
     def test_has_stale(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)

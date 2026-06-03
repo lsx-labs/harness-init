@@ -22,6 +22,7 @@ from pathlib import Path
 
 from harness_shared import (MANUAL_MARKER, STALE_THRESHOLD, SYMBOL_THRESHOLD,
                     CODEMAP_BG_DIRS_THRESHOLD,
+                    codemap_cache_path, codemap_is_ignored, codemap_is_tracked,
                     gitnexus_markdown_rows, map_areas_to_dirs, needs_description_refresh,
                     parse_codemap, parse_gitnexus_markdown, platform_files)
 
@@ -66,6 +67,24 @@ def plan_codemap(entries: list[dict], live_counts: dict) -> dict:
     # large refresh → /harness-init hands it to a detached worker instead of blocking the turn
     return {"action": "refresh", "dirs_needing": needing,
             "background": len(needing) >= CODEMAP_BG_DIRS_THRESHOLD}
+
+
+def plan_codemap_local_projection(project_dir: str | Path = ".") -> dict:
+    """Report CODE_MAP.md local-projection state and any migration still needed."""
+    tracked = codemap_is_tracked(project_dir)
+    ignored = codemap_is_ignored(project_dir)
+    migration = "none"
+    if tracked:
+        migration = "git_rm_cached"
+    elif not ignored:
+        migration = "add_gitignore"
+    return {
+        "mode": "local_projection",
+        "tracked": tracked,
+        "ignored": ignored,
+        "migration": migration,
+        "cache_path": str(codemap_cache_path(project_dir)),
+    }
 
 
 _WRAPPER_FIX_REASONS = {
@@ -254,6 +273,7 @@ def main():
         "other_doc_file": other_file,
         "root_doc": plan_root_doc(own_file, other_file),
         "codemap": plan_codemap(entries, live_counts),
+        "codemap_local_projection": plan_codemap_local_projection("."),
         "gitnexus": plan_gitnexus(diagnostic),
         "subdirs": plan_subdirs(complex_dirs, own_file, other_file),
         "lsp": plan_lsp(diagnostic),
