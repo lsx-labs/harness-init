@@ -135,9 +135,15 @@ class TestWriteDescriptions:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "CODE_MAP.md").write_text("### src/ (100 symbols)\n")
         changes = write_descriptions({"src": "Core business logic"})
-        assert len(changes) == 1
-        content = (tmp_path / "CODE_MAP.md").read_text()
-        assert "Core business logic" in content
+        assert changes == [{"dir": "src", "desc": "Core business logic"}]
+        assert (tmp_path / "CODE_MAP.md").read_text() == "### src/ — Core business logic\n"
+
+    def test_write_top_level_with_existing_desc_removes_count(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text("### src/ (100 symbols) — Old desc\n")
+        changes = write_descriptions({"src": "New desc"})
+        assert changes == [{"dir": "src", "desc": "New desc"}]
+        assert (tmp_path / "CODE_MAP.md").read_text() == "### src/ — New desc\n"
 
     def test_write_updates_shared_cache(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -153,9 +159,8 @@ class TestWriteDescriptions:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "CODE_MAP.md").write_text("### src/ (100 symbols)\n- **api/** (50 symbols)\n")
         changes = write_descriptions({"src/api": "REST endpoints"})
-        assert len(changes) == 1
-        content = (tmp_path / "CODE_MAP.md").read_text()
-        assert "REST endpoints" in content
+        assert changes == [{"dir": "src/api", "desc": "REST endpoints"}]
+        assert "- **api/** — REST endpoints\n" in (tmp_path / "CODE_MAP.md").read_text()
 
     def test_skip_empty_desc(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -228,7 +233,7 @@ class TestWriteDescriptions:
         )
         changes = write_descriptions({"scripts/research/quantile_mvp": "分位数原型研究脚本"})
         assert changes == [{"dir": "scripts/research/quantile_mvp", "desc": "分位数原型研究脚本"}]
-        assert "- **research/quantile_mvp/** — 分位数原型研究脚本 (2 symbols)" in (
+        assert "- **research/quantile_mvp/** — 分位数原型研究脚本\n" in (
             tmp_path / "CODE_MAP.md"
         ).read_text()
 
@@ -1336,9 +1341,24 @@ class TestWriteDescriptionsSubLevel:
             "- **api/** — Old sub desc (50 symbols)\n"
         )
         changes = write_descriptions({"src/api": "New sub desc"})
-        assert len(changes) == 1
-        content = (tmp_path / "CODE_MAP.md").read_text()
-        assert "New sub desc" in content
+        assert changes == [{"dir": "src/api", "desc": "New sub desc"}]
+        assert (tmp_path / "CODE_MAP.md").read_text() == (
+            "### src/ (100 symbols) — Old desc\n"
+            "- **api/** — New sub desc\n"
+        )
+
+    def test_write_sub_with_count_before_existing_desc_removes_count(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text(
+            "### src/ (100 symbols) — Old desc\n"
+            "- **api/** (50 symbols) — Old sub desc\n"
+        )
+        changes = write_descriptions({"src/api": "New sub desc"})
+        assert changes == [{"dir": "src/api", "desc": "New sub desc"}]
+        assert (tmp_path / "CODE_MAP.md").read_text() == (
+            "### src/ (100 symbols) — Old desc\n"
+            "- **api/** — New sub desc\n"
+        )
 
     def test_skip_non_string_desc(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)

@@ -763,14 +763,10 @@ def write_descriptions(descriptions: dict[str, str]) -> list[dict]:
 
     def rewrite_line(line: str, desc: str) -> str:
         body, newline = split_newline(line)
-        count = ""
-        count_match = re.search(r'\s+(\(\d+\s+symbols?\))\s*$', body)
-        if count_match:
-            count = count_match.group(1)
-            body = body[:count_match.start()].rstrip()
+        body = re.sub(r'\s+\(\d+\s+symbols?\)\s*$', "", body).rstrip()
         base = body.split("—", 1)[0].rstrip()
-        suffix = f" {count}" if count else ""
-        return f"{base} — {desc}{suffix}{newline}"
+        base = re.sub(r'\s+\(\d+\s+symbols?\)\s*$', "", base).rstrip()
+        return f"{base} — {desc}{newline}"
 
     current_top = ""
     updated_lines = []
