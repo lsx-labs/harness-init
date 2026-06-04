@@ -7,7 +7,7 @@ Triggered via PostToolUse [Bash], only on git operations:
   - Git on main/master → background update:
     1. GitNexus reindex (if stale)
     2. CODE_MAP.md structure + descriptions (via generate_descriptions.py)
-    3. Root CLAUDE.md ↔ AGENTS.md sync (deterministic, mtime-based)
+    3. Root CLAUDE.md / AGENTS.md CODE_MAP block rendering
   - Growth check (GitNexus/LSP recommendations) runs on every git op, both branches.
     (Sub-directory constraint files are generated only by the manual /harness-init skill.)
 
@@ -35,7 +35,8 @@ from harness_shared import (STALE_THRESHOLD, SOURCE_EXTS, MAIN_BRANCHES,
                     parse_codemap_entry, gitnexus_markdown_rows, map_areas_to_dirs,
                     read_dir_docstring, path_key, cache_codemap_projection,
                     ensure_codemap_gitignore, materialize_codemap_projection,
-                    read_codemap_counts, write_codemap_counts)
+                    read_codemap_counts, write_codemap_counts,
+                    update_root_codemap_docs)
 
 # ── Config ──
 
@@ -510,7 +511,7 @@ def ensure_gitnexus_fresh(job_id=None):
 
 
 def do_main_branch_update(project_id, job_id=None, *, require_main=True, expected_branch=None):
-    """Heavy work: reindex → CODE_MAP structure → descriptions → root CLAUDE↔AGENTS sync.
+    """Heavy work: reindex → CODE_MAP structure → descriptions → root CODE_MAP doc blocks.
 
     Runs as a background process. The PostToolUse path passes require_main=True (only write on a
     main-like branch); the /harness-init skill path passes require_main=False + expected_branch
@@ -579,11 +580,14 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
     refresh_attempted = bool(stale_dirs) or entries_need_refresh
     if new_content == old_content and not stale_dirs and not entries_need_refresh:
         cache_codemap_projection(".")
-        if seed_counts and _branch_ok(require_main, expected_branch):
+        if not _branch_ok(require_main, expected_branch):
+            return
+        if seed_counts:
             write_codemap_counts(
                 ".",
                 merge_codemap_count_baseline(old_counts, new_counts, [], seed_missing=True),
             )
+        update_root_codemap_docs(".")
         return
 
     # Re-check before mutating: the reindex + structure prelude above can run for a while, and we
@@ -633,9 +637,7 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
                 seed_missing=seed_counts,
             ),
         )
-
-    # Step 3: Sync root CLAUDE.md ↔ AGENTS.md if both exist
-    sync_platform_docs(".")
+    update_root_codemap_docs(".")
 
 
 def _spawn_bg_worker(project_id, project_dir, bg_flag, extra_args=()) -> str:

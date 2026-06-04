@@ -693,9 +693,11 @@ class TestDoMainBranchUpdate:
              patch.object(hm, 'ensure_gitnexus_fresh'), \
              patch.object(hm, 'get_gitnexus_communities', return_value={"communities": "x"}), \
              patch.object(hm, 'build_codemap_structure', return_value=("# New\n", [], {})), \
+             patch.object(hm, 'update_root_codemap_docs') as root_docs, \
              patch.object(hm, 'sync_platform_docs') as sync:
             hm.do_main_branch_update("test_project", job_id="j_mid")
         assert (tmp_path / "CODE_MAP.md").read_text() == "# Old\n"  # not overwritten on feature branch
+        root_docs.assert_not_called()
         sync.assert_not_called()
 
     def test_skill_path_refreshes_on_dispatch_branch(self, tmp_path, monkeypatch):
@@ -779,7 +781,7 @@ class TestDoMainBranchUpdate:
 
     def test_no_changes_is_a_noop(self, tmp_path, monkeypatch):
         # byte-identical structure, no stale dirs, all descriptions acceptable → early return.
-        # The file must be left untouched and the mid-run write guard must never be reached.
+        # The CODE_MAP file is untouched, but root docs are still refreshed after the write guard.
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
         communities = {"scripts": {"symbols": 100, "clusters": 2}}
@@ -791,14 +793,70 @@ class TestDoMainBranchUpdate:
              patch.object(hm, 'read_codemap_counts', return_value={"scripts": 100}), \
              patch.object(hm, 'get_gitnexus_communities', return_value=communities), \
              patch.object(hm, 'build_codemap_structure', return_value=(content, [], {"scripts": 100})), \
+             patch.object(hm, 'update_root_codemap_docs') as root_docs, \
              patch.object(hm, 'sync_platform_docs') as sync:
             hm.do_main_branch_update("test_project")
 
         assert (tmp_path / "CODE_MAP.md").read_text() == content  # untouched
-        # the no-op early-return fires before the mid-run write guard, so branch is checked
-        # only once (at worker start), and the doc sync never runs
-        assert main_mock.call_count == 1
+        assert main_mock.call_count == 2
+        root_docs.assert_called_once_with(".")
         sync.assert_not_called()
+
+    def test_no_changes_updates_root_docs_after_cache_and_count_seed(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
+        content = "# Code Map\n\n### scripts/ (100 symbols) — Stable scripts\n"
+        (tmp_path / "CODE_MAP.md").write_text(content, encoding="utf-8")
+        events = []
+
+        with patch.object(hm, "ensure_gitnexus_fresh"), \
+             patch.object(hm, "materialize_codemap_projection"), \
+             patch.object(hm, "parse_existing_codemap", return_value=({"scripts": "Stable scripts"}, {})), \
+             patch.object(hm, "read_codemap_counts", return_value={}), \
+             patch.object(hm, "get_gitnexus_communities", return_value={"scripts": {"symbols": 100, "clusters": 2}}), \
+             patch.object(hm, "build_codemap_structure", return_value=(content, [], {"scripts": 100})), \
+             patch.object(hm, "cache_codemap_projection", side_effect=lambda *args, **kwargs: events.append("cache")), \
+             patch.object(hm, "write_codemap_counts", side_effect=lambda *args, **kwargs: events.append("counts")), \
+             patch.object(hm, "update_root_codemap_docs", side_effect=lambda *args, **kwargs: events.append("root_docs")) as root_docs:
+            hm._do_main_branch_update_inner(require_main=False)
+
+        assert events == ["cache", "counts", "root_docs"]
+        root_docs.assert_called_once_with(".")
+
+    def test_main_update_preserves_distinct_root_doc_surrounding_content(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
+        monkeypatch.setattr(harness_shared, 'CODEMAP_CACHE_ROOT', tmp_path / "cache")
+        old_content = "# Old Code Map\n"
+        new_content = "# Code Map\n\n### scripts/ (100 symbols) — Stable scripts\n"
+        (tmp_path / "CODE_MAP.md").write_text(old_content, encoding="utf-8")
+        (tmp_path / "CLAUDE.md").write_text(
+            "# Claude Rules\n\nKeep Claude-only guidance.\n\n@CODE_MAP.md\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "AGENTS.md").write_text(
+            "# Agent Rules\n\nKeep agent-only guidance.\n\n@CODE_MAP.md\n",
+            encoding="utf-8",
+        )
+        desc_script = tmp_path / "generate_descriptions.py"
+        desc_script.write_text("pass", encoding="utf-8")
+
+        with patch.object(hm, "is_on_main_branch", return_value=True), \
+             patch.object(hm, "ensure_gitnexus_fresh"), \
+             patch.object(hm, "get_gitnexus_communities", return_value={"scripts": {"symbols": 100, "clusters": 2}}), \
+             patch.object(hm, "build_codemap_structure", return_value=(new_content, [], {"scripts": 100})), \
+             patch.object(hm, "DESC_SCRIPT", desc_script), \
+             patch.object(hm.subprocess, "run", return_value=MagicMock(returncode=0)):
+            hm.do_main_branch_update("test_project")
+
+        claude = (tmp_path / "CLAUDE.md").read_text(encoding="utf-8")
+        agents = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+        assert "Keep Claude-only guidance." in claude
+        assert "Keep agent-only guidance." in agents
+        assert "Keep agent-only guidance." not in claude
+        assert "Keep Claude-only guidance." not in agents
+        assert "### scripts/ (100 symbols) — Stable scripts" in claude
+        assert "### scripts/ (100 symbols) — Stable scripts" in agents
 
     def test_full_update_with_descriptions(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -817,6 +875,7 @@ class TestDoMainBranchUpdate:
              patch.object(hm, 'get_gitnexus_communities', return_value=communities), \
              patch.object(hm, 'build_codemap_structure', return_value=(new_content, ["src"], {"src": 100})), \
              patch.object(hm, 'DESC_SCRIPT', desc_script), \
+             patch.object(hm, 'update_root_codemap_docs') as root_docs, \
              patch.object(hm.subprocess, 'run', return_value=MagicMock(returncode=0)) as mock_run:
             hm.do_main_branch_update("test_project")
 
@@ -830,6 +889,7 @@ class TestDoMainBranchUpdate:
         assert "--refresh-dir" in desc_cmd
         assert "src" in desc_cmd
         assert harness_shared.codemap_cache_path(tmp_path).read_text(encoding="utf-8") == new_content
+        root_docs.assert_called_once_with(".")
 
     def test_desc_subprocess_timeout_accommodates_ai_timeout(self, tmp_path, monkeypatch):
         """The refresh subprocess cap must exceed the AI per-call budget it requests,

@@ -28,6 +28,9 @@ LOW_CONFIDENCE_MARKER = "⚠️"
 CODEMAP_FILENAME = "CODE_MAP.md"
 CODEMAP_COUNTS_FILENAME = "CODE_MAP.counts.json"
 CODEMAP_CACHE_ROOT = Path.home() / ".local" / "share" / "harness-hooks" / "codemaps"
+CODEMAP_BLOCK_START = "<!-- codemap:start -->"
+CODEMAP_BLOCK_END = "<!-- codemap:end -->"
+ROOT_PLATFORM_DOCS = ("CLAUDE.md", "AGENTS.md")
 
 SOURCE_EXTS = {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".kt",
                ".rb", ".c", ".h", ".cpp", ".cs", ".swift", ".php"}
@@ -205,6 +208,54 @@ def materialize_codemap_projection(project_dir: str | Path = ".") -> bool:
     except OSError:
         return False
     return True
+
+
+def render_codemap_block(doc_text: str, codemap_text: str) -> str:
+    """Render CODE_MAP content as a managed block inside a root platform doc."""
+    managed_block = f"{CODEMAP_BLOCK_START}\n{codemap_text.strip()}\n{CODEMAP_BLOCK_END}"
+    section = f"## CODE_MAP\n\n{managed_block}"
+    pattern = re.compile(
+        rf"{re.escape(CODEMAP_BLOCK_START)}.*?{re.escape(CODEMAP_BLOCK_END)}",
+        re.DOTALL | re.MULTILINE,
+    )
+    if pattern.search(doc_text):
+        return pattern.sub(managed_block, doc_text, count=1)
+    if "@CODE_MAP.md" in doc_text:
+        return doc_text.replace("@CODE_MAP.md", section, 1)
+    suffix = "" if doc_text.endswith("\n") else "\n"
+    return f"{doc_text}{suffix}\n{section}\n"
+
+
+def update_root_codemap_docs(project_dir: str | Path = ".") -> dict[str, str]:
+    """Update root platform docs with the current local CODE_MAP projection."""
+    root = Path(project_dir)
+    codemap = root / CODEMAP_FILENAME
+    if not codemap.exists():
+        return {}
+    try:
+        codemap_text = codemap.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    results: dict[str, str] = {}
+    for name in ROOT_PLATFORM_DOCS:
+        path = root / name
+        if not path.exists():
+            continue
+        try:
+            old = path.read_text(encoding="utf-8", errors="replace")
+            new = render_codemap_block(old, codemap_text)
+        except OSError:
+            continue
+        if new != old:
+            try:
+                _atomic_write_text(path, new)
+            except OSError:
+                results[name] = "write_failed"
+                continue
+            results[name] = "updated"
+        else:
+            results[name] = "unchanged"
+    return results
 
 
 def codemap_is_ignored(project_dir: str | Path = ".") -> bool:

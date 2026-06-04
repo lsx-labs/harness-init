@@ -84,6 +84,72 @@ class TestPathKey:
 
 
 class TestCodemapLocalProjection:
+    def test_render_codemap_block_replaces_legacy_at_reference(self, tmp_path) -> None:
+        doc = "# Project\n\n@CODE_MAP.md\n"
+        codemap = "# Code Map\n\n### src/ — Core\n"
+
+        rendered = harness_shared.render_codemap_block(doc, codemap)
+
+        assert "@CODE_MAP.md" not in rendered
+        assert "<!-- codemap:start -->" in rendered
+        assert "### src/ — Core" in rendered
+
+    def test_render_codemap_block_updates_existing_block_without_touching_other_text(self) -> None:
+        doc = "# Project\n\nKeep this.\n\n<!-- codemap:start -->\nold\n<!-- codemap:end -->\n"
+        codemap = "# Code Map\n\n### src/ — Core\n"
+
+        rendered = harness_shared.render_codemap_block(doc, codemap)
+
+        assert "Keep this." in rendered
+        assert "old" not in rendered
+        assert rendered.count("<!-- codemap:start -->") == 1
+
+    def test_render_codemap_block_does_not_duplicate_existing_heading_with_intervening_text(self) -> None:
+        doc = (
+            "# Project\n\n"
+            "## CODE_MAP\n\n"
+            "This short note is outside the generated block.\n\n"
+            "<!-- codemap:start -->\nold\n<!-- codemap:end -->\n"
+        )
+        codemap = "# Code Map\n\n### src/ — Core\n"
+
+        rendered = harness_shared.render_codemap_block(doc, codemap)
+
+        assert rendered.count("## CODE_MAP") == 1
+        assert "This short note is outside the generated block." in rendered
+        assert "old" not in rendered
+        assert "### src/ — Core" in rendered
+
+    def test_update_root_codemap_docs_writes_both_docs_when_changed(self, tmp_path) -> None:
+        (tmp_path / "CODE_MAP.md").write_text("# Code Map\n\n### src/ — Core\n", encoding="utf-8")
+        (tmp_path / "CLAUDE.md").write_text("# Project\n\n@CODE_MAP.md\n", encoding="utf-8")
+        (tmp_path / "AGENTS.md").write_text("# Project\n\n@CODE_MAP.md\n", encoding="utf-8")
+
+        result = harness_shared.update_root_codemap_docs(tmp_path)
+
+        assert result == {"CLAUDE.md": "updated", "AGENTS.md": "updated"}
+        assert "### src/ — Core" in (tmp_path / "CLAUDE.md").read_text(encoding="utf-8")
+        assert "### src/ — Core" in (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+
+    def test_update_root_codemap_docs_contains_single_doc_write_failure(self, tmp_path) -> None:
+        (tmp_path / "CODE_MAP.md").write_text("# Code Map\n\n### src/ — Core\n", encoding="utf-8")
+        (tmp_path / "CLAUDE.md").write_text("# Project\n\n@CODE_MAP.md\n", encoding="utf-8")
+        (tmp_path / "AGENTS.md").write_text("# Project\n\n@CODE_MAP.md\n", encoding="utf-8")
+
+        original_write = harness_shared._atomic_write_text
+
+        def flaky_write(path, content):
+            if path.name == "CLAUDE.md":
+                raise OSError("read-only")
+            original_write(path, content)
+
+        with patch.object(harness_shared, "_atomic_write_text", side_effect=flaky_write):
+            result = harness_shared.update_root_codemap_docs(tmp_path)
+
+        assert result == {"CLAUDE.md": "write_failed", "AGENTS.md": "updated"}
+        assert "@CODE_MAP.md" in (tmp_path / "CLAUDE.md").read_text(encoding="utf-8")
+        assert "### src/ — Core" in (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+
     def test_cache_key_uses_git_common_dir_for_worktree_sharing(self, tmp_path, monkeypatch) -> None:
         project = tmp_path / "repo" / "worktree"
         project.mkdir(parents=True)
