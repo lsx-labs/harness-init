@@ -224,6 +224,7 @@ def build_codemap_structure(communities, existing_descs, old_counts):
              "> Auto-generated from GitNexus. Descriptions maintained by AI + GitNexus or 📌 manual.", ""]
 
     stale_dirs = []
+    counts = {}
     top_dirs = {}
     for area, info in sorted(communities.items(), key=lambda x: -x[1]["symbols"]):
         dir_path = area_to_dir.get(area)
@@ -236,6 +237,7 @@ def build_codemap_structure(communities, existing_descs, old_counts):
     for top_dir in sorted(top_dirs):
         entries = top_dirs[top_dir]
         total_syms = sum(e[1] for e in entries)
+        counts[top_dir] = total_syms
         desc = existing_descs.get(top_dir, "")
 
         # Check staleness
@@ -244,9 +246,9 @@ def build_codemap_structure(communities, existing_descs, old_counts):
             stale_dirs.append(top_dir)
 
         if desc:
-            lines.append(f"### {top_dir}/ ({total_syms} symbols) — {desc}")
+            lines.append(f"### {top_dir}/ — {desc}")
         else:
-            lines.append(f"### {top_dir}/ ({total_syms} symbols)")
+            lines.append(f"### {top_dir}/")
 
         # List sub-dirs: GitNexus communities first
         covered_subs = set()
@@ -254,14 +256,15 @@ def build_codemap_structure(communities, existing_descs, old_counts):
             if sub:
                 covered_subs.add(sub.split("/")[0] if "/" in sub else sub)
                 sub_key = f"{top_dir}/{sub}"
+                counts[sub_key] = syms
                 sub_desc = existing_descs.get(sub_key, "")
                 sub_old = old_counts.get(sub_key, 0)
                 if sub_desc and sub_old > 0 and abs(syms - sub_old) / sub_old >= STALE_THRESHOLD:
                     stale_dirs.append(sub_key)
                 if sub_desc:
-                    lines.append(f"- **{sub}/** — {sub_desc} ({syms} symbols)")
+                    lines.append(f"- **{sub}/** — {sub_desc}")
                 else:
-                    lines.append(f"- **{sub}/** ({syms} symbols)")
+                    lines.append(f"- **{sub}/**")
 
         # Append uncovered sub-dirs (e.g., a nested core/ inside a top-level package)
         try:
@@ -305,7 +308,7 @@ def build_codemap_structure(communities, existing_descs, old_counts):
     except OSError:
         pass
 
-    return "\n".join(lines) + "\n", stale_dirs
+    return "\n".join(lines) + "\n", stale_dirs, counts
 
 
 # ══════════════════════════════════════════════════════════

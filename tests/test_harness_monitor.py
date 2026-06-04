@@ -344,10 +344,38 @@ class TestBuildCodemapStructure:
         }
         area_to_dir = {"auth": "src/auth", "core": "src/core"}
         with patch.object(hm, 'build_area_to_dir', return_value=area_to_dir):
-            content, stale = hm.build_codemap_structure(communities, {}, {})
+            content, stale, _ = hm.build_codemap_structure(communities, {}, {})
             assert "### src/" in content
             assert "**auth/**" in content or "**core/**" in content
             assert stale == []
+
+    def test_build_codemap_structure_omits_symbol_counts(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        communities = {"auth": {"symbols": 100, "clusters": 3}}
+        area_to_dir = {"auth": "src/auth"}
+
+        with patch.object(hm, "build_area_to_dir", return_value=area_to_dir):
+            content, stale, counts = hm.build_codemap_structure(communities, {}, {})
+
+        assert "(100 symbols)" not in content
+        assert "### src/" in content
+        assert "- **auth/**" in content
+        assert counts == {"src": 100, "src/auth": 100}
+
+    def test_build_codemap_structure_uses_sidecar_old_counts_for_stale(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        communities = {"auth": {"symbols": 200, "clusters": 3}}
+        area_to_dir = {"auth": "src/auth"}
+
+        with patch.object(hm, "build_area_to_dir", return_value=area_to_dir):
+            _, stale, counts = hm.build_codemap_structure(
+                communities,
+                {"src": "Old desc"},
+                {"src": 100},
+            )
+
+        assert "src" in stale
+        assert counts["src"] == 200
 
     def test_preserves_existing_desc(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -355,7 +383,7 @@ class TestBuildCodemapStructure:
         area_to_dir = {"auth": "src/auth"}
         existing_descs = {"src": "Source code"}
         with patch.object(hm, 'build_area_to_dir', return_value=area_to_dir):
-            content, _ = hm.build_codemap_structure(communities, existing_descs, {})
+            content, _, _ = hm.build_codemap_structure(communities, existing_descs, {})
             assert "Source code" in content
 
     def test_detects_stale_top_level(self, tmp_path, monkeypatch):
@@ -365,7 +393,7 @@ class TestBuildCodemapStructure:
         existing_descs = {"src": "Old desc"}
         old_counts = {"src": 100}  # 200 vs 100 → 100% change > 20%
         with patch.object(hm, 'build_area_to_dir', return_value=area_to_dir):
-            _, stale = hm.build_codemap_structure(communities, existing_descs, old_counts)
+            _, stale, _ = hm.build_codemap_structure(communities, existing_descs, old_counts)
             assert "src" in stale
 
     def test_detects_stale_sub_level(self, tmp_path, monkeypatch):
@@ -375,14 +403,14 @@ class TestBuildCodemapStructure:
         existing_descs = {"src/auth": "Auth module"}
         old_counts = {"src/auth": 100}  # 200 vs 100 → stale
         with patch.object(hm, 'build_area_to_dir', return_value=area_to_dir):
-            _, stale = hm.build_codemap_structure(communities, existing_descs, old_counts)
+            _, stale, _ = hm.build_codemap_structure(communities, existing_descs, old_counts)
             assert "src/auth" in stale
 
     def test_no_dir_mapping_skipped(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         communities = {"unmapped": {"symbols": 50, "clusters": 1}}
         with patch.object(hm, 'build_area_to_dir', return_value={}):
-            content, stale = hm.build_codemap_structure(communities, {}, {})
+            content, stale, _ = hm.build_codemap_structure(communities, {}, {})
             assert "unmapped" not in content
 
     def test_top_level_only(self, tmp_path, monkeypatch):
@@ -391,7 +419,7 @@ class TestBuildCodemapStructure:
         communities = {"scripts": {"symbols": 150, "clusters": 2}}
         area_to_dir = {"scripts": "scripts"}
         with patch.object(hm, 'build_area_to_dir', return_value=area_to_dir):
-            content, stale = hm.build_codemap_structure(communities, {}, {})
+            content, stale, _ = hm.build_codemap_structure(communities, {}, {})
             assert "### scripts/" in content
 
 
@@ -1281,7 +1309,7 @@ class TestBuildCodemapStructureWithUncovered:
 
         communities = {"Src": {"symbols": 100, "clusters": 5}}
         with patch.object(hm, 'build_area_to_dir', return_value={"Src": "src"}):
-            content, stale = hm.build_codemap_structure(communities, {}, {})
+            content, stale, _ = hm.build_codemap_structure(communities, {}, {})
 
         assert "### src/" in content
         assert "### docs/" in content
@@ -1343,7 +1371,7 @@ class TestCoverageGaps:
         (core / "README.md").write_text("# Core\n\nCore module for everything.\n")
         communities = {"Src": {"symbols": 50, "clusters": 1}}
         with patch.object(hm, 'build_area_to_dir', return_value={"Src": "src"}):
-            content, _ = hm.build_codemap_structure(communities, {}, {})
+            content, _, _ = hm.build_codemap_structure(communities, {}, {})
         assert "core" in content
         assert "Core module" in content
 
@@ -1357,7 +1385,7 @@ class TestCoverageGaps:
         (api / "README.md").write_text("# API\n\nAPI documentation.\n")
         communities = {}
         with patch.object(hm, 'build_area_to_dir', return_value={}):
-            content, _ = hm.build_codemap_structure(communities, {}, {})
+            content, _, _ = hm.build_codemap_structure(communities, {}, {})
         assert "### docs/" in content
         assert "api" in content
 
