@@ -100,6 +100,132 @@ class TestCodemapLocalProjection:
 
         assert cache_path == tmp_path / "cache" / harness_shared.path_key(common) / "CODE_MAP.md"
 
+    def test_codemap_counts_cache_path_shares_codemap_cache_key(self, tmp_path, monkeypatch) -> None:
+        project = tmp_path / "repo"
+        project.mkdir()
+        common = project / ".git"
+        common.mkdir()
+        monkeypatch.setattr(harness_shared, "CODEMAP_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(harness_shared, "_git_common_dir", lambda project_dir=".": common)
+
+        path = harness_shared.codemap_counts_cache_path(project)
+
+        assert path == tmp_path / "cache" / harness_shared.path_key(common) / "CODE_MAP.counts.json"
+
+    def test_read_write_codemap_counts_round_trip(self, tmp_path, monkeypatch) -> None:
+        project = tmp_path / "repo"
+        project.mkdir()
+        monkeypatch.setattr(harness_shared, "CODEMAP_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(harness_shared, "_git_common_dir", lambda project_dir=".": project / ".git")
+
+        assert harness_shared.write_codemap_counts(project, {"src": 10, "src/api": 3}) is True
+        assert harness_shared.read_codemap_counts(project) == {"src": 10, "src/api": 3}
+
+    def test_read_codemap_counts_accepts_legacy_counts_key(self, tmp_path, monkeypatch) -> None:
+        project = tmp_path / "repo"
+        project.mkdir()
+        monkeypatch.setattr(harness_shared, "CODEMAP_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(harness_shared, "_git_common_dir", lambda project_dir=".": project / ".git")
+        cache = harness_shared.codemap_counts_cache_path(project)
+        cache.parent.mkdir(parents=True)
+        cache.write_text('{"schema_version": 1, "counts": {"src": 10}}\n', encoding="utf-8")
+
+        assert harness_shared.read_codemap_counts(project) == {"src": 10}
+
+    def test_read_codemap_counts_wrong_top_level_json_shape_returns_empty(self, tmp_path, monkeypatch) -> None:
+        project = tmp_path / "repo"
+        project.mkdir()
+        monkeypatch.setattr(harness_shared, "CODEMAP_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(harness_shared, "_git_common_dir", lambda project_dir=".": project / ".git")
+        cache = harness_shared.codemap_counts_cache_path(project)
+        cache.parent.mkdir(parents=True)
+
+        for content in ("[]\n", "null\n", '"counts"\n'):
+            cache.write_text(content, encoding="utf-8")
+            assert harness_shared.read_codemap_counts(project) == {}
+
+    def test_read_codemap_counts_nested_malformed_shape_returns_empty(self, tmp_path, monkeypatch) -> None:
+        project = tmp_path / "repo"
+        project.mkdir()
+        monkeypatch.setattr(harness_shared, "CODEMAP_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(harness_shared, "_git_common_dir", lambda project_dir=".": project / ".git")
+        cache = harness_shared.codemap_counts_cache_path(project)
+        cache.parent.mkdir(parents=True)
+
+        for payload in ({"described_counts": []}, {"described_counts": None}):
+            cache.write_text(json.dumps(payload), encoding="utf-8")
+            assert harness_shared.read_codemap_counts(project) == {}
+
+    def test_read_codemap_counts_ignores_empty_normalized_keys(self, tmp_path, monkeypatch) -> None:
+        project = tmp_path / "repo"
+        project.mkdir()
+        monkeypatch.setattr(harness_shared, "CODEMAP_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(harness_shared, "_git_common_dir", lambda project_dir=".": project / ".git")
+        cache = harness_shared.codemap_counts_cache_path(project)
+        cache.parent.mkdir(parents=True)
+        cache.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "described_counts": {
+                    "/": 7,
+                    "///": 8,
+                    "/src/": 2,
+                },
+            }),
+            encoding="utf-8",
+        )
+
+        assert harness_shared.read_codemap_counts(project) == {"src": 2}
+
+    def test_read_codemap_counts_ignores_bool_negative_and_non_integer_values(self, tmp_path, monkeypatch) -> None:
+        project = tmp_path / "repo"
+        project.mkdir()
+        monkeypatch.setattr(harness_shared, "CODEMAP_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(harness_shared, "_git_common_dir", lambda project_dir=".": project / ".git")
+        cache = harness_shared.codemap_counts_cache_path(project)
+        cache.parent.mkdir(parents=True)
+        cache.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "described_counts": {
+                    "src": 10,
+                    "flag": True,
+                    "disabled": False,
+                    "negative": -1,
+                    "float": 2.5,
+                    "string": "3",
+                },
+            }),
+            encoding="utf-8",
+        )
+
+        assert harness_shared.read_codemap_counts(project) == {"src": 10}
+
+    def test_write_codemap_counts_ignores_bool_values(self, tmp_path, monkeypatch) -> None:
+        project = tmp_path / "repo"
+        project.mkdir()
+        monkeypatch.setattr(harness_shared, "CODEMAP_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(harness_shared, "_git_common_dir", lambda project_dir=".": project / ".git")
+
+        assert harness_shared.write_codemap_counts(project, {"src": 10, "flag": True, "disabled": False}) is True
+
+        cache = harness_shared.codemap_counts_cache_path(project)
+        payload = json.loads(cache.read_text(encoding="utf-8"))
+        assert payload["described_counts"] == {"src": 10}
+
+    def test_write_codemap_counts_returns_false_when_atomic_write_fails(self, tmp_path, monkeypatch) -> None:
+        project = tmp_path / "repo"
+        project.mkdir()
+        monkeypatch.setattr(harness_shared, "CODEMAP_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(harness_shared, "_git_common_dir", lambda project_dir=".": project / ".git")
+
+        def fail_write(path, content) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(harness_shared, "_atomic_write_text", fail_write)
+
+        assert harness_shared.write_codemap_counts(project, {"src": 10}) is False
+
     def test_materializes_missing_local_codemap_from_shared_cache(self, tmp_path, monkeypatch) -> None:
         project = tmp_path / "repo"
         project.mkdir()

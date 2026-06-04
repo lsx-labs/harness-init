@@ -26,6 +26,7 @@ CODEMAP_BG_DIRS_THRESHOLD = 6
 MANUAL_MARKER = "📌"
 LOW_CONFIDENCE_MARKER = "⚠️"
 CODEMAP_FILENAME = "CODE_MAP.md"
+CODEMAP_COUNTS_FILENAME = "CODE_MAP.counts.json"
 CODEMAP_CACHE_ROOT = Path.home() / ".local" / "share" / "harness-hooks" / "codemaps"
 
 SOURCE_EXTS = {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".kt",
@@ -110,6 +111,13 @@ def codemap_cache_path(project_dir: str | Path = ".") -> Path:
     return CODEMAP_CACHE_ROOT / cache_key / CODEMAP_FILENAME
 
 
+def codemap_counts_cache_path(project_dir: str | Path = ".") -> Path:
+    """Shared CODE_MAP count sidecar path for a repo."""
+    common = _git_common_dir(project_dir)
+    cache_key = path_key(common if common is not None else project_dir)
+    return CODEMAP_CACHE_ROOT / cache_key / CODEMAP_COUNTS_FILENAME
+
+
 def _atomic_write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
@@ -136,6 +144,48 @@ def cache_codemap_projection(project_dir: str | Path = ".", content: str | None 
             return False
     try:
         _atomic_write_text(codemap_cache_path(root), content)
+    except OSError:
+        return False
+    return True
+
+
+def read_codemap_counts(project_dir: str | Path = ".") -> dict[str, int]:
+    """Read description-baseline CODE_MAP symbol counts from the shared sidecar cache."""
+    path = codemap_counts_cache_path(project_dir)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    counts = data.get("described_counts", data.get("counts", {}))
+    if not isinstance(counts, dict):
+        return {}
+    result: dict[str, int] = {}
+    for key, value in counts.items():
+        if isinstance(key, str) and isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            clean_key = key.strip("/")
+            if clean_key:
+                result[clean_key] = value
+    return result
+
+
+def write_codemap_counts(project_dir: str | Path = ".", counts: dict[str, int] | None = None) -> bool:
+    """Persist description-baseline CODE_MAP symbol counts into the shared sidecar cache."""
+    clean_counts = {
+        str(key).strip("/"): int(value)
+        for key, value in (counts or {}).items()
+        if str(key).strip("/") and isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    }
+    payload = {
+        "schema_version": 1,
+        "described_counts": dict(sorted(clean_counts.items())),
+    }
+    try:
+        _atomic_write_text(
+            codemap_counts_cache_path(project_dir),
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        )
     except OSError:
         return False
     return True
