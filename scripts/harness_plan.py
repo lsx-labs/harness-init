@@ -24,7 +24,8 @@ from harness_shared import (MANUAL_MARKER, STALE_THRESHOLD, SYMBOL_THRESHOLD,
                     CODEMAP_BG_DIRS_THRESHOLD,
                     codemap_cache_path, codemap_is_ignored, codemap_is_tracked,
                     gitnexus_markdown_rows, map_areas_to_dirs, needs_description_refresh,
-                    parse_codemap, parse_gitnexus_markdown, platform_files)
+                    parse_codemap, parse_gitnexus_markdown, platform_files,
+                    read_codemap_counts)
 
 
 def plan_root_doc(own_file: str, other_file: str) -> dict:
@@ -264,6 +265,10 @@ def main():
             pass
 
     entries = parse_codemap(Path("CODE_MAP.md"))
+    recorded_counts = read_codemap_counts(".")
+    if recorded_counts:
+        for entry in entries:
+            entry["symbols"] = recorded_counts.get(entry["dir"])
     live_counts = _get_live_symbol_counts()
     complex_dirs = find_complex_dirs(entries)
 

@@ -692,7 +692,7 @@ class TestDoMainBranchUpdate:
         with patch.object(hm, 'is_on_main_branch', side_effect=[True, False]), \
              patch.object(hm, 'ensure_gitnexus_fresh'), \
              patch.object(hm, 'get_gitnexus_communities', return_value={"communities": "x"}), \
-             patch.object(hm, 'build_codemap_structure', return_value=("# New\n", [])), \
+             patch.object(hm, 'build_codemap_structure', return_value=("# New\n", [], {})), \
              patch.object(hm, 'sync_platform_docs') as sync:
             hm.do_main_branch_update("test_project", job_id="j_mid")
         assert (tmp_path / "CODE_MAP.md").read_text() == "# Old\n"  # not overwritten on feature branch
@@ -708,7 +708,7 @@ class TestDoMainBranchUpdate:
         with patch.object(hm, '_current_branch', return_value="feature/x"), \
              patch.object(hm, 'ensure_gitnexus_fresh'), \
              patch.object(hm, 'get_gitnexus_communities', return_value={"x": 1}), \
-             patch.object(hm, 'build_codemap_structure', return_value=("# New\n", [])), \
+             patch.object(hm, 'build_codemap_structure', return_value=("# New\n", [], {})), \
              patch.object(hm, 'sync_platform_docs'):
             hm.do_main_branch_update("test_project", job_id="j",
                                      require_main=False, expected_branch="feature/x")
@@ -724,7 +724,7 @@ class TestDoMainBranchUpdate:
         with patch.object(hm, '_current_branch', side_effect=["feature/x", "feature/y"]), \
              patch.object(hm, 'ensure_gitnexus_fresh'), \
              patch.object(hm, 'get_gitnexus_communities', return_value={"x": 1}), \
-             patch.object(hm, 'build_codemap_structure', return_value=("# New\n", [])), \
+             patch.object(hm, 'build_codemap_structure', return_value=("# New\n", [], {})), \
              patch.object(hm, 'sync_platform_docs') as sync:
             hm.do_main_branch_update("test_project", job_id="j",
                                      require_main=False, expected_branch="feature/x")
@@ -743,7 +743,7 @@ class TestDoMainBranchUpdate:
         with patch.object(hm, 'is_on_main_branch', return_value=True), \
              patch.object(hm, 'ensure_gitnexus_fresh'), \
              patch.object(hm, 'get_gitnexus_communities', return_value={"src": {"symbols": 100, "clusters": 1}}), \
-             patch.object(hm, 'build_codemap_structure', return_value=(content, [])), \
+             patch.object(hm, 'build_codemap_structure', return_value=(content, [], {"src": 100})), \
              patch.object(hm, 'DESC_SCRIPT', desc_script), \
              patch.object(hm.subprocess, 'run', return_value=MagicMock(returncode=0)) as mock_run:
             hm.do_main_branch_update("test_project")
@@ -788,8 +788,9 @@ class TestDoMainBranchUpdate:
 
         with patch.object(hm, 'is_on_main_branch', return_value=True) as main_mock, \
              patch.object(hm, 'ensure_gitnexus_fresh'), \
+             patch.object(hm, 'read_codemap_counts', return_value={"scripts": 100}), \
              patch.object(hm, 'get_gitnexus_communities', return_value=communities), \
-             patch.object(hm, 'build_codemap_structure', return_value=(content, [])), \
+             patch.object(hm, 'build_codemap_structure', return_value=(content, [], {"scripts": 100})), \
              patch.object(hm, 'sync_platform_docs') as sync:
             hm.do_main_branch_update("test_project")
 
@@ -814,7 +815,7 @@ class TestDoMainBranchUpdate:
         with patch.object(hm, 'is_on_main_branch', return_value=True), \
              patch.object(hm, 'ensure_gitnexus_fresh'), \
              patch.object(hm, 'get_gitnexus_communities', return_value=communities), \
-             patch.object(hm, 'build_codemap_structure', return_value=(new_content, ["src"])), \
+             patch.object(hm, 'build_codemap_structure', return_value=(new_content, ["src"], {"src": 100})), \
              patch.object(hm, 'DESC_SCRIPT', desc_script), \
              patch.object(hm.subprocess, 'run', return_value=MagicMock(returncode=0)) as mock_run:
             hm.do_main_branch_update("test_project")
@@ -844,7 +845,7 @@ class TestDoMainBranchUpdate:
         with patch.object(hm, 'is_on_main_branch', return_value=True), \
              patch.object(hm, 'ensure_gitnexus_fresh'), \
              patch.object(hm, 'get_gitnexus_communities', return_value=communities), \
-             patch.object(hm, 'build_codemap_structure', return_value=(new_content, ["src"])), \
+             patch.object(hm, 'build_codemap_structure', return_value=(new_content, ["src"], {"src": 100})), \
              patch.object(hm, 'DESC_SCRIPT', desc_script), \
              patch.object(hm.subprocess, 'run', return_value=MagicMock(returncode=0)) as mock_run:
             hm.do_main_branch_update("test_project")
@@ -871,10 +872,198 @@ class TestDoMainBranchUpdate:
         with patch.object(hm, 'is_on_main_branch', return_value=True), \
              patch.object(hm, 'ensure_gitnexus_fresh'), \
              patch.object(hm, 'get_gitnexus_communities', return_value=communities), \
-             patch.object(hm, 'build_codemap_structure', return_value=(new_content, [])):
+             patch.object(hm, 'build_codemap_structure', return_value=(new_content, [], {"src": 100})):
             hm.do_main_branch_update("test_project")
 
         assert (tmp_path / "CODE_MAP.md").read_text() == new_content
+
+    def test_main_update_does_not_advance_count_baseline_for_small_count_only_drift(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".gitnexus").mkdir()
+        content = "# Code Map\n\n### src/ — Stable desc\n"
+        (tmp_path / "CODE_MAP.md").write_text(content, encoding="utf-8")
+
+        with patch.object(hm, "ensure_gitnexus_fresh"), \
+             patch.object(hm, "materialize_codemap_projection"), \
+             patch.object(hm, "parse_existing_codemap", return_value=({"src": "Stable desc"}, {})), \
+             patch.object(hm, "read_codemap_counts", return_value={"src": 100}), \
+             patch.object(hm, "get_gitnexus_communities", return_value={"src": {"symbols": 105, "clusters": 1}}), \
+             patch.object(hm, "build_codemap_structure", return_value=(content, [], {"src": 105})), \
+             patch.object(hm, "cache_codemap_projection"), \
+             patch.object(hm, "write_codemap_counts") as write_counts:
+            hm._do_main_branch_update_inner(require_main=False)
+
+        write_counts.assert_not_called()
+
+    def test_main_update_seeds_count_baseline_when_sidecar_is_missing(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".gitnexus").mkdir()
+        content = "# Code Map\n\n### src/ — Stable desc\n"
+        (tmp_path / "CODE_MAP.md").write_text(content, encoding="utf-8")
+
+        with patch.object(hm, "ensure_gitnexus_fresh"), \
+             patch.object(hm, "materialize_codemap_projection"), \
+             patch.object(hm, "parse_existing_codemap", return_value=({"src": "Stable desc"}, {})), \
+             patch.object(hm, "read_codemap_counts", return_value={}), \
+             patch.object(hm, "get_gitnexus_communities", return_value={"src": {"symbols": 105, "clusters": 1}}), \
+             patch.object(hm, "build_codemap_structure", return_value=(content, [], {"src": 105})), \
+             patch.object(hm, "cache_codemap_projection"), \
+             patch.object(hm, "write_codemap_counts") as write_counts:
+            hm._do_main_branch_update_inner(require_main=False)
+
+        write_counts.assert_called_once_with(".", {"src": 105})
+
+    def test_main_update_does_not_seed_missing_sidecar_when_forced_description_refresh_fails(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".gitnexus").mkdir()
+        content = "# Code Map\n\n### src/\n"
+        (tmp_path / "CODE_MAP.md").write_text(content, encoding="utf-8")
+        desc_script = tmp_path / "generate_descriptions.py"
+        desc_script.write_text("pass", encoding="utf-8")
+
+        with patch.object(hm, "ensure_gitnexus_fresh"), \
+             patch.object(hm, "materialize_codemap_projection"), \
+             patch.object(hm, "parse_existing_codemap", return_value=({"src": ""}, {})), \
+             patch.object(hm, "read_codemap_counts", return_value={}), \
+             patch.object(hm, "get_gitnexus_communities", return_value={"src": {"symbols": 105, "clusters": 1}}), \
+             patch.object(hm, "build_codemap_structure", return_value=(content, [], {"src": 105})), \
+             patch.object(hm, "ensure_codemap_gitignore"), \
+             patch.object(hm, "cache_codemap_projection"), \
+             patch.object(hm, "write_codemap_counts") as write_counts, \
+             patch.object(hm, "sync_platform_docs"), \
+             patch.object(hm, "DESC_SCRIPT", desc_script), \
+             patch.object(hm.subprocess, "run") as run:
+            run.return_value.returncode = 1
+            hm._do_main_branch_update_inner(require_main=False)
+
+        write_counts.assert_not_called()
+
+    def test_main_update_does_not_seed_missing_sidecar_when_new_entry_needs_refresh_without_desc_script(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".gitnexus").mkdir()
+        old_content = "# Code Map\n"
+        new_content = "# Code Map\n\n### src/\n"
+        (tmp_path / "CODE_MAP.md").write_text(old_content, encoding="utf-8")
+        original_exists = Path.exists
+
+        def fake_exists(path):
+            if path.name == "generate_descriptions.py":
+                return False
+            return original_exists(path)
+
+        with patch.object(hm, "ensure_gitnexus_fresh"), \
+             patch.object(hm, "materialize_codemap_projection"), \
+             patch.object(hm, "parse_existing_codemap", return_value=({}, {})), \
+             patch.object(hm, "read_codemap_counts", return_value={}), \
+             patch.object(hm, "get_gitnexus_communities", return_value={"src": {"symbols": 105, "clusters": 1}}), \
+             patch.object(hm, "build_codemap_structure", return_value=(new_content, [], {"src": 105})), \
+             patch.object(hm, "ensure_codemap_gitignore"), \
+             patch.object(hm, "cache_codemap_projection"), \
+             patch.object(hm, "write_codemap_counts") as write_counts, \
+             patch.object(hm, "sync_platform_docs"), \
+             patch.object(hm, "DESC_SCRIPT", tmp_path / "missing_generate_descriptions.py"), \
+             patch.object(Path, "exists", fake_exists):
+            hm._do_main_branch_update_inner(require_main=False)
+
+        write_counts.assert_not_called()
+
+    def test_main_update_does_not_seed_missing_sidecar_when_new_entry_refresh_times_out(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".gitnexus").mkdir()
+        old_content = "# Code Map\n"
+        new_content = "# Code Map\n\n### src/\n"
+        (tmp_path / "CODE_MAP.md").write_text(old_content, encoding="utf-8")
+        desc_script = tmp_path / "generate_descriptions.py"
+        desc_script.write_text("pass", encoding="utf-8")
+
+        with patch.object(hm, "ensure_gitnexus_fresh"), \
+             patch.object(hm, "materialize_codemap_projection"), \
+             patch.object(hm, "parse_existing_codemap", return_value=({}, {})), \
+             patch.object(hm, "read_codemap_counts", return_value={}), \
+             patch.object(hm, "get_gitnexus_communities", return_value={"src": {"symbols": 105, "clusters": 1}}), \
+             patch.object(hm, "build_codemap_structure", return_value=(new_content, [], {"src": 105})), \
+             patch.object(hm, "ensure_codemap_gitignore"), \
+             patch.object(hm, "cache_codemap_projection"), \
+             patch.object(hm, "write_codemap_counts") as write_counts, \
+             patch.object(hm, "sync_platform_docs"), \
+             patch.object(hm, "DESC_SCRIPT", desc_script), \
+             patch.object(hm.subprocess, "run", side_effect=subprocess.TimeoutExpired(["generate_descriptions.py"], 1)):
+            hm._do_main_branch_update_inner(require_main=False)
+
+        write_counts.assert_not_called()
+
+    def test_main_update_does_not_seed_missing_sidecar_when_branch_drifts_before_early_return(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".gitnexus").mkdir()
+        content = "# Code Map\n\n### src/ — Stable desc\n"
+        (tmp_path / "CODE_MAP.md").write_text(content, encoding="utf-8")
+
+        with patch.object(hm, "ensure_gitnexus_fresh"), \
+             patch.object(hm, "materialize_codemap_projection"), \
+             patch.object(hm, "parse_existing_codemap", return_value=({"src": "Stable desc"}, {})), \
+             patch.object(hm, "read_codemap_counts", return_value={}), \
+             patch.object(hm, "get_gitnexus_communities", return_value={"src": {"symbols": 105, "clusters": 1}}), \
+             patch.object(hm, "build_codemap_structure", return_value=(content, [], {"src": 105})), \
+             patch.object(hm, "cache_codemap_projection"), \
+             patch.object(hm, "write_codemap_counts") as write_counts, \
+             patch.object(hm, "is_on_main_branch", return_value=False):
+            hm._do_main_branch_update_inner(require_main=True)
+
+        write_counts.assert_not_called()
+
+    def test_main_update_updates_count_baseline_for_refreshed_dirs_only(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".gitnexus").mkdir()
+        old_content = "# Code Map\n\n### src/ — Old desc\n### tests/ — Stable tests\n"
+        new_content = "# Code Map\n\n### src/ — New desc\n### tests/ — Stable tests\n"
+        (tmp_path / "CODE_MAP.md").write_text(old_content, encoding="utf-8")
+
+        with patch.object(hm, "ensure_gitnexus_fresh"), \
+             patch.object(hm, "materialize_codemap_projection"), \
+             patch.object(hm, "parse_existing_codemap", return_value=({"src": "Old desc", "tests": "Stable tests"}, {})), \
+             patch.object(hm, "read_codemap_counts", return_value={"src": 100, "tests": 50}), \
+             patch.object(hm, "get_gitnexus_communities", return_value={"src": {"symbols": 140, "clusters": 1}, "tests": {"symbols": 60, "clusters": 1}}), \
+             patch.object(hm, "build_codemap_structure", return_value=(new_content, ["src"], {"src": 140, "tests": 60})), \
+             patch.object(hm, "ensure_codemap_gitignore"), \
+             patch.object(hm, "cache_codemap_projection"), \
+             patch.object(hm, "write_codemap_counts") as write_counts, \
+             patch.object(hm, "sync_platform_docs"), \
+             patch.object(hm.subprocess, "run") as run:
+            run.return_value.returncode = 0
+            hm._do_main_branch_update_inner(require_main=False)
+
+        write_counts.assert_called_once_with(".", {"src": 140, "tests": 50})
+
+    def test_main_update_does_not_update_stale_baseline_when_description_refresh_fails(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".gitnexus").mkdir()
+        old_content = "# Code Map\n\n### src/ — Old desc\n"
+        new_content = "# Code Map\n\n### src/ — Old desc\n"
+        (tmp_path / "CODE_MAP.md").write_text(old_content, encoding="utf-8")
+
+        with patch.object(hm, "ensure_gitnexus_fresh"), \
+             patch.object(hm, "materialize_codemap_projection"), \
+             patch.object(hm, "parse_existing_codemap", return_value=({"src": "Old desc"}, {})), \
+             patch.object(hm, "read_codemap_counts", return_value={"src": 100}), \
+             patch.object(hm, "get_gitnexus_communities", return_value={"src": {"symbols": 140, "clusters": 1}}), \
+             patch.object(hm, "build_codemap_structure", return_value=(new_content, ["src"], {"src": 140})), \
+             patch.object(hm, "ensure_codemap_gitignore"), \
+             patch.object(hm, "cache_codemap_projection"), \
+             patch.object(hm, "write_codemap_counts") as write_counts, \
+             patch.object(hm, "sync_platform_docs"), \
+             patch.object(hm.subprocess, "run") as run:
+            run.return_value.returncode = 1
+            hm._do_main_branch_update_inner(require_main=False)
+
+        write_counts.assert_not_called()
 
     def test_lock_released_on_error(self, tmp_path, monkeypatch):
         monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")

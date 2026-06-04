@@ -32,9 +32,10 @@ if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8
 from harness_shared import (STALE_THRESHOLD, SOURCE_EXTS, MAIN_BRANCHES,
                     should_skip, parse_codemap, is_acceptable_description,
                     needs_description_refresh, parse_gitnexus_markdown,
-                    gitnexus_markdown_rows, map_areas_to_dirs, read_dir_docstring,
-                    path_key, cache_codemap_projection, ensure_codemap_gitignore,
-                    materialize_codemap_projection)
+                    parse_codemap_entry, gitnexus_markdown_rows, map_areas_to_dirs,
+                    read_dir_docstring, path_key, cache_codemap_projection,
+                    ensure_codemap_gitignore, materialize_codemap_projection,
+                    read_codemap_counts, write_codemap_counts)
 
 # ── Config ──
 
@@ -168,6 +169,25 @@ def parse_existing_codemap(codemap_path):
     descs = {e["dir"]: e["desc"] for e in entries if is_acceptable_description(e["desc"])}
     counts = {e["dir"]: e["symbols"] for e in entries if e["symbols"] is not None}
     return descs, counts
+
+
+def parse_codemap_text(content: str) -> list[dict]:
+    """Parse generated CODE_MAP text without materializing it to disk."""
+    entries = []
+    current = ""
+    for line in content.split("\n"):
+        m = re.match(r'^###\s+(\S+)/?(.*)$', line)
+        if m:
+            current = m.group(1).rstrip("/")
+            desc, count = parse_codemap_entry(m.group(2))
+            entries.append({"dir": current, "desc": desc, "symbols": count})
+            continue
+        m = re.match(r'^-\s+\*\*(\S+)/?\*\*(.*)$', line)
+        if m:
+            sub = f"{current}/{m.group(1).rstrip('/')}"
+            desc, count = parse_codemap_entry(m.group(2))
+            entries.append({"dir": sub, "desc": desc, "symbols": count})
+    return entries
 
 
 def atomic_write_text(path: Path, content: str) -> None:
@@ -309,6 +329,24 @@ def build_codemap_structure(communities, existing_descs, old_counts):
         pass
 
     return "\n".join(lines) + "\n", stale_dirs, counts
+
+
+def merge_codemap_count_baseline(
+    old_counts: dict[str, int],
+    new_counts: dict[str, int],
+    refreshed_dirs: list[str],
+    *,
+    seed_missing: bool = False,
+) -> dict[str, int]:
+    """Update count baselines only for refreshed descriptions, plus bootstrap missing sidecar."""
+    merged = dict(old_counts)
+    if seed_missing:
+        for dir_path, count in new_counts.items():
+            merged.setdefault(dir_path, count)
+    for dir_path in refreshed_dirs:
+        if dir_path in new_counts:
+            merged[dir_path] = new_counts[dir_path]
+    return merged
 
 
 # ══════════════════════════════════════════════════════════
@@ -521,12 +559,15 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
 
     codemap_file = Path("CODE_MAP.md")
     old_content = codemap_file.read_text(encoding="utf-8", errors="replace") if codemap_file.exists() else ""
-    existing_descs, old_counts = parse_existing_codemap(codemap_file)
+    existing_descs, legacy_counts = parse_existing_codemap(codemap_file)
+    sidecar_counts = read_codemap_counts(".")
+    old_counts = sidecar_counts or legacy_counts
+    seed_counts = not sidecar_counts
 
     # Step 1: Update CODE_MAP.md structure (now with fresh index)
     communities = get_gitnexus_communities()
     if communities:
-        new_content, stale_dirs = build_codemap_structure(communities, existing_descs, old_counts)
+        new_content, stale_dirs, new_counts = build_codemap_structure(communities, existing_descs, old_counts)
     else:
         return
 
@@ -534,9 +575,15 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
     # with an empty/low-quality description must still trigger a description run (otherwise a
     # single failed first pass strands that entry's description permanently).
     entries_need_refresh = any(needs_description_refresh(e.get("desc") or "")
-                               for e in parse_codemap(codemap_file))
+                               for e in parse_codemap_text(new_content))
+    refresh_attempted = bool(stale_dirs) or entries_need_refresh
     if new_content == old_content and not stale_dirs and not entries_need_refresh:
         cache_codemap_projection(".")
+        if seed_counts and _branch_ok(require_main, expected_branch):
+            write_codemap_counts(
+                ".",
+                merge_codemap_count_baseline(old_counts, new_counts, [], seed_missing=True),
+            )
         return
 
     # Re-check before mutating: the reindex + structure prelude above can run for a while, and we
@@ -559,16 +606,33 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
         if candidate.exists():
             desc_script = candidate
             break
+    description_refresh_succeeded = not refresh_attempted
     if desc_script:
         try:
             cmd = [sys.executable, str(desc_script), ".", "--generate", "--use-fingerprints",
                    "--ai-timeout", str(CODEMAP_AI_TIMEOUT)]
             for dir_path in stale_dirs:
                 cmd.extend(["--refresh-dir", dir_path])
-            subprocess.run(cmd, capture_output=True, text=True, timeout=CODEMAP_REFRESH_TIMEOUT)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=CODEMAP_REFRESH_TIMEOUT)
+            description_refresh_succeeded = result.returncode == 0
         except (subprocess.TimeoutExpired, OSError):
-            pass
+            description_refresh_succeeded = False
     cache_codemap_projection(".")
+
+    should_write_counts = (
+        (seed_counts and (not refresh_attempted or description_refresh_succeeded))
+        or (stale_dirs and description_refresh_succeeded)
+    )
+    if should_write_counts:
+        write_codemap_counts(
+            ".",
+            merge_codemap_count_baseline(
+                old_counts,
+                new_counts,
+                stale_dirs if description_refresh_succeeded else [],
+                seed_missing=seed_counts,
+            ),
+        )
 
     # Step 3: Sync root CLAUDE.md ↔ AGENTS.md if both exist
     sync_platform_docs(".")

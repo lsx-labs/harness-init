@@ -363,6 +363,44 @@ class TestMain:
         out = json.loads(capsys.readouterr().out)
         assert out["codemap"]["action"] == "skip"
 
+    def test_main_uses_sidecar_counts_for_codemap_plan(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text("### src/ — Existing desc\n", encoding="utf-8")
+        monkeypatch.setattr(hp, "platform_files", lambda platform: ("CLAUDE.md", "AGENTS.md"))
+        monkeypatch.setattr(hp, "read_codemap_counts", lambda project_dir=".": {"src": 100})
+        monkeypatch.setattr(hp, "_get_live_symbol_counts", lambda: {"src": 200})
+        monkeypatch.setattr(hp, "plan_gitnexus", lambda diagnostic: {"action": "skip"})
+        monkeypatch.setattr(hp, "plan_lsp", lambda diagnostic: [])
+        monkeypatch.setattr(hp, "plan_codex_gitnexus_wrapper", lambda diagnostic, platform: {"action": "skip"})
+        monkeypatch.setattr("sys.argv", ["hp", str(tmp_path), "--platform", "claude"])
+
+        hp.main()
+
+        out = json.loads(capsys.readouterr().out)
+        assert out["codemap"]["action"] == "refresh"
+        assert out["codemap"]["dirs_needing"] == ["src"]
+
+    def test_main_treats_partial_sidecar_counts_as_authoritative_for_present_dirs(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text(
+            "### src/ (100 symbols) — Existing desc\n"
+            "### tests/ (100 symbols) — Existing tests\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(hp, "platform_files", lambda platform: ("CLAUDE.md", "AGENTS.md"))
+        monkeypatch.setattr(hp, "read_codemap_counts", lambda project_dir=".": {"src": 100})
+        monkeypatch.setattr(hp, "_get_live_symbol_counts", lambda: {"src": 200, "tests": 200})
+        monkeypatch.setattr(hp, "plan_gitnexus", lambda diagnostic: {"action": "skip"})
+        monkeypatch.setattr(hp, "plan_lsp", lambda diagnostic: [])
+        monkeypatch.setattr(hp, "plan_codex_gitnexus_wrapper", lambda diagnostic, platform: {"action": "skip"})
+        monkeypatch.setattr("sys.argv", ["hp", str(tmp_path), "--platform", "claude"])
+
+        hp.main()
+
+        out = json.loads(capsys.readouterr().out)
+        assert out["codemap"]["action"] == "refresh"
+        assert out["codemap"]["dirs_needing"] == ["src"]
+
     def test_main_default_platform(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr('sys.argv', ['hp', str(tmp_path)])
