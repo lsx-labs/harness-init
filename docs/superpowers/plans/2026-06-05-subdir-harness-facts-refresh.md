@@ -40,7 +40,7 @@ The important fixed choices are:
   - Keep low-level atomic write/cache key utilities in one place.
 
 - Modify: `scripts/harness_plan.py`
-  - Replace old subdirectory `copy/generate/skip` planning with block-oriented `refresh_facts/render/rebaseline/bootstrap/manual_migration/skip`.
+  - Replace old subdirectory `copy/generate/skip` planning with block-oriented `refresh_facts/rebaseline/bootstrap/manual_migration/skip`.
   - Use the new generator in plan mode.
 
 - Modify: `scripts/sync_docs.py`
@@ -154,7 +154,7 @@ def test_read_write_subdir_harness_state_round_trip(self, tmp_path, monkeypatch)
         "dirs": {
             "src": {
                 "block_hash": "sha256:block",
-                "fact_block": "## GitNexus 事实\n\n- 被调用: 无",
+                "fact_block": "## GitNexus 事实\n\n暂无已验证图谱事实。",
             }
         },
     }
@@ -294,25 +294,41 @@ def test_render_fact_block_sorts_rows_stably() -> None:
 
 
 def test_render_managed_block_contains_only_harness_markers() -> None:
-    block = gsh.render_managed_block("## GitNexus 事实\n\n- 被调用: 无")
+    block = gsh.render_managed_block("## GitNexus 事实\n\n暂无已验证图谱事实。")
 
     assert block == (
         "<!-- harness:start -->\n"
         "## GitNexus 事实\n\n"
-        "- 被调用: 无\n"
+        "暂无已验证图谱事实。\n"
         "<!-- harness:end -->"
     )
 
 
 def test_replace_existing_harness_block_preserves_surrounding_text() -> None:
     doc = "# src\n\nmanual before\n\n<!-- harness:start -->\nold\n<!-- harness:end -->\n\nmanual after\n"
-    block = gsh.render_managed_block("## GitNexus 事实\n\n- 被调用: 无")
+    block = gsh.render_managed_block("## GitNexus 事实\n\n暂无已验证图谱事实。")
 
     rendered = gsh.replace_or_insert_harness_block(doc, block)
 
     assert "manual before" in rendered
     assert "manual after" in rendered
     assert "old" not in rendered
+    assert rendered.count("<!-- harness:start -->") == 1
+
+
+def test_replace_existing_harness_block_replaces_duplicate_blocks() -> None:
+    doc = (
+        "# src\n\n"
+        "<!-- harness:start -->\nold one\n<!-- harness:end -->\n\n"
+        "middle\n\n"
+        "<!-- harness:start -->\nold two\n<!-- harness:end -->\n"
+    )
+    block = gsh.render_managed_block("## GitNexus 事实\n\n暂无已验证图谱事实。")
+
+    rendered = gsh.replace_or_insert_harness_block(doc, block)
+
+    assert "old one" not in rendered
+    assert "old two" not in rendered
     assert rendered.count("<!-- harness:start -->") == 1
 ```
 
@@ -321,7 +337,7 @@ def test_replace_existing_harness_block_preserves_surrounding_text() -> None:
 Run:
 
 ```bash
-pytest -q tests/test_subdir_harness.py::test_render_fact_block_sorts_rows_stably tests/test_subdir_harness.py::test_render_managed_block_contains_only_harness_markers tests/test_subdir_harness.py::test_replace_existing_harness_block_preserves_surrounding_text
+pytest -q tests/test_subdir_harness.py::test_render_fact_block_sorts_rows_stably tests/test_subdir_harness.py::test_render_managed_block_contains_only_harness_markers tests/test_subdir_harness.py::test_replace_existing_harness_block_preserves_surrounding_text tests/test_subdir_harness.py::test_replace_existing_harness_block_replaces_duplicate_blocks
 ```
 
 Expected: tests fail because `scripts/generate_subdir_harness.py` does not exist.
@@ -352,9 +368,12 @@ from harness_shared import (
     HARNESS_FACT_HEADING,
     SOURCE_EXTS,
     STALE_THRESHOLD,
+    SYMBOL_THRESHOLD,
     _atomic_write_text,
     gitnexus_markdown_rows,
+    parse_codemap,
     parse_gitnexus_markdown,
+    read_codemap_counts,
     read_subdir_harness_state,
     should_skip,
     subdir_harness_state_cache_path,
@@ -364,6 +383,7 @@ from harness_shared import (
 MAX_FACT_ROWS = 5
 DEFAULT_MAX_DIRS = 5
 SUPPORTED_FACT_PREFIXES = ("- 被调用:", "- 影响面:", "- 相关模块:", "- 相关流程:", "- 截断:")
+EMPTY_FACT_LINE = "暂无已验证图谱事实。"
 LEGACY_PROSE_HEADINGS = (
     "## 约束（基于 GitNexus 事实）",
     "## 危险操作（基于 GitNexus impact 分析）",
@@ -396,18 +416,15 @@ def render_fact_block(facts: dict, *, max_rows: int = MAX_FACT_ROWS) -> str:
     processes = _ranked(list(facts.get("processes", [])), "process")[:max_rows]
 
     lines = [HARNESS_FACT_HEADING, ""]
+    if not caller_counts and not modules and not processes:
+        lines.append(EMPTY_FACT_LINE)
+        return "\n".join(lines).strip()
     if caller_counts:
         lines.extend(f"- 被调用: {row['target']}: {int(row.get('count', 0))}" for row in caller_counts)
-    else:
-        lines.append("- 被调用: 无")
     if modules:
         lines.extend(f"- 相关模块: {row['module']}: {int(row.get('count', 0))}" for row in modules)
-    else:
-        lines.append("- 相关模块: 无")
     if processes:
         lines.extend(f"- 相关流程: {row['process']}: {int(row.get('count', 0))}" for row in processes)
-    else:
-        lines.append("- 相关流程: 无")
     return "\n".join(lines).strip()
 
 
@@ -421,7 +438,13 @@ def replace_or_insert_harness_block(doc_text: str, managed_block: str) -> str:
         re.DOTALL | re.MULTILINE,
     )
     if pattern.search(doc_text):
-        return pattern.sub(lambda _: managed_block, doc_text, count=1)
+        rendered = pattern.sub(lambda _: managed_block, doc_text)
+        first = rendered.find(managed_block)
+        if first == -1:
+            return rendered
+        before = rendered[: first + len(managed_block)]
+        after = rendered[first + len(managed_block) :].replace(managed_block, "")
+        return before + after
     marker = "## 补充约束（手动维护）"
     if marker in doc_text:
         return doc_text.replace(marker, f"{managed_block}\n\n{marker}", 1)
@@ -527,6 +550,8 @@ def structural_fact_block_check(block_body: str) -> dict:
     if not lines or lines[0] != HARNESS_FACT_HEADING:
         return {"ok": False, "reason": "missing_fact_heading"}
     for line in lines[1:]:
+        if line == EMPTY_FACT_LINE:
+            continue
         if not line.startswith(SUPPORTED_FACT_PREFIXES):
             return {"ok": False, "reason": "unsupported_fact_row"}
     return {"ok": True, "reason": "structural_fact_block"}
@@ -613,7 +638,9 @@ def test_write_rebaseline_state_does_not_change_doc(tmp_path, monkeypatch) -> No
     project = tmp_path / "repo"
     project.mkdir()
     (project / ".git").mkdir()
-    monkeypatch.setattr(gsh, "subdir_harness_state_cache_path", lambda project_dir=".": tmp_path / "state.json")
+    written: dict = {}
+    monkeypatch.setattr(gsh, "read_subdir_harness_state", lambda project_dir=".": {"schema_version": 1, "dirs": {}})
+    monkeypatch.setattr(gsh, "write_subdir_harness_state", lambda project_dir, payload: written.update(payload) or True)
     doc = project / "src" / "CLAUDE.md"
     doc.parent.mkdir()
     facts = {
@@ -629,6 +656,7 @@ def test_write_rebaseline_state_does_not_change_doc(tmp_path, monkeypatch) -> No
 
     assert result["action"] == "rebaseline"
     assert doc.read_text(encoding="utf-8") == original
+    assert written["dirs"]["src"]["gitnexus_fingerprint"].startswith("sha256:")
 
 
 def test_manual_migration_preserves_legacy_body_outside_block(tmp_path) -> None:
@@ -673,13 +701,21 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _state_fingerprint_field(facts: dict, field: str) -> str:
+    value = str(facts.get(field, ""))
+    if value.startswith("sha256:"):
+        return value
+    fallback = json.dumps({"field": field, "facts": facts}, ensure_ascii=False, sort_keys=True)
+    return _sha256_text(fallback)
+
+
 def _state_entry_for(dir_path: str, facts: dict, fact_block: str, rendered_files: dict | None = None) -> dict:
     current_fp = gitnexus_fingerprint(facts)
     return {
         "symbol_count": int(facts.get("symbol_count", 0) or 0),
-        "repo_source_fingerprint": str(facts.get("repo_source_fingerprint", "")),
-        "source_fingerprint": str(facts.get("source_fingerprint", "")),
-        "known_caller_source_fingerprint": str(facts.get("known_caller_source_fingerprint", "")),
+        "repo_source_fingerprint": _state_fingerprint_field(facts, "repo_source_fingerprint"),
+        "source_fingerprint": _state_fingerprint_field(facts, "source_fingerprint"),
+        "known_caller_source_fingerprint": _state_fingerprint_field(facts, "known_caller_source_fingerprint"),
         "gitnexus_fingerprint": current_fp,
         "block_hash": _sha256_text(fact_block),
         "fact_block": fact_block,
@@ -762,11 +798,18 @@ git commit -m "feat: manage subdir harness state"
 - Modify: `scripts/generate_subdir_harness.py`
 - Modify: `tests/test_subdir_harness.py`
 
-- [ ] **Step 1: Write failing tests for CLI plan and refresh with mocked facts**
+- [ ] **Step 1: Write failing tests for CLI plan, bootstrap, migration, and per-file safety**
 
 Append:
 
 ```python
+def _patch_state(monkeypatch):
+    written: dict = {}
+    monkeypatch.setattr(gsh, "read_subdir_harness_state", lambda project_dir=".": {"schema_version": 1, "dirs": {}})
+    monkeypatch.setattr(gsh, "write_subdir_harness_state", lambda project_dir, payload: written.update(payload) or True)
+    return written
+
+
 def test_plan_directory_reports_refresh_for_stale_structural_block(tmp_path, monkeypatch) -> None:
     project = tmp_path / "repo"
     doc_dir = project / "src"
@@ -781,6 +824,33 @@ def test_plan_directory_reports_refresh_for_stale_structural_block(tmp_path, mon
 
     assert result["action"] == "refresh_facts"
     assert result["files"] == ["CLAUDE.md"]
+    assert result["file_actions"] == [{"file": "CLAUDE.md", "action": "refresh_facts", "reason": "freshness_changed"}]
+
+
+def test_plan_directory_does_not_overwrite_mixed_legacy_doc(tmp_path, monkeypatch) -> None:
+    project = tmp_path / "repo"
+    doc_dir = project / "src"
+    doc_dir.mkdir(parents=True)
+    (project / ".git").mkdir()
+    facts = {"caller_counts": [{"target": "Parser", "count": 40}], "affected_modules": [], "processes": [], "symbol_count": 40}
+    (doc_dir / "CLAUDE.md").write_text(gsh.render_managed_block(gsh.render_fact_block(facts)), encoding="utf-8")
+    (doc_dir / "AGENTS.md").write_text(
+        "<!-- harness:start -->\n"
+        "## 约束（基于 GitNexus 事实）\n"
+        "- Parser 被多个调用方使用，应谨慎修改。\n"
+        "<!-- harness:end -->\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gsh, "extract_dir_facts", lambda project_dir, dir_path: facts)
+
+    result = gsh.plan_directory(project, "src", ["CLAUDE.md", "AGENTS.md"], mode="background")
+
+    assert result["action"] == "manual_migration"
+    assert result["files"] == ["AGENTS.md"]
+    assert result["file_actions"] == [
+        {"file": "CLAUDE.md", "action": "rebaseline", "reason": "structural_fact_block_current_missing_sidecar"},
+        {"file": "AGENTS.md", "action": "manual_migration", "reason": "legacy_prose"},
+    ]
 
 
 def test_refresh_directory_updates_only_managed_block(tmp_path, monkeypatch) -> None:
@@ -796,6 +866,7 @@ def test_refresh_directory_updates_only_managed_block(tmp_path, monkeypatch) -> 
         + "\n\nmanual after\n",
         encoding="utf-8",
     )
+    written = _patch_state(monkeypatch)
     monkeypatch.setattr(gsh, "extract_dir_facts", lambda project_dir, dir_path: new_facts)
 
     result = gsh.refresh_directory(project, "src", ["CLAUDE.md"], mode="background")
@@ -806,6 +877,124 @@ def test_refresh_directory_updates_only_managed_block(tmp_path, monkeypatch) -> 
     assert "manual after" in text
     assert "Parser: 40" in text
     assert "Parser: 23" not in text
+    assert written["dirs"]["src"]["rendered"]["CLAUDE.md"]["status"] == "updated"
+
+
+def test_manual_bootstrap_creates_missing_platform_doc(tmp_path, monkeypatch) -> None:
+    project = tmp_path / "repo"
+    (project / "src").mkdir(parents=True)
+    (project / ".git").mkdir()
+    facts = {"caller_counts": [], "affected_modules": [], "processes": [], "symbol_count": 0}
+    written = _patch_state(monkeypatch)
+    monkeypatch.setattr(gsh, "extract_dir_facts", lambda project_dir, dir_path: facts)
+
+    result = gsh.refresh_directory(project, "src", ["CLAUDE.md"], mode="manual", bootstrap=True)
+
+    text = (project / "src" / "CLAUDE.md").read_text(encoding="utf-8")
+    assert result["action"] == "bootstrap"
+    assert "# src/ — GitNexus 事实" in text
+    assert "## 测试" in text
+    assert "未识别专用测试命令" in text
+    assert "<!-- harness:start -->" in text
+    assert "暂无已验证图谱事实。" in text
+    assert "## 补充约束（手动维护）" in text
+    assert written["dirs"]["src"]["rendered"]["CLAUDE.md"]["status"] == "created"
+
+
+def test_manual_migrate_routes_legacy_doc_through_migration(tmp_path, monkeypatch) -> None:
+    project = tmp_path / "repo"
+    doc_dir = project / "src"
+    doc_dir.mkdir(parents=True)
+    (project / ".git").mkdir()
+    (doc_dir / "CLAUDE.md").write_text(
+        "# src\n\n"
+        "<!-- harness:start -->\n"
+        "## 约束（基于 GitNexus 事实）\n"
+        "- Parser 被多个调用方使用，应谨慎修改。\n"
+        "<!-- harness:end -->\n",
+        encoding="utf-8",
+    )
+    facts = {"caller_counts": [{"target": "Parser", "count": 40}], "affected_modules": [], "processes": [], "symbol_count": 40}
+    _patch_state(monkeypatch)
+    monkeypatch.setattr(gsh, "extract_dir_facts", lambda project_dir, dir_path: facts)
+
+    result = gsh.refresh_directory(project, "src", ["CLAUDE.md"], mode="manual", migrate=True)
+
+    text = (doc_dir / "CLAUDE.md").read_text(encoding="utf-8")
+    assert result["action"] == "manual_migration"
+    assert result["status"] == "updated"
+    assert "Parser: 40" in text
+    assert "### 从旧 harness 块迁移" in text
+    assert "Parser 被多个调用方使用" in text
+
+
+def test_extract_dir_facts_uses_schema_tolerant_gitnexus_rows(tmp_path, monkeypatch) -> None:
+    project = tmp_path / "repo"
+    project.mkdir()
+    outputs = iter([
+        [["Parser", "40", "src/parser.py"]],
+        [["Core", "3"]],
+        [["AnalyzeProject", "2"]],
+        [["128"]],
+    ])
+    monkeypatch.setattr(gsh, "_run_gitnexus_cypher", lambda project_dir, cypher: next(outputs))
+    monkeypatch.setattr(gsh, "source_fingerprint", lambda project_dir, paths=None: "sha256:source")
+
+    facts = gsh.extract_dir_facts(project, "src")
+
+    assert facts["caller_counts"] == [{"target": "Parser", "count": 40, "path": "src/parser.py"}]
+    assert facts["affected_modules"] == [{"module": "Core", "count": 3}]
+    assert facts["processes"] == [{"process": "AnalyzeProject", "count": 2}]
+    assert facts["symbol_count"] == 128
+    assert facts["repo_source_fingerprint"] == "sha256:source"
+    assert facts["source_fingerprint"] == "sha256:source"
+    assert facts["known_caller_source_fingerprint"] == "sha256:source"
+
+
+def test_source_fingerprint_changes_when_source_file_changes(tmp_path) -> None:
+    project = tmp_path / "repo"
+    (project / "src").mkdir(parents=True)
+    source = project / "src" / "parser.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+
+    first = gsh.source_fingerprint(project, ["src/parser.py"])
+    source.write_text("VALUE = 2\n", encoding="utf-8")
+    second = gsh.source_fingerprint(project, ["src/parser.py"])
+
+    assert first.startswith("sha256:")
+    assert second.startswith("sha256:")
+    assert first != second
+
+
+def test_plan_directory_skips_graph_when_repo_source_fingerprint_unchanged(tmp_path, monkeypatch) -> None:
+    project = tmp_path / "repo"
+    doc_dir = project / "src"
+    doc_dir.mkdir(parents=True)
+    facts = {"caller_counts": [{"target": "Parser", "count": 40}], "affected_modules": [], "processes": [], "symbol_count": 40}
+    fact_block = gsh.render_fact_block(facts)
+    (doc_dir / "CLAUDE.md").write_text(gsh.render_managed_block(fact_block), encoding="utf-8")
+    monkeypatch.setattr(gsh, "source_fingerprint", lambda project_dir, paths=None: "sha256:same")
+    monkeypatch.setattr(
+        gsh,
+        "read_subdir_harness_state",
+        lambda project_dir=".": {
+            "schema_version": 1,
+            "dirs": {
+                "src": {
+                    "repo_source_fingerprint": "sha256:same",
+                    "gitnexus_fingerprint": gsh.gitnexus_fingerprint(facts),
+                    "block_hash": gsh._sha256_text(fact_block),
+                    "fact_block": fact_block,
+                }
+            },
+        },
+    )
+    monkeypatch.setattr(gsh, "extract_dir_facts", lambda project_dir, dir_path: (_ for _ in ()).throw(AssertionError("graph should be skipped")))
+
+    result = gsh.plan_directory(project, "src", ["CLAUDE.md"], mode="background")
+
+    assert result["action"] == "skip"
+    assert result["reason"] == "repo_source_fingerprint_unchanged"
 ```
 
 - [ ] **Step 2: Run tests to verify RED**
@@ -813,7 +1002,7 @@ def test_refresh_directory_updates_only_managed_block(tmp_path, monkeypatch) -> 
 Run:
 
 ```bash
-pytest -q tests/test_subdir_harness.py::test_plan_directory_reports_refresh_for_stale_structural_block tests/test_subdir_harness.py::test_refresh_directory_updates_only_managed_block
+pytest -q tests/test_subdir_harness.py::test_plan_directory_reports_refresh_for_stale_structural_block tests/test_subdir_harness.py::test_plan_directory_does_not_overwrite_mixed_legacy_doc tests/test_subdir_harness.py::test_refresh_directory_updates_only_managed_block tests/test_subdir_harness.py::test_manual_bootstrap_creates_missing_platform_doc tests/test_subdir_harness.py::test_manual_migrate_routes_legacy_doc_through_migration tests/test_subdir_harness.py::test_extract_dir_facts_uses_schema_tolerant_gitnexus_rows tests/test_subdir_harness.py::test_source_fingerprint_changes_when_source_file_changes tests/test_subdir_harness.py::test_plan_directory_skips_graph_when_repo_source_fingerprint_unchanged
 ```
 
 Expected: tests fail because directory orchestration helpers do not exist.
@@ -823,6 +1012,56 @@ Expected: tests fail because directory orchestration helpers do not exist.
 Add GitNexus helpers:
 
 ```python
+def tracked_source_files(project_dir: str | Path) -> list[str]:
+    root = Path(project_dir)
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "ls-files"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        result = None
+    if result is not None and result.returncode == 0:
+        candidates = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    else:
+        candidates = [
+            str(path.relative_to(root)).replace("\\", "/")
+            for path in root.rglob("*")
+            if path.is_file() and not any(should_skip(part) for part in path.relative_to(root).parts)
+        ]
+    return sorted(
+        rel for rel in candidates
+        if Path(rel).suffix in SOURCE_EXTS and not any(should_skip(part) for part in Path(rel).parts)
+    )
+
+
+def source_fingerprint(project_dir: str | Path, paths: list[str] | None = None) -> str:
+    root = Path(project_dir)
+    rels = sorted(paths if paths is not None else tracked_source_files(root))
+    digest = hashlib.sha256()
+    for rel in rels:
+        clean = str(rel).replace("\\", "/").strip("/")
+        path = root / clean
+        if not path.is_file() or path.suffix not in SOURCE_EXTS:
+            continue
+        digest.update(clean.encode("utf-8"))
+        digest.update(b"\0")
+        try:
+            digest.update(path.read_bytes())
+        except OSError:
+            continue
+        digest.update(b"\0")
+    return "sha256:" + digest.hexdigest()
+
+
+def _dir_source_paths(project_dir: str | Path, dir_path: str) -> list[str]:
+    rel = _clean_rel_dir(dir_path)
+    prefix = rel + "/"
+    return [path for path in tracked_source_files(project_dir) if path == rel or path.startswith(prefix)]
+
+
 def _run_gitnexus_cypher(project_dir: str | Path, cypher: str, *, timeout: int = 20) -> list[list[str]]:
     try:
         result = subprocess.run(
@@ -843,29 +1082,37 @@ def _quote_cypher(value: str) -> str:
     return value.replace("\\", "\\\\").replace("'", "\\'")
 
 
+def _row_int(value: str) -> int | None:
+    text = str(value).strip()
+    return int(text) if text.isdigit() else None
+
+
 def extract_dir_facts(project_dir: str | Path, dir_path: str) -> dict:
     rel = _clean_rel_dir(dir_path)
     prefix = _quote_cypher(rel + "/")
     exact = _quote_cypher(rel)
+    dir_paths = _dir_source_paths(project_dir, rel)
+    repo_fp = source_fingerprint(project_dir)
+    dir_fp = source_fingerprint(project_dir, dir_paths)
     caller_rows = _run_gitnexus_cypher(
         project_dir,
         "MATCH (caller)-[:CodeRelation {type: 'CALLS'}]->(target) "
         f"WHERE target.filePath = '{exact}' OR target.filePath STARTS WITH '{prefix}' "
-        "RETURN target.name AS target, count(DISTINCT caller) AS callers "
+        "RETURN target.name AS target, count(DISTINCT caller) AS callers, target.filePath AS path "
         "ORDER BY callers DESC, target ASC LIMIT 5",
     )
     module_rows = _run_gitnexus_cypher(
         project_dir,
         "MATCH (caller)-[:CodeRelation {type: 'CALLS'}]->(target)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community) "
         f"WHERE target.filePath = '{exact}' OR target.filePath STARTS WITH '{prefix}' "
-        "RETURN c.heuristicLabel AS module, count(DISTINCT caller) AS count "
+        "RETURN coalesce(c.heuristicLabel, c.label, c.name, 'unknown') AS module, count(DISTINCT caller) AS count "
         "ORDER BY count DESC, module ASC LIMIT 5",
     )
     process_rows = _run_gitnexus_cypher(
         project_dir,
         "MATCH (s)-[:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process) "
         f"WHERE s.filePath = '{exact}' OR s.filePath STARTS WITH '{prefix}' "
-        "RETURN p.heuristicLabel AS process, count(DISTINCT s) AS count "
+        "RETURN coalesce(p.heuristicLabel, p.label, p.name, 'unknown') AS process, count(DISTINCT s) AS count "
         "ORDER BY count DESC, process ASC LIMIT 5",
     )
     symbol_rows = _run_gitnexus_cypher(
@@ -874,22 +1121,38 @@ def extract_dir_facts(project_dir: str | Path, dir_path: str) -> dict:
         f"WHERE s.filePath = '{exact}' OR s.filePath STARTS WITH '{prefix}' "
         "RETURN count(DISTINCT s) AS symbols",
     )
+    caller_paths = sorted({row[2] for row in caller_rows if len(row) >= 3 and row[2]})
     return {
         "caller_counts": [
-            {"target": row[0], "count": int(row[1])}
-            for row in caller_rows if len(row) >= 2 and row[1].isdigit()
+            {"target": row[0], "count": count, "path": row[2] if len(row) >= 3 else ""}
+            for row in caller_rows
+            if len(row) >= 2 and (count := _row_int(row[1])) is not None
         ],
         "affected_modules": [
-            {"module": row[0], "count": int(row[1])}
-            for row in module_rows if len(row) >= 2 and row[1].isdigit()
+            {"module": row[0], "count": count}
+            for row in module_rows
+            if len(row) >= 2 and (count := _row_int(row[1])) is not None
         ],
         "processes": [
-            {"process": row[0], "count": int(row[1])}
-            for row in process_rows if len(row) >= 2 and row[1].isdigit()
+            {"process": row[0], "count": count}
+            for row in process_rows
+            if len(row) >= 2 and (count := _row_int(row[1])) is not None
         ],
-        "symbol_count": int(symbol_rows[0][0]) if symbol_rows and symbol_rows[0] and symbol_rows[0][0].isdigit() else 0,
+        "symbol_count": int(symbol_rows[0][0]) if symbol_rows and symbol_rows[0] and str(symbol_rows[0][0]).isdigit() else 0,
+        "repo_source_fingerprint": repo_fp,
+        "source_fingerprint": dir_fp,
+        "known_caller_source_fingerprint": source_fingerprint(project_dir, caller_paths),
     }
 ```
+
+Before implementing the final Cypher strings, run this calibration command in the real repo and adjust only property names that the output proves are unavailable:
+
+```bash
+npx gitnexus cypher "MATCH (c:Community) RETURN keys(c) LIMIT 1" -r harness-init
+npx gitnexus cypher "MATCH (p:Process) RETURN keys(p) LIMIT 1" -r harness-init
+```
+
+Expected: the queries return markdown tables. Keep `coalesce(c.heuristicLabel, c.label, c.name, 'unknown')` and `coalesce(p.heuristicLabel, p.label, p.name, 'unknown')` unless calibration proves different property names are required.
 
 Add document orchestration:
 
@@ -900,29 +1163,94 @@ def _platform_doc_paths(project_dir: str | Path, dir_path: str, files: list[str]
     return [root / rel / name for name in files]
 
 
+def bootstrap_doc_shell(dir_path: str, managed_block: str) -> str:
+    rel = _clean_rel_dir(dir_path)
+    return (
+        f"# {rel}/ — GitNexus 事实\n\n"
+        "## 测试\n\n"
+        "- 未识别专用测试命令\n\n"
+        f"{managed_block.strip()}\n\n"
+        "## 补充约束（手动维护）\n"
+    )
+
+
+def _highest_priority_action(file_actions: list[dict]) -> dict:
+    for action in ("manual_migration", "refresh_facts", "rebaseline", "bootstrap"):
+        selected = [item for item in file_actions if item["action"] == action]
+        if selected:
+            return {
+                "action": action,
+                "files": [item["file"] for item in selected],
+                "reason": selected[0].get("reason", action),
+            }
+    return {"action": "skip", "files": [], "reason": "fresh"}
+
+
 def plan_directory(project_dir: str | Path, dir_path: str, files: list[str], *, mode: str = "background") -> dict:
-    facts = extract_dir_facts(project_dir, dir_path)
-    fact_block = render_fact_block(facts)
     state = _read_state(project_dir)
     baseline = state.get("dirs", {}).get(_clean_rel_dir(dir_path))
-    existing_paths = [path for path in _platform_doc_paths(project_dir, dir_path, files) if path.exists()]
-    if not existing_paths:
-        return {"dir": _clean_rel_dir(dir_path), "action": "bootstrap", "files": files, "manual_only": True}
-    bodies = []
-    for path in existing_paths:
+    paths = _platform_doc_paths(project_dir, dir_path, files)
+    existing_paths = [path for path in paths if path.exists()]
+    current_repo_fp = source_fingerprint(project_dir)
+    if mode == "background" and baseline and baseline.get("repo_source_fingerprint") == current_repo_fp and existing_paths:
+        file_actions = []
+        for path in existing_paths:
+            body = extract_harness_block_body(path.read_text(encoding="utf-8", errors="replace"))
+            structural = structural_fact_block_check(body)
+            if not structural["ok"]:
+                file_actions.append({"file": path.name, "action": "manual_migration", "reason": structural["reason"]})
+            elif _sha256_text(body) == baseline.get("block_hash"):
+                file_actions.append({"file": path.name, "action": "skip", "reason": "repo_source_fingerprint_unchanged"})
+            else:
+                file_actions.append({"file": path.name, "action": "refresh_facts", "reason": "block_hash_changed"})
+        summary = _highest_priority_action(file_actions)
+        if summary["action"] == "skip":
+            return {
+                "dir": _clean_rel_dir(dir_path),
+                "action": "skip",
+                "reason": "repo_source_fingerprint_unchanged",
+                "files": [],
+                "file_actions": file_actions,
+            }
+    facts = extract_dir_facts(project_dir, dir_path)
+    fact_block = render_fact_block(facts)
+    file_actions: list[dict] = []
+    for path in paths:
+        if not path.exists():
+            file_actions.append({"file": path.name, "action": "bootstrap", "reason": "missing_file", "manual_only": True})
+            continue
         body = extract_harness_block_body(path.read_text(encoding="utf-8", errors="replace"))
         if not body:
-            return {"dir": _clean_rel_dir(dir_path), "action": "bootstrap", "files": [path.name], "manual_only": True}
-        bodies.append(body)
-    action = plan_existing_block_action(bodies[0], facts, baseline)
-    return {"dir": _clean_rel_dir(dir_path), "action": action["action"], "reason": action["reason"], "files": [p.name for p in existing_paths], "facts": facts, "fact_block": fact_block}
+            file_actions.append({"file": path.name, "action": "bootstrap", "reason": "missing_harness_block", "manual_only": True})
+            continue
+        action = plan_existing_block_action(body, facts, baseline)
+        file_actions.append({"file": path.name, "action": action["action"], "reason": action["reason"]})
+    summary = _highest_priority_action(file_actions)
+    return {
+        "dir": _clean_rel_dir(dir_path),
+        "action": summary["action"],
+        "reason": summary["reason"],
+        "files": summary["files"],
+        "facts": facts,
+        "fact_block": fact_block,
+        "file_actions": file_actions,
+        "manual_only": summary["action"] in {"manual_migration", "bootstrap"},
+    }
 
 
-def refresh_directory(project_dir: str | Path, dir_path: str, files: list[str], *, mode: str = "background") -> dict:
+def refresh_directory(
+    project_dir: str | Path,
+    dir_path: str,
+    files: list[str],
+    *,
+    mode: str = "background",
+    bootstrap: bool = False,
+    migrate: bool = False,
+) -> dict:
     plan = plan_directory(project_dir, dir_path, files, mode=mode)
-    if plan["action"] == "manual_migration" and mode != "manual":
+    if plan["action"] == "manual_migration" and not (mode == "manual" and migrate):
         return plan
-    if plan["action"] == "bootstrap" and mode != "manual":
+    if plan["action"] == "bootstrap" and not (mode == "manual" and bootstrap):
         return plan
     facts = plan.get("facts") or extract_dir_facts(project_dir, dir_path)
     fact_block = render_fact_block(facts)
@@ -930,19 +1258,41 @@ def refresh_directory(project_dir: str | Path, dir_path: str, files: list[str], 
         return {"dir": _clean_rel_dir(dir_path), "action": "refresh_facts", "status": "render_consistency_failed"}
     if plan["action"] == "rebaseline":
         return write_rebaseline_state(project_dir, dir_path, facts, plan["files"])
+    if plan["action"] == "manual_migration":
+        statuses = {}
+        for path in _platform_doc_paths(project_dir, dir_path, plan["files"]):
+            statuses[path.name] = migrate_legacy_doc_to_facts(path, fact_block)
+        rendered_status = {
+            name: {"status": status, "block_hash": _sha256_text(fact_block)}
+            for name, status in statuses.items()
+        }
+        state = _read_state(project_dir)
+        state.setdefault("dirs", {})[_clean_rel_dir(dir_path)] = _state_entry_for(dir_path, facts, fact_block, rendered_status)
+        cache_status = "updated" if _write_state(project_dir, state) else "cache_write_failed"
+        return {
+            "dir": _clean_rel_dir(dir_path),
+            "action": "manual_migration",
+            "status": "updated" if any(status == "updated" for status in statuses.values()) else cache_status,
+            "files": plan["files"],
+            "rendered": statuses,
+        }
     if plan["action"] not in {"refresh_facts", "bootstrap"}:
         return plan
     rendered_status: dict[str, dict] = {}
     managed = render_managed_block(fact_block)
     for path in _platform_doc_paths(project_dir, dir_path, plan["files"]):
         try:
-            old = path.read_text(encoding="utf-8", errors="replace")
-            new = replace_or_insert_harness_block(old, managed)
-            if new != old:
-                _atomic_write_text(path, new)
-                status = "updated"
+            if plan["action"] == "bootstrap" and not path.exists():
+                _atomic_write_text(path, bootstrap_doc_shell(dir_path, managed))
+                status = "created"
             else:
-                status = "unchanged"
+                old = path.read_text(encoding="utf-8", errors="replace")
+                new = replace_or_insert_harness_block(old, managed)
+                if new != old:
+                    _atomic_write_text(path, new)
+                    status = "updated"
+                else:
+                    status = "unchanged"
         except OSError:
             status = "write_failed"
         rendered_status[path.name] = {"status": status, "block_hash": _sha256_text(fact_block)}
@@ -964,6 +1314,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--plan", action="store_true")
     parser.add_argument("--refresh-facts", action="store_true")
     parser.add_argument("--bootstrap", action="store_true")
+    parser.add_argument("--migrate", action="store_true")
     parser.add_argument("--manual", action="store_true")
     parser.add_argument("--platform", choices=("claude", "codex"), default="claude")
     parser.add_argument("--dirs", nargs="+", default=[])
@@ -975,15 +1326,41 @@ def _files_for_platform(platform: str) -> list[str]:
     return ["CLAUDE.md", "AGENTS.md"] if platform == "claude" else ["AGENTS.md", "CLAUDE.md"]
 
 
+def discover_candidate_dirs(project_dir: str | Path, max_dirs: int) -> list[str]:
+    root = Path(project_dir)
+    entries = parse_codemap(root / "CODE_MAP.md")
+    recorded_counts = read_codemap_counts(root)
+    selected: list[str] = []
+    for entry in entries:
+        dir_path = _clean_rel_dir(entry.get("dir", ""))
+        if not dir_path:
+            continue
+        symbols = recorded_counts.get(dir_path, entry.get("symbols"))
+        if symbols is not None and int(symbols) >= SYMBOL_THRESHOLD:
+            selected.append(dir_path)
+    return selected[:max_dirs]
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
-    mode = "manual" if args.manual or args.bootstrap else "background"
+    mode = "manual" if args.manual or args.bootstrap or args.migrate else "background"
     dirs = [_clean_rel_dir(dir_path) for dir_path in args.dirs[: args.max_dirs] if _clean_rel_dir(dir_path)]
+    if not dirs and (args.plan or args.refresh_facts):
+        dirs = discover_candidate_dirs(args.project_dir, args.max_dirs)
     files = _files_for_platform(args.platform)
     actions = []
     for dir_path in dirs:
-        if args.refresh_facts or args.bootstrap:
-            actions.append(refresh_directory(args.project_dir, dir_path, files, mode=mode))
+        if args.refresh_facts or args.bootstrap or args.migrate:
+            actions.append(
+                refresh_directory(
+                    args.project_dir,
+                    dir_path,
+                    files,
+                    mode=mode,
+                    bootstrap=args.bootstrap,
+                    migrate=args.migrate,
+                )
+            )
         else:
             actions.append(plan_directory(args.project_dir, dir_path, files, mode=mode))
     print(json.dumps({"schema_version": 1, "actions": actions}, indent=2, ensure_ascii=False))
@@ -1026,7 +1403,10 @@ def test_existing_other_doc_needs_manual_bootstrap_not_copy(self, tmp_path, monk
     monkeypatch.chdir(tmp_path)
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "AGENTS.md").write_text("existing", encoding="utf-8")
+    monkeypatch.setattr(hp, "_plan_subdir_with_generator", lambda d, files: {"action": "bootstrap", "files": ["CLAUDE.md"], "manual_only": True})
+
     result = hp.plan_subdirs(["src"], "CLAUDE.md", "AGENTS.md")
+
     assert result["copy"] == []
     assert result["bootstrap"] == [{"dir": "src", "files": ["CLAUDE.md"], "manual_only": True}]
 ```
@@ -1034,18 +1414,39 @@ def test_existing_other_doc_needs_manual_bootstrap_not_copy(self, tmp_path, monk
 Add:
 
 ```python
-def test_existing_doc_with_harness_block_is_render_candidate(self, tmp_path, monkeypatch):
+def test_existing_facts_doc_refresh_is_reported(self, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "src").mkdir()
-    (tmp_path / "src" / "CLAUDE.md").write_text(
-        "<!-- harness:start -->\n## GitNexus 事实\n\n- 被调用: 无\n<!-- harness:end -->\n",
-        encoding="utf-8",
-    )
+    (tmp_path / "src" / "CLAUDE.md").write_text("facts", encoding="utf-8")
+    monkeypatch.setattr(hp, "_plan_subdir_with_generator", lambda d, files: {"action": "refresh_facts", "files": ["CLAUDE.md"], "reason": "freshness_changed"})
 
     result = hp.plan_subdirs(["src"], "CLAUDE.md", "AGENTS.md")
 
-    assert result["render"] == [{"dir": "src", "files": ["CLAUDE.md"]}]
+    assert result["refresh_facts"] == [{"dir": "src", "files": ["CLAUDE.md"], "reason": "freshness_changed"}]
     assert result["copy"] == []
+
+
+def test_existing_facts_doc_rebaseline_is_reported(self, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "CLAUDE.md").write_text("facts", encoding="utf-8")
+    monkeypatch.setattr(hp, "_plan_subdir_with_generator", lambda d, files: {"action": "rebaseline", "files": ["CLAUDE.md"], "reason": "structural_fact_block_current_missing_sidecar"})
+
+    result = hp.plan_subdirs(["src"], "CLAUDE.md", "AGENTS.md")
+
+    assert result["rebaseline"] == [{"dir": "src", "files": ["CLAUDE.md"], "reason": "structural_fact_block_current_missing_sidecar"}]
+
+
+def test_legacy_doc_manual_migration_is_reported_not_rendered(self, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "AGENTS.md").write_text("legacy", encoding="utf-8")
+    monkeypatch.setattr(hp, "_plan_subdir_with_generator", lambda d, files: {"action": "manual_migration", "files": ["AGENTS.md"], "reason": "legacy_prose"})
+
+    result = hp.plan_subdirs(["src"], "CLAUDE.md", "AGENTS.md")
+
+    assert result["manual_migration"] == [{"dir": "src", "files": ["AGENTS.md"], "reason": "legacy_prose"}]
+    assert result["refresh_facts"] == []
 ```
 
 - [ ] **Step 2: Run tests to verify RED**
@@ -1053,64 +1454,67 @@ def test_existing_doc_with_harness_block_is_render_candidate(self, tmp_path, mon
 Run:
 
 ```bash
-pytest -q tests/test_harness_plan.py::TestPlanSubdirs::test_existing_other_doc_needs_manual_bootstrap_not_copy tests/test_harness_plan.py::TestPlanSubdirs::test_existing_doc_with_harness_block_is_render_candidate
+pytest -q tests/test_harness_plan.py::TestPlanSubdirs::test_existing_other_doc_needs_manual_bootstrap_not_copy tests/test_harness_plan.py::TestPlanSubdirs::test_existing_facts_doc_refresh_is_reported tests/test_harness_plan.py::TestPlanSubdirs::test_existing_facts_doc_rebaseline_is_reported tests/test_harness_plan.py::TestPlanSubdirs::test_legacy_doc_manual_migration_is_reported_not_rendered
 ```
 
 Expected: tests fail because current plan still emits `copy`.
 
 - [ ] **Step 3: Update `plan_subdirs()`**
 
+Add near imports:
+
+```python
+try:
+    import generate_subdir_harness as subdir_harness
+except ImportError:
+    subdir_harness = None
+```
+
 Replace the old function body with:
 
 ```python
-def _has_harness_block(path: Path) -> bool:
-    if not path.exists():
-        return False
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return False
-    return "<!-- harness:start -->" in text and "<!-- harness:end -->" in text
+def _plan_subdir_with_generator(dir_path: str, files: list[str]) -> dict:
+    if subdir_harness is None:
+        return {"action": "bootstrap", "files": files[:1], "manual_only": True, "reason": "generator_unavailable"}
+    return subdir_harness.plan_directory(".", dir_path, files, mode="background")
+
+
+def _append_action(result: dict, action: str, item: dict) -> None:
+    result.setdefault(action, []).append(item)
 
 
 def plan_subdirs(complex_dirs: list[str], own_file: str, other_file: str) -> dict:
-    refresh_facts = []
-    render = []
-    rebaseline = []
-    bootstrap = []
-    manual_migration = []
-    skip = []
-
-    for d in complex_dirs:
-        own = Path(d) / own_file
-        other = Path(d) / other_file
-        files = [name for path, name in ((own, own_file), (other, other_file)) if path.exists()]
-        block_files = [name for path, name in ((own, own_file), (other, other_file)) if _has_harness_block(path)]
-        if block_files:
-            render.append({"dir": d, "files": block_files})
-        elif files:
-            bootstrap.append({"dir": d, "files": [own_file] if not own.exists() else [], "manual_only": True})
-        else:
-            depth = len(d.split("/"))
-            bootstrap.append({"dir": d, "files": [own_file], "depth": depth, "manual_only": True})
-
-    layers = {}
-    for item in bootstrap:
-        if "depth" in item:
-            layers.setdefault(item["depth"], []).append(item["dir"])
-    sorted_layers = [[depth, dirs] for depth, dirs in sorted(layers.items(), reverse=True)]
-
-    return {
-        "refresh_facts": refresh_facts,
-        "render": render,
-        "rebaseline": rebaseline,
-        "bootstrap": bootstrap,
-        "manual_migration": manual_migration,
-        "skip": skip,
+    result = {
+        "refresh_facts": [],
+        "rebaseline": [],
+        "bootstrap": [],
+        "manual_migration": [],
+        "skip": [],
         "copy": [],
         "generate": [],
-        "layers": sorted_layers,
+        "layers": [],
     }
+
+    for d in complex_dirs:
+        plan = _plan_subdir_with_generator(d, [own_file, other_file])
+        action = plan.get("action", "skip")
+        item = {"dir": d, "files": plan.get("files", [])}
+        if plan.get("reason"):
+            item["reason"] = plan["reason"]
+        if action == "bootstrap":
+            item["manual_only"] = True
+            item["depth"] = len(d.split("/"))
+        if action in {"refresh_facts", "rebaseline", "bootstrap", "manual_migration", "skip"}:
+            _append_action(result, action, item)
+        else:
+            result["skip"].append({"dir": d, "files": [], "reason": f"unknown_action:{action}"})
+
+    layers = {}
+    for item in result["bootstrap"]:
+        if "depth" in item:
+            layers.setdefault(item["depth"], []).append(item["dir"])
+    result["layers"] = [[depth, dirs] for depth, dirs in sorted(layers.items(), reverse=True)]
+    return result
 ```
 
 - [ ] **Step 4: Run tests to verify GREEN**
@@ -1252,7 +1656,7 @@ git commit -m "feat: disable subdir whole-file doc sync"
 Add:
 
 ```python
-def test_main_update_runs_bounded_subdir_harness_refresh(self, tmp_path, monkeypatch):
+def test_main_update_runs_bounded_subdir_harness_refresh(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".git").mkdir()
     (tmp_path / ".gitnexus").mkdir()
@@ -1282,6 +1686,9 @@ def test_main_update_runs_bounded_subdir_harness_refresh(self, tmp_path, monkeyp
     assert subdir_calls
     assert "--refresh-facts" in subdir_calls[0]
     assert "--max-dirs" in subdir_calls[0]
+    assert "--dirs" in subdir_calls[0]
+    dirs_index = subdir_calls[0].index("--dirs")
+    assert subdir_calls[0][dirs_index + 1] == "src"
 ```
 
 - [ ] **Step 2: Run test to verify RED**
@@ -1296,6 +1703,19 @@ Expected: test fails because monitor does not call the new script.
 
 - [ ] **Step 3: Add monitor constants and runner**
 
+In the `harness_shared` import list in `scripts/harness_monitor.py`, add `SYMBOL_THRESHOLD`:
+
+```python
+from harness_shared import (STALE_THRESHOLD, SYMBOL_THRESHOLD, SOURCE_EXTS, MAIN_BRANCHES,
+                    should_skip, parse_codemap, is_acceptable_description,
+                    needs_description_refresh, parse_gitnexus_markdown,
+                    parse_codemap_entry, gitnexus_markdown_rows, map_areas_to_dirs,
+                    read_dir_docstring, path_key, cache_codemap_projection,
+                    ensure_codemap_gitignore, materialize_codemap_projection,
+                    read_codemap_counts, write_codemap_counts,
+                    update_root_codemap_docs)
+```
+
 In `scripts/harness_monitor.py`, add near `DESC_SCRIPT`:
 
 ```python
@@ -1304,10 +1724,25 @@ SUBDIR_HARNESS_TIMEOUT = 120
 SUBDIR_HARNESS_MAX_DIRS = 5
 ```
 
-Add helper:
+Add helpers:
 
 ```python
-def refresh_subdir_harness_blocks(job_id=None):
+def _subdir_harness_candidate_dirs(codemap_text: str, new_counts: dict[str, int] | None = None) -> list[str]:
+    entries = parse_codemap_text(codemap_text)
+    recorded_counts = read_codemap_counts(".")
+    counts = recorded_counts or (new_counts or {})
+    candidates = []
+    for entry in entries:
+        dir_path = entry.get("dir", "").strip("/")
+        if not dir_path:
+            continue
+        symbols = counts.get(dir_path, entry.get("symbols"))
+        if symbols is not None and int(symbols) >= SYMBOL_THRESHOLD:
+            candidates.append(dir_path)
+    return list(dict.fromkeys(candidates))[:SUBDIR_HARNESS_MAX_DIRS]
+
+
+def refresh_subdir_harness_blocks(codemap_text: str, new_counts: dict[str, int] | None = None, job_id=None):
     script = None
     for candidate in [
         SUBDIR_HARNESS_SCRIPT,
@@ -1318,6 +1753,9 @@ def refresh_subdir_harness_blocks(job_id=None):
             break
     if script is None:
         return "missing_script"
+    dirs = _subdir_harness_candidate_dirs(codemap_text, new_counts)
+    if not dirs:
+        return "no_dirs"
     cmd = [
         sys.executable,
         str(script),
@@ -1325,6 +1763,8 @@ def refresh_subdir_harness_blocks(job_id=None):
         "--refresh-facts",
         "--platform",
         "claude",
+        "--dirs",
+        *dirs,
         "--max-dirs",
         str(SUBDIR_HARNESS_MAX_DIRS),
     ]
@@ -1339,7 +1779,7 @@ Call it at the end of `_do_main_branch_update_inner()` after `update_root_codema
 
 ```python
     if _branch_ok(require_main, expected_branch):
-        refresh_subdir_harness_blocks(job_id)
+        refresh_subdir_harness_blocks(new_content, new_counts, job_id)
 ```
 
 Add the same call in the early-return path after root docs update.
