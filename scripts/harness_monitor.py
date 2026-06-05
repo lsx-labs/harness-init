@@ -351,13 +351,22 @@ def merge_codemap_count_baseline(
 
 
 # ══════════════════════════════════════════════════════════
-# CLAUDE.md ↔ AGENTS.md sync (deterministic, mtime-based)
+# CLAUDE.md ↔ AGENTS.md sync (root CODE_MAP block, subdir mtime copy)
 # ══════════════════════════════════════════════════════════
 
 def sync_platform_docs(dir_path):
-    """If both CLAUDE.md and AGENTS.md exist, copy the newer one to the other."""
-    claude = Path(dir_path, "CLAUDE.md")
-    agents = Path(dir_path, "AGENTS.md")
+    """Update root CODE_MAP blocks, or copy the newer subdirectory doc to the other."""
+    root = Path(dir_path)
+    if (root / "CODE_MAP.md").exists():
+        result = update_root_codemap_docs(root)
+        if any(value == "write_failed" for value in result.values()):
+            return "codemap_block_failed"
+        if any(value == "updated" for value in result.values()):
+            return "codemap_block"
+        return None
+
+    claude = root / "CLAUDE.md"
+    agents = root / "AGENTS.md"
     if not claude.exists() or not agents.exists():
         return None
     try:
@@ -377,6 +386,14 @@ def sync_platform_docs(dir_path):
             return "agents_to_claude"
     except OSError:
         return None
+
+
+def update_root_codemap_docs_checked(dir_path):
+    result = update_root_codemap_docs(dir_path)
+    failed = sorted(name for name, status in result.items() if status == "write_failed")
+    if failed:
+        raise RuntimeError(f"CODE_MAP root doc update failed: {', '.join(failed)}")
+    return result
 
 
 # ══════════════════════════════════════════════════════════
@@ -587,7 +604,7 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
                 ".",
                 merge_codemap_count_baseline(old_counts, new_counts, [], seed_missing=True),
             )
-        update_root_codemap_docs(".")
+        update_root_codemap_docs_checked(".")
         return
 
     # Re-check before mutating: the reindex + structure prelude above can run for a while, and we
@@ -637,7 +654,7 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
                 seed_missing=seed_counts,
             ),
         )
-    update_root_codemap_docs(".")
+    update_root_codemap_docs_checked(".")
 
 
 def _spawn_bg_worker(project_id, project_dir, bg_flag, extra_args=()) -> str:

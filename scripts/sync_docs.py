@@ -16,13 +16,33 @@ import os
 import sys
 from pathlib import Path
 
-from harness_shared import should_skip, platform_files
+from harness_shared import should_skip, platform_files, update_root_codemap_docs
 
 
 def sync_one(dir_path: str, own_file: str, other_file: str) -> dict | None:
     """Sync docs in one directory. Returns action taken or None."""
-    own = Path(dir_path) / own_file
-    other = Path(dir_path) / other_file
+    root = Path(dir_path)
+    own = root / own_file
+    other = root / other_file
+
+    if (root / "CODE_MAP.md").exists() and {own_file, other_file} == {"CLAUDE.md", "AGENTS.md"}:
+        if not own.exists() and other.exists():
+            try:
+                own.write_text(other.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
+            except OSError:
+                return None
+            return {
+                "dir": dir_path,
+                "action": "copy",
+                "from": other_file,
+                "to": own_file,
+                "files": update_root_codemap_docs(root),
+            }
+
+        result = update_root_codemap_docs(root)
+        if any(value in {"updated", "write_failed"} for value in result.values()):
+            return {"dir": dir_path, "action": "codemap_block", "files": result}
+        return None
 
     if own.exists() and other.exists():
         try:
@@ -65,6 +85,20 @@ def find_doc_dirs() -> list[str]:
     return sorted(dirs)
 
 
+def _sync_action_succeeded(result: dict) -> bool:
+    files = result.get("files", {})
+    if isinstance(files, dict) and any(value == "write_failed" for value in files.values()):
+        return False
+    action = result.get("action")
+    if action in {"copy", "sync"}:
+        return True
+    return (
+        action == "codemap_block"
+        and isinstance(files, dict)
+        and any(value == "updated" for value in files.values())
+    )
+
+
 def main():
     project_dir = sys.argv[1] if len(sys.argv) > 1 else "."
     platform = "claude"
@@ -97,7 +131,7 @@ def main():
         if r:
             results.append(r)
 
-    synced = sum(1 for result in results if result.get("action") in {"copy", "sync"})
+    synced = sum(1 for result in results if _sync_action_succeeded(result))
     print(json.dumps({"synced": synced, "actions": results}, indent=2, ensure_ascii=False))
 
 

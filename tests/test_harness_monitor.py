@@ -424,6 +424,44 @@ class TestBuildCodemapStructure:
 
 
 class TestSyncPlatformDocs:
+    def test_root_codemap_updates_block_without_copying_whole_file(self, tmp_path):
+        (tmp_path / "CODE_MAP.md").write_text("# Code Map\n\n### scripts/ - Shared map\n", encoding="utf-8")
+        claude = tmp_path / "CLAUDE.md"
+        agents = tmp_path / "AGENTS.md"
+        claude.write_text(
+            "# Claude Rules\n\nKeep Claude-only guidance.\n\n@CODE_MAP.md\n",
+            encoding="utf-8",
+        )
+        agents.write_text(
+            "# Codex Rules\n\nKeep Codex-only guidance.\n\n@CODE_MAP.md\n",
+            encoding="utf-8",
+        )
+
+        assert hm.sync_platform_docs(tmp_path) == "codemap_block"
+
+        claude_text = claude.read_text(encoding="utf-8")
+        agents_text = agents.read_text(encoding="utf-8")
+        assert "Keep Claude-only guidance." in claude_text
+        assert "Keep Codex-only guidance." in agents_text
+        assert "### scripts/ - Shared map" in claude_text
+        assert "### scripts/ - Shared map" in agents_text
+
+    def test_root_codemap_write_failed_reports_failed_block(self, tmp_path):
+        (tmp_path / "CODE_MAP.md").write_text("# Code Map\n", encoding="utf-8")
+
+        with patch.object(hm, "update_root_codemap_docs", return_value={"CLAUDE.md": "write_failed"}):
+            assert hm.sync_platform_docs(tmp_path) == "codemap_block_failed"
+
+    def test_root_codemap_mixed_update_and_write_failed_reports_failed_block(self, tmp_path):
+        (tmp_path / "CODE_MAP.md").write_text("# Code Map\n", encoding="utf-8")
+
+        with patch.object(
+            hm,
+            "update_root_codemap_docs",
+            return_value={"CLAUDE.md": "write_failed", "AGENTS.md": "updated"},
+        ):
+            assert hm.sync_platform_docs(tmp_path) == "codemap_block_failed"
+
     def test_equal_mtime_content_conflict_does_not_overwrite(self, tmp_path):
         claude = tmp_path / "CLAUDE.md"
         agents = tmp_path / "AGENTS.md"
@@ -464,6 +502,21 @@ class TestSyncPlatformDocs:
         assert hm.sync_platform_docs(tmp_path) == "agents_to_claude"
         assert claude.read_text(encoding="utf-8") == "NEW from agents"
         assert agents.read_text(encoding="utf-8") == "NEW from agents"
+
+    def test_subdir_sync_uses_subdir_mtime_even_when_root_has_codemap(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text("# Code Map\n", encoding="utf-8")
+        subdir = tmp_path / "pkg"
+        subdir.mkdir()
+        claude = subdir / "CLAUDE.md"
+        agents = subdir / "AGENTS.md"
+        claude.write_text("OLD claude", encoding="utf-8")
+        agents.write_text("NEW from agents", encoding="utf-8")
+        os.utime(claude, (1_700_000_000, 1_700_000_000))
+        os.utime(agents, (1_700_000_500, 1_700_000_500))
+
+        assert hm.sync_platform_docs(subdir) == "agents_to_claude"
+        assert claude.read_text(encoding="utf-8") == "NEW from agents"
 
     def test_identical_content_is_noop(self, tmp_path):
         claude = tmp_path / "CLAUDE.md"
@@ -822,6 +875,34 @@ class TestDoMainBranchUpdate:
 
         assert events == ["cache", "counts", "root_docs"]
         root_docs.assert_called_once_with(".")
+
+    def test_root_doc_write_failed_marks_job_failed(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
+        monkeypatch.setattr(hm, 'JOB_DIR', tmp_path / "jobs")
+        content = "# Code Map\n\n### scripts/ (100 symbols) — Stable scripts\n"
+        (tmp_path / "CODE_MAP.md").write_text(content, encoding="utf-8")
+
+        error = ""
+        with patch.object(hm, "is_on_main_branch", return_value=True), \
+             patch.object(hm, "ensure_gitnexus_fresh"), \
+             patch.object(hm, "read_codemap_counts", return_value={"scripts": 100}), \
+             patch.object(hm, "get_gitnexus_communities", return_value={"scripts": {"symbols": 100, "clusters": 2}}), \
+             patch.object(hm, "build_codemap_structure", return_value=(content, [], {"scripts": 100})), \
+             patch.object(
+                 hm,
+                 "update_root_codemap_docs",
+                 return_value={"CLAUDE.md": "write_failed", "AGENTS.md": "updated"},
+             ):
+            try:
+                hm.do_main_branch_update("test_project", job_id="j_docs")
+            except RuntimeError as exc:
+                error = str(exc)
+
+        payload = json.loads((tmp_path / "jobs" / "j_docs.json").read_text(encoding="utf-8"))
+        assert payload["status"] == "failed"
+        assert "CLAUDE.md" in error
+        assert payload["error"] == error
 
     def test_main_update_preserves_distinct_root_doc_surrounding_content(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
