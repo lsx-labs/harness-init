@@ -41,9 +41,10 @@ This design extends the same projection model to subdirectory harness content, w
 - Root CODE_MAP block: `<!-- codemap:start/end -->` in root platform docs.
 - Subdirectory harness block: `<!-- harness:start/end -->` in subdirectory platform docs.
 - Deterministic fact block: a generated Markdown fragment rendered directly from GitNexus CLI/Cypher output with no AI interpretation.
-- Fact-valid block: an existing deterministic fact block whose rendered values pass validation against freshly extracted GitNexus fact records.
-- Fact-baselined block: a fact-valid block that also has a matching `SUBDIR_HARNESS.state.json` baseline.
-- Legacy prose block: an existing `<!-- harness:start/end -->` block that fails deterministic fact validation or contains old generated prose such as `## 约束（基于 GitNexus 事实）` / `## 危险操作（基于 GitNexus impact 分析）`.
+- Structural fact block: an existing `<!-- harness:start/end -->` block that has the expected facts-only shape, with no prose headings, imperative guidance, placeholders, or old generated sections.
+- Fact-current block: a structural fact block whose rendered values match freshly extracted GitNexus fact records.
+- Fact-baselined block: a structural fact block that has a matching `SUBDIR_HARNESS.state.json` baseline. Its baseline may be stale.
+- Legacy prose block: an existing `<!-- harness:start/end -->` block that fails the structural fact block check or contains old generated prose such as `## 约束（基于 GitNexus 事实）` / `## 危险操作（基于 GitNexus impact 分析）`.
 - Manual prose: human-authored text outside `<!-- harness:start/end -->`; harness never edits it.
 - Harness block source: the accepted deterministic fact block stored in cache for one directory.
 - Refresh baseline: cache-side metadata describing the GitNexus/code facts that were true when the current harness block was accepted.
@@ -91,7 +92,7 @@ Responsibilities:
 - manage `SUBDIR_HARNESS.state.json`;
 - render accepted blocks into existing platform docs;
 - bootstrap missing docs only when invoked in manual mode;
-- validate rendered fact blocks against the structured GitNexus records.
+- run structural, freshness, and render-consistency checks against structured GitNexus records.
 
 Invocation modes:
 
@@ -141,7 +142,7 @@ Use cheap-first stale checks, without allowing cheap checks to hide cross-direct
 
 - Missing `<!-- harness:start/end -->` block.
 - Missing sidecar baseline.
-- Invalid deterministic fact block.
+- Legacy prose block or malformed facts-only block.
 - Symbol count drift at or above the existing `STALE_THRESHOLD` of `0.2`.
 - Repository source fingerprint change.
 - Directory source fingerprint change.
@@ -153,9 +154,11 @@ Use cheap-first stale checks, without allowing cheap checks to hide cross-direct
   - affected modules;
   - participating execution flows.
 
-Missing sidecar baseline is not enough by itself to classify a block as legacy. If the existing block validates against freshly extracted deterministic fact records, background mode may rebaseline it by writing cache state only; it must not rewrite the document during that rebaseline step.
+Missing sidecar baseline is not enough by itself to classify a block as legacy. If the existing block is structural and current, background mode may rebaseline it by writing cache state only; it must not rewrite the document during that rebaseline step.
 
-Invalid deterministic fact blocks are not automatically writable states for existing subdirectory docs. In background mode, an existing invalid block must be classified as `manual_migration_required`, not `refresh_facts`. This prevents a main-branch hook from silently replacing an old prose block with a new facts-only block.
+Freshness mismatch is not a structural failure. If an existing structural fact block contains old values, such as `被调用: 23` while current GitNexus facts say `40`, route it to `refresh_facts`, not `manual_migration`.
+
+Legacy prose blocks are not automatically writable states for existing subdirectory docs. In background mode, a legacy prose block must be classified as `manual_migration_required`, not `refresh_facts`. This prevents a main-branch hook from silently replacing an old prose block with a new facts-only block.
 
 The repository source fingerprint is the first global gate. If it is unchanged, the background path can skip all subdirectory graph work. If the repository source fingerprint changed, directory and known-caller source fingerprints are used only to prioritize and cap work; they do not prove freshness by themselves, because new incoming callers can originate outside the directory and outside the previous caller set.
 
@@ -185,7 +188,7 @@ Only advance the baseline after:
 - the accepted fact block was written to cache;
 - rendering either succeeded for all target files or recorded a retryable write failure without claiming the file is current.
 
-Do not advance the baseline when extraction fails, validation fails, or the final block remains invalid.
+Do not advance the baseline when extraction fails, render consistency fails, or the final block is not a structural fact block.
 
 Background work should be bounded. A worker should cap the number of subdirectories refreshed in one run and record remaining stale directories for later retry rather than spending unbounded time on a single PostToolUse job.
 
@@ -234,7 +237,7 @@ The unattended background path should generate only deterministic fact-backed it
 - affected modules rendered from GitNexus graph rows;
 - participating processes rendered from GitNexus graph rows.
 
-These rows must be rendered from structured data produced by `npx gitnexus cypher` or another non-AI GitNexus CLI output. The validator must compare rendered values against that structured data, not just check for citation strings.
+These rows must be rendered from structured data produced by `npx gitnexus cypher` or another non-AI GitNexus CLI output. `render_consistency_check` must compare rendered values against that structured data, not just check for citation strings.
 
 The generated block must not contain prose interpretation, normative constraints, or dangerous-operation recommendations. Those belong only in hand-authored text outside `<!-- harness:start/end -->`.
 
@@ -250,13 +253,22 @@ The generator may inspect source file paths only to compute fingerprints and to 
 
 ## Validation
 
-Add one deterministic fact validator:
+Use three separate checks so structure, renderer correctness, and freshness do not get conflated:
 
-- Rendered caller, impact, module, and process values must match the structured GitNexus rows used to build the block.
-- The managed block must not contain generated constraint prose, imperative guidance, or placeholders such as `TODO`, `{符号名}`, or template braces.
-- Empty-state output is valid only when the structured facts are empty or unavailable.
+- `structural_fact_block_check`: checks whether an existing block is a facts-only block. It accepts the expected `## GitNexus 事实` heading, supported fact rows, stable empty-state text, and truncation marker. It rejects old prose headings such as `## 约束（基于 GitNexus 事实）` / `## 危险操作（基于 GitNexus impact 分析）`, generated constraint prose, imperative guidance, placeholders such as `TODO` or `{符号名}`, and template braces. It does not compare values to current GitNexus facts.
+- `render_consistency_check`: checks whether a newly rendered block matches the structured GitNexus rows used to build it. Rendered caller, impact, module, and process values must match those rows. Empty-state output is valid only when the structured facts are empty or unavailable.
+- `freshness_check`: checks whether an existing structural fact block matches freshly extracted GitNexus fact records and the current fingerprint. A mismatch means the block is stale and should be refreshed; it does not make the block legacy.
 
-Validation is data verification, not prose review. If the block cannot be verified against extracted facts, keep the existing block and baseline.
+Action routing:
+
+| Existing block state | Freshness and baseline | Action |
+|----------------------|------------------------|--------|
+| Legacy prose block or structural check fails | Any | `manual_migration`; background reports only |
+| Structural fact block | Current facts and fingerprint match the baseline | `skip` |
+| Structural fact block | Current facts match and baseline is missing | `rebaseline`; background writes cache only |
+| Structural fact block | Current facts differ from the block, fingerprint differs from the baseline, or count drift crossed threshold | `refresh_facts`; background may re-render the managed block |
+
+Validation is data verification, not prose review. If fact extraction fails or a newly rendered block fails `render_consistency_check`, keep the existing block and baseline.
 
 ## Plan Changes
 
@@ -266,7 +278,7 @@ Change `plan_subdirs()` from copy/generate/skip to block-oriented actions:
 {
   "refresh_facts": [{"dir": "src/core", "reason": "gitnexus_fingerprint_changed"}],
   "render": [{"dir": "src/core", "files": ["CLAUDE.md", "AGENTS.md"]}],
-  "rebaseline": [{"dir": "src/cache-lost", "reason": "fact_valid_block_missing_sidecar"}],
+  "rebaseline": [{"dir": "src/cache-lost", "reason": "structural_fact_block_current_missing_sidecar"}],
   "bootstrap": [{"dir": "src/core", "files": ["AGENTS.md"]}],
   "manual_migration": [{"dir": "src/legacy", "reason": "legacy_prose_block_without_baseline"}],
   "skip": [{"dir": "src/api", "reason": "fresh"}]
@@ -277,7 +289,7 @@ There should be no subdirectory whole-file `copy` action. If the other platform 
 
 `bootstrap` must be marked manual-only. Background plans may render to existing files with existing blocks, but they must not create missing tracked docs.
 
-`rebaseline` may run in background mode only when the existing block is fact-valid. It writes `SUBDIR_HARNESS.state.json` and per-file rendered state, but leaves the platform doc bytes unchanged.
+`rebaseline` may run in background mode only when the existing block is structural and current. It writes `SUBDIR_HARNESS.state.json` and per-file rendered state, but leaves the platform doc bytes unchanged.
 
 `manual_migration` must be marked manual-only. Background plans may report it, but must not rewrite the block or advance the baseline.
 
@@ -295,7 +307,7 @@ PostToolUse rules:
 - bounded by stale checks;
 - refresh deterministic fact sections only;
 - render only to existing platform docs that contain a fact-baselined `<!-- harness:start/end -->` block;
-- rebaseline fact-valid blocks that only lost sidecar state, without changing doc bytes;
+- rebaseline structural fact blocks that are current but lost sidecar state, without changing doc bytes;
 - never bootstrap missing subdirectory docs;
 - never convert legacy prose blocks;
 - no writes outside `<!-- harness:start/end -->`.
@@ -309,7 +321,7 @@ SessionStart should stay lightweight. It may warn that subdirectory harness bloc
 - Missing GitNexus index: report refresh skipped or render explicit empty state only in manual bootstrap.
 - Stale GitNexus index: plan `gitnexus.analyze` first, then compute fingerprints.
 - Fact extraction timeout: keep existing block and do not advance baseline.
-- Validation failure: keep existing block and do not advance baseline.
+- Render consistency failure: keep existing block and do not advance baseline.
 - One platform file write fails: record file-level `write_failed`; do not mark that platform file current.
 - Cache write fails: do not render a newly generated block, because the source of truth was not persisted.
 
@@ -318,10 +330,11 @@ SessionStart should stay lightweight. It may warn that subdirectory harness bloc
 Existing subdirectory docs should be migrated in place:
 
 - If a doc has a fact-baselined `<!-- harness:start/end -->` block, keep all surrounding content and replace the block on refresh.
-- If a doc has a fact-valid block but no sidecar state, background refresh may rebuild the sidecar baseline and leave the file unchanged.
+- If a doc has a structural fact block but no sidecar state, background refresh may rebuild the sidecar baseline only when `freshness_check` passes, leaving the file unchanged.
+- If a doc has a structural fact block with stale values, background refresh may re-render the managed block through `refresh_facts`.
 - If a doc has a legacy prose block, background refresh must leave the file unchanged and report `manual_migration_required`.
 - Manual migration from legacy prose to facts-only must preserve the old prose verbatim outside the managed block. Move the old block body under `## 补充约束（手动维护）`, preferably under a subheading such as `### 从旧 harness 块迁移`, then render the new `## GitNexus 事实` block. If the same migrated text is already present outside the block, do not duplicate it.
-- If a block passes deterministic fact validation but only lacks sidecar state, manual migration may also rebaseline the existing fact block without moving any text.
+- If a structural fact block passes `freshness_check` but only lacks sidecar state, manual migration may also rebaseline the existing fact block without moving any text.
 - If only one platform doc exists, do not copy it wholesale. Manual `/harness-init` may create the missing platform doc with the minimal shell and accepted block. Background workers must leave the missing file absent.
 - If old copied platform docs are byte-identical, leave them as-is outside the managed block.
 - If platform docs have diverged, preserve both documents' manual text.
@@ -377,20 +390,22 @@ Unit tests should cover:
 - Unchanged repository source fingerprint skips expensive GitNexus fingerprinting.
 - Changed repository source fingerprint plus unchanged directory source fingerprint does not mark a directory fresh without graph checking or `stale_pending_graph_check`.
 - Cypher rows in different orders render the same block and hash after stable sorting.
-- A fact-valid block without sidecar baseline plans `rebaseline`, and background mode writes state while leaving the file unchanged.
+- A structural fact block whose values differ from current GitNexus facts plans `refresh_facts`, not `manual_migration`.
+- A structural fact block that is current but lacks sidecar baseline plans `rebaseline`, and background mode writes state while leaving the file unchanged.
 - A legacy prose block plans `manual_migration`, and background mode leaves the file unchanged.
 - Manual migration moves the old block body under `## 补充约束（手动维护）` without duplicating existing migrated text.
 - Failed fact extraction does not advance baseline.
-- Failed validation does not advance baseline.
+- Failed render consistency check does not advance baseline.
 - File write failure records retryable state.
 - `plan_subdirs()` emits block-oriented actions and no `copy` action.
-- Context-budget truncation preserves a valid managed block.
+- Context-budget truncation preserves a structural facts-only managed block.
 - Skill docs describe block-only refresh.
 
 Integration tests should cover:
 
 - Running `/harness-init` on a project with one existing subdirectory platform doc creates the missing platform doc only in manual mode and updates only managed blocks.
 - Manual text before and after the block remains unchanged.
+- Running background refresh against a facts-only block whose caller count changed from `23` to `40` refreshes the managed block instead of reporting manual migration.
 - Running background refresh against a facts-only `<!-- harness:start/end -->` block with missing cache state rebaselines sidecar state without changing doc bytes.
 - Running background refresh against an old prose-style `<!-- harness:start/end -->` block reports manual migration and does not rewrite the doc.
 - Running manual migration against an old prose-style block preserves the old prose outside the marker and writes a facts-only managed block.
@@ -405,9 +420,10 @@ Integration tests should cover:
 - All automatic subdirectory content lives inside `<!-- harness:start/end -->`.
 - Both platform docs can receive the same accepted harness block without sharing non-managed text.
 - Stale decisions use sidecar baselines and at least one semantic fingerprint beyond symbol count.
-- Baselines advance only after accepted deterministic fact extraction, validation, and persisted state.
-- Background-generated fact entries are rendered from structured GitNexus output and validated against those records.
-- Background refresh may rebuild missing sidecar state for a fact-valid block without changing doc bytes.
+- Baselines advance only after accepted deterministic fact extraction, render consistency, and persisted state.
+- Background-generated fact entries are rendered from structured GitNexus output and checked against those records.
+- Background refresh treats structural-but-stale fact blocks as `refresh_facts`, not `manual_migration`.
+- Background refresh may rebuild missing sidecar state for a current structural fact block without changing doc bytes.
 - Background refresh never replaces a legacy prose block.
 - Manual legacy migration preserves old prose outside the managed block before writing facts.
 - Rendered fact entries have a stable total ordering, so equivalent GitNexus rows do not cause block-hash churn.
@@ -419,7 +435,7 @@ Integration tests should cover:
 
 - Store canonical block text and baseline metadata in `SUBDIR_HARNESS.state.json`.
 - Render the user-visible managed-block title as `## GitNexus 事实`; keep `Layer 1` as a design-scope term, not an emitted heading.
-- Allow background cache-only rebaseline for fact-valid blocks with missing sidecar state.
+- Allow background cache-only rebaseline for current structural fact blocks with missing sidecar state.
 - Compute `gitnexus_fingerprint` from the canonical graph inputs listed in this spec.
 - Add non-blocking PostToolUse refresh on main/master for deterministic facts in stale existing subdirectory harness blocks only.
 - Insert a missing block after `## 测试` when present; otherwise before `## 补充约束（手动维护）` when present; otherwise append it to the file.
