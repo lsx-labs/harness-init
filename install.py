@@ -215,13 +215,15 @@ def main():
         context_path = str(SCRIPT_DIR / "scripts" / "session_context.py")
         # Clean up stale copy-mode files (current + legacy names)
         for stale in ["harness-monitor.py", "harness_monitor.py", "shared.py",
-                       "harness_shared.py", "generate_descriptions.py", "session_context.py"]:
+                       "harness_shared.py", "generate_descriptions.py", "generate_subdir_harness.py",
+                       "session_context.py"]:
             (local_share / stale).unlink(missing_ok=True)
     else:
         local_share.mkdir(parents=True, exist_ok=True)
         install_file(SCRIPT_DIR / "scripts" / "harness_shared.py", local_share / "harness_shared.py")
         install_file(SCRIPT_DIR / "scripts" / "harness_monitor.py", local_share / "harness_monitor.py")
         install_file(SCRIPT_DIR / "scripts" / "generate_descriptions.py", local_share / "generate_descriptions.py")
+        install_file(SCRIPT_DIR / "scripts" / "generate_subdir_harness.py", local_share / "generate_subdir_harness.py")
         install_file(SCRIPT_DIR / "scripts" / "session_context.py", local_share / "session_context.py")
         shutil.copy2(SCRIPT_DIR / "VERSION", local_share / "VERSION")
         monitor_path = str(local_share / "harness_monitor.py")

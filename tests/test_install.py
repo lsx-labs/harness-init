@@ -32,6 +32,11 @@ def test_install_uses_postponed_annotations_for_python39():
     assert source.index("from __future__ import annotations") < source.index("def check_command")
 
 
+def test_install_mentions_generate_subdir_harness_script():
+    source = Path(os.path.join(os.path.dirname(__file__), "..", "install.py")).read_text(encoding="utf-8")
+    assert "generate_subdir_harness.py" in source
+
+
 class TestInstallFile:
     def test_copy_mode(self, tmp_path):
         src = tmp_path / "source.txt"
