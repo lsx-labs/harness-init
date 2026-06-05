@@ -422,3 +422,27 @@ class TestMainFunction:
         out = capsys.readouterr().out
         assert "develop" in out
         assert "1 个文件变更" in out
+
+    def test_main_materializes_codemap_only_not_local_counts_sidecar(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(harness_shared, "CODEMAP_CACHE_ROOT", tmp_path / "cache")
+        cache = harness_shared.codemap_cache_path(tmp_path)
+        cache.parent.mkdir(parents=True)
+        cache.write_text("### src/ (100 symbols) — Core module\n", encoding="utf-8")
+        counts_cache = harness_shared.codemap_counts_cache_path(tmp_path)
+        counts_cache.write_text(
+            '{"schema_version": 1, "described_counts": {"src": 100}}\n',
+            encoding="utf-8",
+        )
+
+        with patch('session_context.get_branch', return_value="main"), \
+             patch('session_context.get_ahead_behind', return_value=""), \
+             patch('session_context.get_dirty_files', return_value=(0, "")), \
+             patch('session_context.get_recent_commits', return_value=[]), \
+             patch('session_context.check_gitnexus_stale', return_value=None), \
+             patch('session_context.read_pending_notifications', return_value=[]):
+            sc_main()
+
+        capsys.readouterr()
+        assert (tmp_path / "CODE_MAP.md").read_text(encoding="utf-8") == cache.read_text(encoding="utf-8")
+        assert not (tmp_path / ".harness" / "CODE_MAP.counts.json").exists()

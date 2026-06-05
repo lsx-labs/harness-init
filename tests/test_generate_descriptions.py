@@ -155,6 +155,21 @@ class TestWriteDescriptions:
         cache = harness_shared.codemap_cache_path(tmp_path)
         assert "Core business logic" in cache.read_text(encoding="utf-8")
 
+    def test_write_descriptions_does_not_update_platform_docs(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(harness_shared, "CODEMAP_CACHE_ROOT", tmp_path / "cache")
+        (tmp_path / "CODE_MAP.md").write_text("### src/ (100 symbols)\n")
+        claude_text = "# Claude\n\n@CODE_MAP.md\n"
+        agents_text = "# Agents\n\n@CODE_MAP.md\n"
+        (tmp_path / "CLAUDE.md").write_text(claude_text)
+        (tmp_path / "AGENTS.md").write_text(agents_text)
+
+        changes = write_descriptions({"src": "Core business logic"})
+
+        assert changes == [{"dir": "src", "desc": "Core business logic"}]
+        assert (tmp_path / "CLAUDE.md").read_text() == claude_text
+        assert (tmp_path / "AGENTS.md").read_text() == agents_text
+
     def test_write_sub_level(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "CODE_MAP.md").write_text("### src/ (100 symbols)\n- **api/** (50 symbols)\n")
