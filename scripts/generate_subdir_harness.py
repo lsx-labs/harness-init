@@ -39,6 +39,7 @@ LEGACY_PROSE_HEADINGS = (
     "## 约束（基于 GitNexus 事实）",
     "## 危险操作（基于 GitNexus impact 分析）",
 )
+_GITNEXUS_REPO_NAME_CACHE: dict[str, str] = {}
 
 
 def _sha256_text(text: str) -> str:
@@ -330,18 +331,88 @@ def _dir_source_paths(source_snapshot: dict, dir_path: str) -> list[str]:
     return [path for path in source_snapshot.get("source_files", []) if path == rel or path.startswith(prefix)]
 
 
-def _run_gitnexus_cypher(project_dir: str | Path, cypher: str, *, timeout: int = 20) -> list[list[str]]:
+def _parse_gitnexus_list(output: str) -> list[tuple[str, str]]:
+    repos: list[tuple[str, str]] = []
+    current_name = ""
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("Indexed Repositories"):
+            continue
+        if "\t" in line:
+            name, path = line.split("\t", 1)
+            if name.strip() and path.strip():
+                repos.append((name.strip(), path.strip()))
+            continue
+        inline = re.match(r"(.+?)\s+\((/.+)\)$", line)
+        if inline:
+            current_name = inline.group(1).strip()
+            repos.append((current_name, inline.group(2).strip()))
+            continue
+        if line.startswith("Path:"):
+            path = line.split(":", 1)[1].strip()
+            if current_name and path:
+                repos.append((current_name, path))
+            continue
+        if re.match(r"^(Indexed|Commit|Stats|Clusters|Processes):", line):
+            continue
+        current_name = line
+    deduped: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in repos:
+        if item not in seen:
+            deduped.append(item)
+            seen.add(item)
+    return deduped
+
+
+def _read_gitnexus_meta_repo_path(project_dir: str | Path) -> str:
+    try:
+        meta = json.loads((Path(project_dir) / ".gitnexus" / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    return str(meta.get("repoPath") or "").strip()
+
+
+def gitnexus_repo_name(project_dir: str | Path) -> str:
+    root = Path(project_dir).resolve()
+    cache_key = str(root)
+    if cache_key in _GITNEXUS_REPO_NAME_CACHE:
+        return _GITNEXUS_REPO_NAME_CACHE[cache_key]
+    meta_repo_path = _read_gitnexus_meta_repo_path(root)
+    target_paths = {str(root)}
+    if meta_repo_path:
+        target_paths.add(str(Path(meta_repo_path).resolve()))
     try:
         result = subprocess.run(
-            ["npx", "gitnexus", "cypher", cypher, "-r", Path(project_dir).resolve().name],
+            ["npx", "gitnexus", "list"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        result = None
+    if result is not None and result.returncode == 0:
+        for name, repo_path in _parse_gitnexus_list(result.stdout):
+            if str(Path(repo_path).resolve()) in target_paths:
+                _GITNEXUS_REPO_NAME_CACHE[cache_key] = name
+                return name
+    fallback = root.name
+    _GITNEXUS_REPO_NAME_CACHE[cache_key] = fallback
+    return fallback
+
+
+def _run_gitnexus_cypher(project_dir: str | Path, cypher: str, *, timeout: int = 20) -> list[list[str]] | None:
+    try:
+        result = subprocess.run(
+            ["npx", "gitnexus", "cypher", cypher, "-r", gitnexus_repo_name(project_dir)],
             capture_output=True,
             text=True,
             timeout=timeout,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return []
+        return None
     if result.returncode != 0:
-        return []
+        return None
     output = result.stdout.strip() or result.stderr.strip()
     return gitnexus_markdown_rows(parse_gitnexus_markdown(output))
 
@@ -353,6 +424,20 @@ def _quote_cypher(value: str) -> str:
 def _row_int(value: str) -> int | None:
     text = str(value).strip()
     return int(text) if text.isdigit() else None
+
+
+def _unavailable_dir_facts(project_dir: str | Path, dir_path: str, snapshot: dict, dir_paths: list[str]) -> dict:
+    return {
+        "caller_counts": [],
+        "affected_modules": [],
+        "processes": [],
+        "symbol_count": 0,
+        "gitnexus_available": False,
+        "gitnexus_error": "gitnexus_unavailable",
+        "repo_source_fingerprint": snapshot["repo_source_fingerprint"],
+        "source_fingerprint": source_fingerprint(project_dir, dir_paths),
+        "known_caller_source_fingerprint": source_fingerprint(project_dir, []),
+    }
 
 
 def extract_dir_facts(project_dir: str | Path, dir_path: str, source_snapshot: dict | None = None) -> dict:
@@ -390,6 +475,12 @@ def extract_dir_facts(project_dir: str | Path, dir_path: str, source_snapshot: d
         f"WHERE s.filePath = '{exact}' OR s.filePath STARTS WITH '{prefix}' "
         "RETURN count(DISTINCT s) AS symbols",
     )
+    if any(rows is None for rows in (caller_rows, module_rows, process_rows, symbol_rows)):
+        return _unavailable_dir_facts(project_dir, rel, snapshot, dir_paths)
+    caller_rows = caller_rows or []
+    module_rows = module_rows or []
+    process_rows = process_rows or []
+    symbol_rows = symbol_rows or []
     caller_paths = sorted({row[2] for row in caller_rows if len(row) >= 3 and row[2]})
     return {
         "caller_counts": [
@@ -408,6 +499,7 @@ def extract_dir_facts(project_dir: str | Path, dir_path: str, source_snapshot: d
             if len(row) >= 2 and (count := _row_int(row[1])) is not None
         ],
         "symbol_count": int(symbol_rows[0][0]) if symbol_rows and symbol_rows[0] and str(symbol_rows[0][0]).isdigit() else 0,
+        "gitnexus_available": True,
         "repo_source_fingerprint": repo_fp,
         "source_fingerprint": dir_fp,
         "known_caller_source_fingerprint": source_fingerprint(project_dir, caller_paths),
@@ -451,6 +543,7 @@ def plan_directory(
     mode: str = "background",
     source_snapshot: dict | None = None,
     expected_branch: str | None = None,
+    allow_graph: bool = True,
 ) -> dict:
     state = _read_state(project_dir)
     baseline = state.get("dirs", {}).get(_clean_rel_dir(dir_path))
@@ -478,7 +571,43 @@ def plan_directory(
                 "files": [],
                 "file_actions": file_actions,
             }
+    if not allow_graph:
+        file_actions: list[dict] = []
+        for path in paths:
+            if not path.exists():
+                file_actions.append({"file": path.name, "action": "bootstrap", "reason": "missing_file", "manual_only": True})
+                continue
+            body = extract_harness_block_body(path.read_text(encoding="utf-8", errors="replace"))
+            if not body:
+                file_actions.append({"file": path.name, "action": "bootstrap", "reason": "missing_harness_block", "manual_only": True})
+                continue
+            structural = structural_fact_block_check(body)
+            if not structural["ok"]:
+                file_actions.append({"file": path.name, "action": "manual_migration", "reason": structural["reason"]})
+                continue
+            file_actions.append({"file": path.name, "action": "refresh_facts", "reason": "graph_check_deferred"})
+        summary = _highest_priority_action(file_actions)
+        return {
+            "dir": _clean_rel_dir(dir_path),
+            "action": summary["action"],
+            "reason": summary["reason"],
+            "files": summary["files"],
+            "file_actions": file_actions,
+            "manual_only": summary["action"] in {"manual_migration", "bootstrap"},
+        }
     facts = extract_dir_facts(project_dir, dir_path, source_snapshot=snapshot)
+    if facts.get("gitnexus_available") is False:
+        return {
+            "dir": _clean_rel_dir(dir_path),
+            "action": "skip",
+            "reason": facts.get("gitnexus_error") or "gitnexus_unavailable",
+            "files": [],
+            "facts": facts,
+            "file_actions": [
+                {"file": path.name, "action": "skip", "reason": facts.get("gitnexus_error") or "gitnexus_unavailable"}
+                for path in existing_paths
+            ],
+        }
     fact_block = render_fact_block(facts)
     file_actions: list[dict] = []
     for path in paths:

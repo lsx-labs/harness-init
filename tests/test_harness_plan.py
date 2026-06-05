@@ -353,6 +353,19 @@ class TestPlanSubdirs:
         deepest = result["layers"][0]
         assert deepest[0] == 3  # depth of src/core/engine
 
+    def test_sync_plan_does_not_extract_gitnexus_facts(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "src").mkdir()
+        monkeypatch.setattr(
+            hp.subdir_harness,
+            "extract_dir_facts",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("plan should not query GitNexus facts")),
+        )
+
+        result = hp.plan_subdirs(["src"], "CLAUDE.md", "AGENTS.md")
+
+        assert result["bootstrap"] == [{"dir": "src", "files": ["CLAUDE.md", "AGENTS.md"], "manual_only": True, "reason": "missing_file"}]
+
 
 class TestPlanLsp:
     def test_installed(self):

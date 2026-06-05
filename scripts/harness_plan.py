@@ -139,7 +139,14 @@ def find_complex_dirs(entries: list[dict]) -> list[str]:
 def _plan_subdir_with_generator(dir_path: str, files: list[str], source_snapshot: dict | None = None) -> dict:
     if subdir_harness is None:
         return {"action": "bootstrap", "files": files[:1], "manual_only": True, "reason": "generator_unavailable"}
-    return subdir_harness.plan_directory(".", dir_path, files, mode="background", source_snapshot=source_snapshot)
+    return subdir_harness.plan_directory(
+        ".",
+        dir_path,
+        files,
+        mode="background",
+        source_snapshot=source_snapshot,
+        allow_graph=False,
+    )
 
 
 def _append_action(result: dict, action: str, item: dict) -> None:

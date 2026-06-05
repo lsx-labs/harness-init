@@ -316,6 +316,76 @@ def test_extract_dir_facts_uses_schema_tolerant_gitnexus_rows(tmp_path, monkeypa
     assert facts["known_caller_source_fingerprint"] == "sha256:source"
 
 
+def test_extract_dir_facts_marks_gitnexus_unavailable_on_query_failure(tmp_path, monkeypatch) -> None:
+    project = tmp_path / "repo"
+    project.mkdir()
+    outputs = iter([
+        [["Parser", "40", "src/parser.py"]],
+        None,
+        [["AnalyzeProject", "2"]],
+        [["128"]],
+    ])
+    monkeypatch.setattr(gsh, "_run_gitnexus_cypher", lambda project_dir, cypher: next(outputs))
+    monkeypatch.setattr(gsh, "source_fingerprint", lambda project_dir, paths=None: "sha256:source")
+
+    facts = gsh.extract_dir_facts(project, "src")
+
+    assert facts["gitnexus_available"] is False
+    assert facts["gitnexus_error"] == "gitnexus_unavailable"
+
+
+def test_refresh_directory_does_not_overwrite_existing_block_when_gitnexus_unavailable(tmp_path, monkeypatch) -> None:
+    project = tmp_path / "repo"
+    doc_dir = project / "src"
+    doc_dir.mkdir(parents=True)
+    old_facts = {"caller_counts": [{"target": "Parser", "count": 40}], "affected_modules": [], "processes": [], "symbol_count": 40}
+    original = gsh.render_managed_block(gsh.render_fact_block(old_facts))
+    (doc_dir / "CLAUDE.md").write_text(original, encoding="utf-8")
+    written: dict = {}
+    monkeypatch.setattr(gsh, "read_subdir_harness_state", lambda project_dir=".": {"schema_version": 1, "dirs": {}})
+    monkeypatch.setattr(gsh, "write_subdir_harness_state", lambda project_dir, payload: written.update(payload) or True)
+    monkeypatch.setattr(
+        gsh,
+        "extract_dir_facts",
+        lambda project_dir, dir_path, source_snapshot=None: {
+            "caller_counts": [],
+            "affected_modules": [],
+            "processes": [],
+            "symbol_count": 0,
+            "gitnexus_available": False,
+            "gitnexus_error": "gitnexus_unavailable",
+            "repo_source_fingerprint": "sha256:repo",
+            "source_fingerprint": "sha256:src",
+            "known_caller_source_fingerprint": "sha256:callers",
+        },
+    )
+
+    result = gsh.refresh_directory(project, "src", ["CLAUDE.md"], mode="background")
+
+    assert result["action"] == "skip"
+    assert result["reason"] == "gitnexus_unavailable"
+    assert (doc_dir / "CLAUDE.md").read_text(encoding="utf-8") == original
+    assert written == {}
+
+
+def test_gitnexus_repo_name_matches_meta_repo_path_from_list(tmp_path, monkeypatch) -> None:
+    project = tmp_path / "linked-worktree"
+    (project / ".gitnexus").mkdir(parents=True)
+    (project / ".gitnexus" / "meta.json").write_text(
+        '{"repoPath": "/real/repo/path"}',
+        encoding="utf-8",
+    )
+
+    class Result:
+        returncode = 0
+        stdout = "\n  harness-init  (/real/repo/path)\n    Path:    /real/repo/path\n"
+        stderr = ""
+
+    monkeypatch.setattr(gsh.subprocess, "run", lambda *args, **kwargs: Result())
+
+    assert gsh.gitnexus_repo_name(project) == "harness-init"
+
+
 def test_source_fingerprint_changes_when_source_file_changes(tmp_path) -> None:
     project = tmp_path / "repo"
     (project / "src").mkdir(parents=True)
