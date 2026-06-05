@@ -219,7 +219,7 @@ def render_codemap_block(doc_text: str, codemap_text: str) -> str:
         re.DOTALL | re.MULTILINE,
     )
     if pattern.search(doc_text):
-        return pattern.sub(managed_block, doc_text, count=1)
+        return pattern.sub(lambda _: managed_block, doc_text)
     if "@CODE_MAP.md" in doc_text:
         return doc_text.replace("@CODE_MAP.md", section, 1)
     suffix = "" if doc_text.endswith("\n") else "\n"

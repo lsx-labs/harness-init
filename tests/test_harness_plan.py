@@ -401,6 +401,23 @@ class TestMain:
         assert out["codemap"]["action"] == "refresh"
         assert out["codemap"]["dirs_needing"] == ["src"]
 
+    def test_main_uses_live_counts_for_subdir_plan_when_sidecar_missing(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "src").mkdir()
+        (tmp_path / "CODE_MAP.md").write_text("### src/ — Existing desc\n", encoding="utf-8")
+        monkeypatch.setattr(hp, "platform_files", lambda platform: ("CLAUDE.md", "AGENTS.md"))
+        monkeypatch.setattr(hp, "read_codemap_counts", lambda project_dir=".": {})
+        monkeypatch.setattr(hp, "_get_live_symbol_counts", lambda: {"src": 200})
+        monkeypatch.setattr(hp, "plan_gitnexus", lambda diagnostic: {"action": "skip"})
+        monkeypatch.setattr(hp, "plan_lsp", lambda diagnostic: [])
+        monkeypatch.setattr(hp, "plan_codex_gitnexus_wrapper", lambda diagnostic, platform: {"action": "skip"})
+        monkeypatch.setattr("sys.argv", ["hp", str(tmp_path), "--platform", "claude"])
+
+        hp.main()
+
+        out = json.loads(capsys.readouterr().out)
+        assert out["subdirs"]["generate"] == [{"dir": "src", "depth": 1}]
+
     def test_main_default_platform(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr('sys.argv', ['hp', str(tmp_path)])

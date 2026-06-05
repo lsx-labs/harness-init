@@ -19,13 +19,28 @@ from pathlib import Path
 from harness_shared import should_skip, platform_files, update_root_codemap_docs
 
 
+def is_root_codemap_dir(root: Path) -> bool:
+    """Treat CODE_MAP block rendering as root-only; subdirs keep mtime sync semantics."""
+    codemap = root / "CODE_MAP.md"
+    if not codemap.exists():
+        return False
+    try:
+        resolved = root.resolve()
+    except OSError:
+        return False
+    for parent in resolved.parents:
+        if (parent / "CODE_MAP.md").exists():
+            return False
+    return True
+
+
 def sync_one(dir_path: str, own_file: str, other_file: str) -> dict | None:
     """Sync docs in one directory. Returns action taken or None."""
     root = Path(dir_path)
     own = root / own_file
     other = root / other_file
 
-    if (root / "CODE_MAP.md").exists() and {own_file, other_file} == {"CLAUDE.md", "AGENTS.md"}:
+    if is_root_codemap_dir(root) and {own_file, other_file} == {"CLAUDE.md", "AGENTS.md"}:
         if not own.exists() and other.exists():
             try:
                 own.write_text(other.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")

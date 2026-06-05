@@ -266,10 +266,14 @@ def main():
 
     entries = parse_codemap(Path("CODE_MAP.md"))
     recorded_counts = read_codemap_counts(".")
+    live_counts = _get_live_symbol_counts()
     if recorded_counts:
         for entry in entries:
             entry["symbols"] = recorded_counts.get(entry["dir"])
-    live_counts = _get_live_symbol_counts()
+    else:
+        for entry in entries:
+            if entry.get("symbols") is None:
+                entry["symbols"] = live_counts.get(entry["dir"])
     complex_dirs = find_complex_dirs(entries)
 
     plan = {

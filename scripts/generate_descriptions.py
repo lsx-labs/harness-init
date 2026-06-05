@@ -772,45 +772,59 @@ def write_descriptions(descriptions: dict[str, str]) -> list[dict]:
         body = line.rstrip("\r\n")
         return body, line[len(body):]
 
-    def rewrite_line(line: str, desc: str) -> str:
+    def rewrite_line(line: str, desc: str, *, strip_counts: bool) -> str:
         body, newline = split_newline(line)
-        body = re.sub(r'\s+\(\d+\s+symbols?\)\s*$', "", body).rstrip()
         base = body.split("—", 1)[0].rstrip()
-        base = re.sub(r'\s+\(\d+\s+symbols?\)\s*$', "", base).rstrip()
-        return f"{base} — {desc}{newline}"
+        if strip_counts:
+            body = re.sub(r'\s+\(\d+\s+symbols?\)\s*$', "", body).rstrip()
+            base = body.split("—", 1)[0].rstrip()
+            base = re.sub(r'\s+\(\d+\s+symbols?\)\s*$', "", base).rstrip()
+            return f"{base} — {desc}{newline}"
+        count_match = re.search(r'\(\d+\s+symbols?\)', body)
+        suffix = ""
+        if count_match and count_match.group(0) not in base:
+            suffix = f" {count_match.group(0)}"
+        return f"{base} — {desc}{suffix}{newline}"
 
-    current_top = ""
-    updated_lines = []
-    for line in lines:
-        top_match = re.match(r'^(###\s+)(\S+)/?(.*)$', line)
-        if top_match:
-            current_top = top_match.group(2).rstrip("/")
-            desc = normalized.get(current_top)
-            if desc is not None:
-                updated_lines.append(rewrite_line(line, desc))
-                changes.append({"dir": current_top, "desc": desc})
-                continue
-        sub_match = re.match(r'^-\s+\*\*(\S+?)/?\*\*', line)
-        if current_top and sub_match:
-            sub_path = sub_match.group(1).rstrip("/")
-            key = f"{current_top}/{sub_path}"
-            desc = normalized.get(key)
-            if desc is not None:
-                updated_lines.append(rewrite_line(line, desc))
-                changes.append({"dir": key, "desc": desc})
-                continue
-        updated_lines.append(line)
+    def build_updated_lines(*, strip_counts: bool) -> tuple[list[str], list[dict]]:
+        current_top = ""
+        updated = []
+        found_changes = []
+        for line in lines:
+            top_match = re.match(r'^(###\s+)(\S+)/?(.*)$', line)
+            if top_match:
+                current_top = top_match.group(2).rstrip("/")
+                desc = normalized.get(current_top)
+                if desc is not None:
+                    updated.append(rewrite_line(line, desc, strip_counts=strip_counts))
+                    found_changes.append({"dir": current_top, "desc": desc})
+                    continue
+            sub_match = re.match(r'^-\s+\*\*(\S+?)/?\*\*', line)
+            if current_top and sub_match:
+                sub_path = sub_match.group(1).rstrip("/")
+                key = f"{current_top}/{sub_path}"
+                desc = normalized.get(key)
+                if desc is not None:
+                    updated.append(rewrite_line(line, desc, strip_counts=strip_counts))
+                    found_changes.append({"dir": key, "desc": desc})
+                    continue
+            updated.append(line)
+        return updated, found_changes
+
+    updated_lines, changes = build_updated_lines(strip_counts=True)
 
     if changes:
-        content = "".join(updated_lines)
+        strip_counts = True
         if legacy_counts:
             current_counts = read_codemap_counts(".")
             merged_counts = dict(current_counts)
             for dir_path, count in legacy_counts.items():
                 merged_counts.setdefault(dir_path, count)
             if merged_counts != current_counts:
-                if not write_codemap_counts(".", merged_counts):
-                    raise RuntimeError("failed to write CODE_MAP count sidecar")
+                strip_counts = write_codemap_counts(".", merged_counts)
+        if not strip_counts:
+            updated_lines, changes = build_updated_lines(strip_counts=False)
+        content = "".join(updated_lines)
         tmp = codemap.with_suffix(codemap.suffix + ".tmp")
         tmp.write_text(content, encoding="utf-8")
         os.replace(tmp, codemap)

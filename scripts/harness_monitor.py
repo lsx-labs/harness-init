@@ -350,6 +350,23 @@ def merge_codemap_count_baseline(
     return merged
 
 
+def changed_acceptable_description_dirs(
+    before_content: str,
+    after_content: str,
+    candidate_dirs: list[str],
+) -> list[str]:
+    """Return candidate dirs whose CODE_MAP description was actually refreshed."""
+    before = {e["dir"]: e.get("desc") or "" for e in parse_codemap_text(before_content)}
+    after = {e["dir"]: e.get("desc") or "" for e in parse_codemap_text(after_content)}
+    changed = []
+    for dir_path in candidate_dirs:
+        before_desc = before.get(dir_path, "")
+        after_desc = after.get(dir_path, "")
+        if after_desc != before_desc and not needs_description_refresh(after_desc):
+            changed.append(dir_path)
+    return changed
+
+
 # ══════════════════════════════════════════════════════════
 # CLAUDE.md ↔ AGENTS.md sync (root CODE_MAP block, subdir mtime copy)
 # ══════════════════════════════════════════════════════════
@@ -388,11 +405,13 @@ def sync_platform_docs(dir_path):
         return None
 
 
-def update_root_codemap_docs_checked(dir_path):
+def update_root_codemap_docs_checked(dir_path, job_id=None):
     result = update_root_codemap_docs(dir_path) or {}
     failed = sorted(name for name, status in result.items() if status == "write_failed")
     if failed:
-        raise RuntimeError(f"CODE_MAP root doc update failed: {', '.join(failed)}")
+        write_job_status(job_id, {
+            "root_doc_update": {"status": "write_failed", "files": failed},
+        })
     return result
 
 
@@ -610,7 +629,7 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
                 ".",
                 merge_codemap_count_baseline(old_counts, new_counts, [], seed_missing=True),
             )
-        update_root_codemap_docs_checked(".")
+        update_root_codemap_docs_checked(".", job_id)
         return
 
     # Re-check before mutating: the reindex + structure prelude above can run for a while, and we
@@ -619,6 +638,10 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
     # branch you dispatched from". (The worker-start check can go stale over a multi-minute run.)
     if not _branch_ok(require_main, expected_branch):
         return
+
+    if seed_counts and legacy_counts:
+        if not write_codemap_counts(".", legacy_counts):
+            return
 
     if new_content != old_content:
         atomic_write_text(codemap_file, new_content)
@@ -632,7 +655,7 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
         if candidate.exists():
             desc_script = candidate
             break
-    description_refresh_succeeded = not refresh_attempted
+    refresh_returncode_ok = False
     if desc_script:
         try:
             cmd = [sys.executable, str(desc_script), ".", "--generate", "--use-fingerprints",
@@ -640,20 +663,27 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
             for dir_path in stale_dirs:
                 cmd.extend(["--refresh-dir", dir_path])
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=CODEMAP_REFRESH_TIMEOUT)
-            description_refresh_succeeded = result.returncode == 0
+            refresh_returncode_ok = result.returncode == 0
         except (subprocess.TimeoutExpired, OSError):
-            description_refresh_succeeded = False
+            refresh_returncode_ok = False
     if not _branch_ok(require_main, expected_branch):
         return
     cache_codemap_projection(".")
 
     refreshed_count_dirs = []
-    if description_refresh_succeeded:
-        refreshed_count_dirs = list(dict.fromkeys([*stale_dirs, *entries_needing_refresh]))
-    should_write_counts = (
-        (seed_counts and (not refresh_attempted or description_refresh_succeeded))
-        or bool(refreshed_count_dirs)
-    )
+    refresh_candidate_dirs = list(dict.fromkeys([*stale_dirs, *entries_needing_refresh]))
+    if refresh_attempted and refresh_returncode_ok:
+        try:
+            after_content = codemap_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            after_content = ""
+        refreshed_count_dirs = changed_acceptable_description_dirs(
+            new_content,
+            after_content,
+            refresh_candidate_dirs,
+        )
+    seed_missing_counts = seed_counts and not refresh_attempted and not legacy_counts
+    should_write_counts = seed_missing_counts or bool(refreshed_count_dirs)
     if should_write_counts:
         write_codemap_counts(
             ".",
@@ -661,10 +691,10 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
                 old_counts,
                 new_counts,
                 refreshed_count_dirs,
-                seed_missing=seed_counts,
+                seed_missing=seed_missing_counts,
             ),
         )
-    update_root_codemap_docs_checked(".")
+    update_root_codemap_docs_checked(".", job_id)
 
 
 def _spawn_bg_worker(project_id, project_dir, bg_flag, extra_args=()) -> str:

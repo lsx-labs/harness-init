@@ -178,15 +178,12 @@ class TestWriteDescriptions:
         (tmp_path / "CODE_MAP.md").write_text(original, encoding="utf-8")
 
         with patch.object(gd, "write_codemap_counts", return_value=False):
-            try:
-                write_descriptions({"src": "Core business logic"})
-            except RuntimeError as exc:
-                error = str(exc)
-            else:
-                error = ""
+            changes = write_descriptions({"src": "Core business logic"})
 
-        assert "count sidecar" in error
-        assert (tmp_path / "CODE_MAP.md").read_text(encoding="utf-8") == original
+        assert changes == [{"dir": "src", "desc": "Core business logic"}]
+        assert (tmp_path / "CODE_MAP.md").read_text(encoding="utf-8") == (
+            "### src/ (100 symbols) — Core business logic\n"
+        )
         assert harness_shared.read_codemap_counts(tmp_path) == {}
 
     def test_write_descriptions_does_not_update_platform_docs(self, tmp_path, monkeypatch):

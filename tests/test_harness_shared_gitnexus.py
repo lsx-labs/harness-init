@@ -104,6 +104,30 @@ class TestCodemapLocalProjection:
         assert "old" not in rendered
         assert rendered.count("<!-- codemap:start -->") == 1
 
+    def test_render_codemap_block_updates_existing_block_with_backslashes_literal(self) -> None:
+        doc = "# Project\n\n<!-- codemap:start -->\nold\n<!-- codemap:end -->\n"
+        codemap = "# Code Map\n\n### src/ — Regex \\1 \\g<x> \\d \\c and C:\\tmp\n"
+
+        rendered = harness_shared.render_codemap_block(doc, codemap)
+
+        assert "Regex \\1 \\g<x> \\d \\c and C:\\tmp" in rendered
+        assert "old" not in rendered
+
+    def test_render_codemap_block_updates_duplicate_existing_blocks(self) -> None:
+        doc = (
+            "# Project\n\n"
+            "<!-- codemap:start -->\nold one\n<!-- codemap:end -->\n"
+            "middle\n"
+            "<!-- codemap:start -->\nold two\n<!-- codemap:end -->\n"
+        )
+        codemap = "# Code Map\n\n### src/ — Core\n"
+
+        rendered = harness_shared.render_codemap_block(doc, codemap)
+
+        assert "old one" not in rendered
+        assert "old two" not in rendered
+        assert rendered.count("### src/ — Core") == 2
+
     def test_render_codemap_block_does_not_duplicate_existing_heading_with_intervening_text(self) -> None:
         doc = (
             "# Project\n\n"

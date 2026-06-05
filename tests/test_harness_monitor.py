@@ -919,14 +919,13 @@ class TestDoMainBranchUpdate:
         write_counts.assert_not_called()
         root_docs.assert_not_called()
 
-    def test_root_doc_write_failed_marks_job_failed(self, tmp_path, monkeypatch):
+    def test_root_doc_write_failed_records_warning_without_failing_job(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
         monkeypatch.setattr(hm, 'JOB_DIR', tmp_path / "jobs")
         content = "# Code Map\n\n### scripts/ (100 symbols) — Stable scripts\n"
         (tmp_path / "CODE_MAP.md").write_text(content, encoding="utf-8")
 
-        error = ""
         with patch.object(hm, "is_on_main_branch", return_value=True), \
              patch.object(hm, "ensure_gitnexus_fresh"), \
              patch.object(hm, "read_codemap_counts", return_value={"scripts": 100}), \
@@ -937,15 +936,11 @@ class TestDoMainBranchUpdate:
                  "update_root_codemap_docs",
                  return_value={"CLAUDE.md": "write_failed", "AGENTS.md": "updated"},
              ):
-            try:
-                hm.do_main_branch_update("test_project", job_id="j_docs")
-            except RuntimeError as exc:
-                error = str(exc)
+            hm.do_main_branch_update("test_project", job_id="j_docs")
 
         payload = json.loads((tmp_path / "jobs" / "j_docs.json").read_text(encoding="utf-8"))
-        assert payload["status"] == "failed"
-        assert "CLAUDE.md" in error
-        assert payload["error"] == error
+        assert payload["status"] == "completed"
+        assert payload["root_doc_update"] == {"status": "write_failed", "files": ["CLAUDE.md"]}
 
     def test_main_update_preserves_distinct_root_doc_surrounding_content(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -1150,10 +1145,40 @@ class TestDoMainBranchUpdate:
              patch.object(hm, "write_codemap_counts") as write_counts, \
              patch.object(hm, "update_root_codemap_docs"), \
              patch.object(hm, "DESC_SCRIPT", desc_script), \
-             patch.object(hm.subprocess, "run", return_value=MagicMock(returncode=0)):
+             patch.object(hm.subprocess, "run") as run:
+            def refresh_desc(*args, **kwargs):
+                Path("CODE_MAP.md").write_text(
+                    "# Code Map\n\n### src/ — Stable desc\n### docs/ — Documentation\n",
+                    encoding="utf-8",
+                )
+                return MagicMock(returncode=0)
+
+            run.side_effect = refresh_desc
             hm._do_main_branch_update_inner(require_main=False)
 
         write_counts.assert_called_once_with(".", {"src": 100, "docs": 10})
+
+    def test_main_update_does_not_advance_stale_baseline_when_refresh_returns_zero_without_desc_change(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".gitnexus").mkdir()
+        content = "# Code Map\n\n### src/ — Old desc\n"
+        (tmp_path / "CODE_MAP.md").write_text(content, encoding="utf-8")
+
+        with patch.object(hm, "ensure_gitnexus_fresh"), \
+             patch.object(hm, "materialize_codemap_projection"), \
+             patch.object(hm, "parse_existing_codemap", return_value=({"src": "Old desc"}, {})), \
+             patch.object(hm, "read_codemap_counts", return_value={"src": 100}), \
+             patch.object(hm, "get_gitnexus_communities", return_value={"src": {"symbols": 140, "clusters": 1}}), \
+             patch.object(hm, "build_codemap_structure", return_value=(content, ["src"], {"src": 140})), \
+             patch.object(hm, "ensure_codemap_gitignore"), \
+             patch.object(hm, "cache_codemap_projection"), \
+             patch.object(hm, "write_codemap_counts") as write_counts, \
+             patch.object(hm, "update_root_codemap_docs"), \
+             patch.object(hm.subprocess, "run", return_value=MagicMock(returncode=0)):
+            hm._do_main_branch_update_inner(require_main=False)
+
+        write_counts.assert_not_called()
 
     def test_main_update_does_not_seed_missing_sidecar_when_forced_description_refresh_fails(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -1262,7 +1287,7 @@ class TestDoMainBranchUpdate:
         (tmp_path / ".git").mkdir()
         (tmp_path / ".gitnexus").mkdir()
         old_content = "# Code Map\n\n### src/ — Old desc\n### tests/ — Stable tests\n"
-        new_content = "# Code Map\n\n### src/ — New desc\n### tests/ — Stable tests\n"
+        new_content = "# Code Map\n\n### src/ — Old desc\n### tests/ — Stable tests\n"
         (tmp_path / "CODE_MAP.md").write_text(old_content, encoding="utf-8")
 
         with patch.object(hm, "ensure_gitnexus_fresh"), \
@@ -1276,10 +1301,62 @@ class TestDoMainBranchUpdate:
              patch.object(hm, "write_codemap_counts") as write_counts, \
              patch.object(hm, "sync_platform_docs"), \
              patch.object(hm.subprocess, "run") as run:
-            run.return_value.returncode = 0
+            def refresh_desc(*args, **kwargs):
+                Path("CODE_MAP.md").write_text(
+                    "# Code Map\n\n### src/ — New desc\n### tests/ — Stable tests\n",
+                    encoding="utf-8",
+                )
+                return MagicMock(returncode=0)
+
+            run.side_effect = refresh_desc
             hm._do_main_branch_update_inner(require_main=False)
 
         write_counts.assert_called_once_with(".", {"src": 140, "tests": 50})
+
+    def test_main_update_seeds_legacy_counts_before_stripping_counts_when_description_refresh_fails(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".gitnexus").mkdir()
+        old_content = "# Code Map\n\n### src/ (100 symbols) — Old desc\n"
+        new_content = "# Code Map\n\n### src/ — Old desc\n"
+        (tmp_path / "CODE_MAP.md").write_text(old_content, encoding="utf-8")
+
+        with patch.object(hm, "ensure_gitnexus_fresh"), \
+             patch.object(hm, "materialize_codemap_projection"), \
+             patch.object(hm, "read_codemap_counts", return_value={}), \
+             patch.object(hm, "get_gitnexus_communities", return_value={"src": {"symbols": 140, "clusters": 1}}), \
+             patch.object(hm, "build_codemap_structure", return_value=(new_content, ["src"], {"src": 140})), \
+             patch.object(hm, "ensure_codemap_gitignore"), \
+             patch.object(hm, "cache_codemap_projection"), \
+             patch.object(hm, "write_codemap_counts") as write_counts, \
+             patch.object(hm, "sync_platform_docs"), \
+             patch.object(hm.subprocess, "run", return_value=MagicMock(returncode=1)):
+            hm._do_main_branch_update_inner(require_main=False)
+
+        write_counts.assert_called_once_with(".", {"src": 100})
+        assert (tmp_path / "CODE_MAP.md").read_text(encoding="utf-8") == new_content
+
+    def test_main_update_preserves_legacy_count_baseline_when_stripping_counts_without_refresh(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".gitnexus").mkdir()
+        old_content = "# Code Map\n\n### src/ (100 symbols) — Stable desc\n"
+        new_content = "# Code Map\n\n### src/ — Stable desc\n"
+        (tmp_path / "CODE_MAP.md").write_text(old_content, encoding="utf-8")
+
+        with patch.object(hm, "ensure_gitnexus_fresh"), \
+             patch.object(hm, "materialize_codemap_projection"), \
+             patch.object(hm, "read_codemap_counts", return_value={}), \
+             patch.object(hm, "get_gitnexus_communities", return_value={"src": {"symbols": 105, "clusters": 1}}), \
+             patch.object(hm, "build_codemap_structure", return_value=(new_content, [], {"src": 105})), \
+             patch.object(hm, "ensure_codemap_gitignore"), \
+             patch.object(hm, "cache_codemap_projection"), \
+             patch.object(hm, "write_codemap_counts") as write_counts, \
+             patch.object(hm, "update_root_codemap_docs"):
+            hm._do_main_branch_update_inner(require_main=False)
+
+        write_counts.assert_called_once_with(".", {"src": 100})
+        assert (tmp_path / "CODE_MAP.md").read_text(encoding="utf-8") == new_content
 
     def test_main_update_does_not_update_stale_baseline_when_description_refresh_fails(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)

@@ -137,6 +137,24 @@ class TestSyncOne:
             "files": {"CLAUDE.md": "write_failed"},
         }
 
+    def test_subdir_with_own_codemap_under_project_root_still_uses_mtime_sync(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CODE_MAP.md").write_text("# Root Code Map\n", encoding="utf-8")
+        subdir = tmp_path / "pkg"
+        subdir.mkdir()
+        (subdir / "CODE_MAP.md").write_text("# Package Code Map\n", encoding="utf-8")
+        claude = subdir / "CLAUDE.md"
+        agents = subdir / "AGENTS.md"
+        claude.write_text("old claude", encoding="utf-8")
+        agents.write_text("new agents", encoding="utf-8")
+        os.utime(claude, (1_700_000_000, 1_700_000_000))
+        os.utime(agents, (1_700_000_500, 1_700_000_500))
+
+        result = sd.sync_one(str(subdir), "CLAUDE.md", "AGENTS.md")
+
+        assert result == {"dir": str(subdir), "action": "sync", "from": "AGENTS.md", "to": "CLAUDE.md"}
+        assert claude.read_text(encoding="utf-8") == "new agents"
+
 
 class TestFindDocDirs:
     def test_finds_dirs(self, tmp_path, monkeypatch):
