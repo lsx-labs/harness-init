@@ -389,7 +389,7 @@ def sync_platform_docs(dir_path):
 
 
 def update_root_codemap_docs_checked(dir_path):
-    result = update_root_codemap_docs(dir_path)
+    result = update_root_codemap_docs(dir_path) or {}
     failed = sorted(name for name, status in result.items() if status == "write_failed")
     if failed:
         raise RuntimeError(f"CODE_MAP root doc update failed: {', '.join(failed)}")

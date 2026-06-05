@@ -138,9 +138,12 @@ def check_existing() -> dict:
     for name, fpath in [("claude_md", "CLAUDE.md"), ("agents_md", "AGENTS.md")]:
         p = Path(fpath)
         txt = p.read_text(encoding="utf-8", errors="replace") if p.exists() else ""
+        has_managed_codemap_block = (
+            "<!-- codemap:start -->" in txt and "<!-- codemap:end -->" in txt
+        )
         existing[name] = {
             "exists": p.exists(),
-            "has_codemap": "@CODE_MAP.md" in txt or "<!-- codemap:start -->" in txt,
+            "has_codemap": has_managed_codemap_block or "@CODE_MAP.md" in txt,
             "has_gitnexus": "<!-- gitnexus:start -->" in txt,
         }
     gitnexus_indexed = Path(".gitnexus").is_dir()

@@ -15,12 +15,12 @@ disable-model-invocation: true
 共享层（平台无关）
 ├── ~/.local/bin/harness-init.py                             ← 项目诊断（JSON 输出）
 ├── ~/.local/bin/harness-plan.py                             ← 执行计划生成（JSON action plan）
-├── ~/.local/bin/sync-docs.py                                ← 跨平台文档同步（CLAUDE.md ↔ AGENTS.md）
-├── ~/.local/share/harness-hooks/harness_monitor.py          ← PostToolUse Hook（CODE_MAP + 子目录 + 成长检测）
+├── ~/.local/bin/sync-docs.py                                ← 子目录文档 copy/sync + 根文档 CODE_MAP 块渲染
+├── ~/.local/share/harness-hooks/harness_monitor.py          ← PostToolUse Hook（CODE_MAP + 根文档块 + 子目录 + 成长检测）
 ├── ~/.local/share/harness-hooks/generate_descriptions.py    ← CODE_MAP 描述生成（AI+GitNexus / fallback）
 ├── ~/.local/share/harness-hooks/session_context.py          ← SessionStart Hook（git 状态注入）
 ├── ~/.local/share/harness-hooks/codemaps/<project>/CODE_MAP.md ← CODE_MAP 共享缓存
-└── 项目/CODE_MAP.md                                         ← ignored 本地投影，两边引用
+└── 项目/CODE_MAP.md                                         ← ignored 本地投影 + harness cache 来源
 
 平台入口
 ├── ~/.claude/skills/harness-init/SKILL.md                   ← 本文件
@@ -31,7 +31,7 @@ disable-model-invocation: true
 
 - **渐进式构建**：根据实测复杂度信号判断，不提前堆叠
 - **多语言感知**：每种语言独立评估 LSP 价值
-- **跨平台对等**：CLAUDE.md / AGENTS.md 同时维护，CODE_MAP.md 以 harness cache 共享、worktree 本地投影
+- **跨平台对等**：CLAUDE.md / AGENTS.md 各自维护平台根文档，CODE_MAP 内容通过托管块渲染；CODE_MAP.md 以 harness cache 共享、worktree 本地投影
 - **实测优于拍数字**：grep 噪声度、类型覆盖率
 - **确定性执行**：Hook 通过 AI CLI（claude -p / codex exec）直接完成更新，不依赖概率性消息
 
@@ -89,11 +89,13 @@ python3 ~/.local/bin/harness-plan.py . --platform claude
 
 #### 2.2 根文档（plan.root_doc）
 
+根文档只在缺失时 bootstrap；持续维护的是托管 CODE_MAP 块，不做根 `CLAUDE.md` / `AGENTS.md` 整文件同步。
+
 | action | 执行 |
 |---|---|
-| `skip` | 无操作 |
-| `copy` | `python3 ~/.local/bin/sync-docs.py . --platform claude` |
-| `generate` | AI 按模板生成（见下方模板） |
+| `skip` | 无操作；后续 CODE_MAP 刷新仍可渲染托管块 |
+| `copy` | `python3 ~/.local/bin/sync-docs.py . --platform claude`，仅 bootstrap 缺失根文档并渲染 CODE_MAP 块 |
+| `generate` | AI 按模板生成含托管 CODE_MAP 块的根文档 |
 
 #### 2.3 CODE_MAP 描述（plan.codemap）
 
@@ -105,11 +107,13 @@ python3 ~/.local/bin/harness-plan.py . --platform claude
 
 后台分支的返回 JSON 有三种 `status`：`started`（已派发，附 `job_id`，告知用户「CODE_MAP 描述已在后台生成，状态见 `jobs/<job_id>.json`」）、`already_running`（已有 worker 在跑，无需重复派发）、`error`（如 `not_a_git_repo`，回退到同步生成或提示用户）。
 
-> `--refresh-bg` 的 worker 跑：CODE_MAP 结构 → 描述 → 共享缓存同步 → 根文档同步（即耗时的 AI 部分），flock 锁保护、原子写，并**钉定到派发时的分支**（中途 `git checkout` 不会把刷新写到别的分支）。GitNexus `analyze` 已在 2.1 按 plan 同步完成（worker 内部的 `ensure_gitnexus_fresh` 只做一次幂等复查）。
+> `--refresh-bg` 的 worker 跑：CODE_MAP 结构 → 描述 → 共享缓存同步 → 根文档 CODE_MAP 块渲染（即耗时的 AI 部分），flock 锁保护、原子写，并**钉定到派发时的分支**（中途 `git checkout` 不会把刷新写到别的分支）。GitNexus `analyze` 已在 2.1 按 plan 同步完成（worker 内部的 `ensure_gitnexus_fresh` 只做一次幂等复查）。
 
 CODE_MAP 存储模型：
 - `CODE_MAP.md` 是 ignored local projection，不应作为 tracked 文件提交。
 - 真实共享副本在 `~/.local/share/harness-hooks/codemaps/<project-key>/CODE_MAP.md`，`project-key` 基于 Git common dir，因此同一 repo 的 linked worktree 共享一份 cache。
+- 根 `CLAUDE.md` / `AGENTS.md` 不依赖文件导入语义；CODE_MAP 内容渲染进托管 `<!-- codemap:start/end -->` 块。
+- `CODE_MAP.counts.json` 是 harness cache 下的机器状态，用于 description-baseline symbol counts 和 stale threshold 判断；不进 Git，也不内联进平台文档。
 - SessionStart 发现当前 worktree 缺少 `CODE_MAP.md` 时，会从共享 cache materialize 一份本地投影；cache 不存在时仅跳过，不阻塞会话。
 - 如果 plan 的 `codemap_local_projection.tracked == true`，提示用户执行 `git rm --cached CODE_MAP.md` 后提交；后台 hook 不自动修改 git index。
 
@@ -179,7 +183,10 @@ Layer 1: spawn 子 Agent 生成 src/utils/CLAUDE.md（可复用下层）
 
 {自动生成}
 
-@CODE_MAP.md
+## CODE_MAP
+<!-- codemap:start -->
+# Code Map
+<!-- codemap:end -->
 
 ## 关键领域概念
 
@@ -321,7 +328,8 @@ LSP 插件参考表：
 
 | 产出物 | 共享 | Claude Code | Codex |
 |---|---|---|---|
-| CODE_MAP.md | ✅ cache + ignored 投影 | @引用 | @引用 |
+| CODE_MAP.md | ✅ cache + ignored 投影 | 本地投影 | 本地投影 |
+| 根 CODE_MAP 块 | 从 cache 渲染 | CLAUDE.md inline | AGENTS.md inline |
 | .gitnexus/ | ✅ 一份 | | |
 | Hook 脚本 | ✅ ~/.local/share/ | | |
 | CLAUDE.md | | ✅ 生成 | 可读 |
@@ -337,7 +345,7 @@ LSP 插件参考表：
 根 CLAUDE.md / AGENTS.md                            ← 手动维护
 子目录 手动区域（harness 标记外）                     ← 手动维护
 子目录 <!-- harness:start/end -->                    ← 自动生成
-CODE_MAP.md                                          ← 自动生成的 ignored 本地投影
+CODE_MAP.md                                          ← 自动生成的 ignored 本地投影 / cache 来源
 ```
 
 ## 注意事项

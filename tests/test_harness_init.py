@@ -133,6 +133,30 @@ class TestCheckExisting:
         assert result["claude_md"]["exists"] is True
         assert result["claude_md"]["has_codemap"] is True
 
+    def test_claude_md_with_codemap_block(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CLAUDE.md").write_text(
+            "# Project\n"
+            "## CODE_MAP\n"
+            "<!-- codemap:start -->\n"
+            "# Code Map\n"
+            "<!-- codemap:end -->\n"
+        )
+        result = check_existing()
+        assert result["claude_md"]["exists"] is True
+        assert result["claude_md"]["has_codemap"] is True
+
+    def test_claude_md_with_incomplete_codemap_block(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "CLAUDE.md").write_text(
+            "# Project\n"
+            "## CODE_MAP\n"
+            "<!-- codemap:start -->\n"
+            "# Code Map\n"
+        )
+        result = check_existing()
+        assert result["claude_md"]["has_codemap"] is False
+
     def test_gitnexus_indexed(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".gitnexus").mkdir()
