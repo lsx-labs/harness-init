@@ -35,6 +35,16 @@ def test_shared_scripts_import_under_system_python():
     assert result.returncode == 0, result.stderr
 
 
+def test_docs_describe_subdir_harness_facts_only():
+    root = Path(os.path.join(os.path.dirname(__file__), ".."))
+    for rel in ["README.md", "skills/claude/SKILL.md", "skills/codex/SKILL.md"]:
+        text = (root / rel).read_text(encoding="utf-8")
+        assert "<!-- harness:start -->" in text
+        assert "## GitNexus 事实" in text
+        assert "## 约束（基于 GitNexus 事实）" not in text
+        assert "## 危险操作（基于 GitNexus impact 分析）" not in text
+
+
 class TestShouldSkip:
     def test_skip_git(self):
         assert should_skip(".git") is True

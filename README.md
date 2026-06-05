@@ -50,7 +50,8 @@ harness-init/
 │   ├── harness_shared.py         ← 公共常量和工具函数
 │   ├── harness_init.py          ← 项目诊断（JSON 输出）
 │   ├── harness_plan.py          ← 执行计划生成（JSON action plan）
-│   ├── sync_docs.py             ← 子目录文档 copy/sync + 根文档 CODE_MAP 块渲染
+│   ├── sync_docs.py             ← 根文档 CODE_MAP 块渲染；子目录不做整文件同步
+│   ├── generate_subdir_harness.py ← 子目录 GitNexus 事实块生成与刷新
 │   ├── harness_monitor.py       ← PostToolUse Hook
 │   ├── generate_descriptions.py ← CODE_MAP 描述生成
 │   └── session_context.py       ← SessionStart Hook
@@ -81,11 +82,22 @@ examples 不会被强制走 GitNexus 流程。
 CODE_MAP 存储模型：
 
 - `CLAUDE.md` / `AGENTS.md` 通过托管 `<!-- codemap:start/end -->` 块内联 CODE_MAP 内容；平台根文档不依赖文件导入语义。
+- 子目录 `CLAUDE.md` / `AGENTS.md` 使用托管 facts-only 块保存确定性 GitNexus 事实；块内只来自 GitNexus/Cypher 结构化输出，不包含 AI prose、约束或危险操作建议。
 - `CODE_MAP.md` 是 worktree 根目录下的 ignored local projection，也是 harness cache 的本地投影来源；历史文件导入写法仅作为 legacy 兼容，不是当前模板机制。
 - 真实共享副本写入 `~/.local/share/harness-hooks/codemaps/<project-key>/CODE_MAP.md`；`project-key` 基于 Git common dir，同一 repo 的 linked worktree 共享一份 cache。
 - `CODE_MAP.counts.json` 是 harness cache 下的机器状态，用于 description-baseline symbol counts 和 stale threshold 判断；它不进入 Git，也不会内联到 `CLAUDE.md` / `AGENTS.md`。
 - 新 worktree / 新 session 如果没有本地 `CODE_MAP.md`，SessionStart 会从 cache 复制一份；cache 缺失时跳过，不阻塞开发。
 - 后台 hook 会确保 `.gitignore` 包含 `CODE_MAP.md`。如果历史上该文件已 tracked，`harness-plan.py` 会在 `codemap_local_projection` 里提示 `migration: "git_rm_cached"`；迁移命令需要显式执行：
+
+子目录 facts-only 块格式：
+
+```markdown
+<!-- harness:start -->
+## GitNexus 事实
+<!-- harness:end -->
+```
+
+人工约束必须写在块外，例如 `## 补充约束（手动维护）`。
 
 ```bash
 git rm --cached CODE_MAP.md
