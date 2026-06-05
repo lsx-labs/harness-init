@@ -530,6 +530,45 @@ class TestSyncPlatformDocs:
         assert hm.sync_platform_docs(tmp_path) == "subdir_block_only"
 
 
+def test_main_update_runs_bounded_subdir_harness_refresh(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".gitnexus").mkdir()
+    (tmp_path / "CODE_MAP.md").write_text("# Code Map\n\n### src/ — Stable\n", encoding="utf-8")
+    subdir_script = tmp_path / "generate_subdir_harness.py"
+    subdir_script.write_text("pass", encoding="utf-8")
+
+    calls = []
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append(cmd)
+        return MagicMock(returncode=0, stdout='{"schema_version": 1, "actions": []}', stderr="")
+
+    with patch.object(hm, "ensure_gitnexus_fresh"), \
+         patch.object(hm, "materialize_codemap_projection"), \
+         patch.object(hm, "parse_existing_codemap", return_value=({"src": "Stable"}, {})), \
+         patch.object(hm, "read_codemap_counts", return_value={"src": 120}), \
+         patch.object(hm, "get_gitnexus_communities", return_value={"src": {"symbols": 120, "clusters": 1}}), \
+         patch.object(hm, "build_codemap_structure", return_value=("# Code Map\n\n### src/ — Stable\n", [], {"src": 120})), \
+         patch.object(hm, "cache_codemap_projection"), \
+         patch.object(hm, "update_root_codemap_docs"), \
+         patch.object(hm, "_current_branch", return_value="main"), \
+         patch.object(hm, "SUBDIR_HARNESS_SCRIPT", subdir_script), \
+         patch.object(hm.subprocess, "run", side_effect=fake_run):
+        hm._do_main_branch_update_inner(require_main=False)
+
+    subdir_calls = [cmd for cmd in calls if any("generate_subdir_harness.py" in str(part) for part in cmd)]
+    assert subdir_calls
+    assert "--refresh-facts" in subdir_calls[0]
+    assert "--max-dirs" in subdir_calls[0]
+    assert "--dirs" in subdir_calls[0]
+    dirs_index = subdir_calls[0].index("--dirs")
+    assert subdir_calls[0][dirs_index + 1] == "src"
+    assert "--expected-branch" in subdir_calls[0]
+    branch_index = subdir_calls[0].index("--expected-branch")
+    assert subdir_calls[0][branch_index + 1] == "main"
+
+
 class TestBackgroundDispatch:
     """Cover handle_main_branch_update (dispatcher) + lock mechanism."""
 

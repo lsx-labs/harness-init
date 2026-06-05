@@ -36,7 +36,7 @@ from harness_shared import (STALE_THRESHOLD, SOURCE_EXTS, MAIN_BRANCHES,
                     read_dir_docstring, path_key, cache_codemap_projection,
                     ensure_codemap_gitignore, materialize_codemap_projection,
                     read_codemap_counts, write_codemap_counts,
-                    update_root_codemap_docs)
+                    candidate_codemap_dirs, update_root_codemap_docs)
 
 # ── Config ──
 
@@ -47,7 +47,10 @@ NOTIFY_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "notifications
 JOB_DIR = Path.home() / ".local" / "share" / "harness-hooks" / "jobs"
 DIAG_SCRIPT = Path.home() / ".local" / "bin" / "harness-init.py"
 DESC_SCRIPT = Path.home() / ".local" / "share" / "harness-hooks" / "generate_descriptions.py"
+SUBDIR_HARNESS_SCRIPT = Path.home() / ".local" / "share" / "harness-hooks" / "generate_subdir_harness.py"
 GITNEXUS_TIMEOUT = 15
+SUBDIR_HARNESS_TIMEOUT = 120
+SUBDIR_HARNESS_MAX_DIRS = 5
 GIT_COMMANDS = re.compile(
     r'(?:^\s*|(?:&&|\|\||[;|]|\$\(|\()\s*)'                        # start / shell separator / $( or ( subshell
     r'(?:(?:\w+=\S+|sudo|env|time|nohup|command|exec|xargs)\s+)*'  # optional env-assignments / wrappers
@@ -390,6 +393,53 @@ def parse_description_refresh_reported_dirs(stdout: str) -> list[str]:
     return dirs
 
 
+def _subdir_harness_candidate_dirs(codemap_text: str, new_counts: dict[str, int] | None = None) -> list[str]:
+    entries = parse_codemap_text(codemap_text)
+    recorded_counts = read_codemap_counts(".")
+    counts = recorded_counts or (new_counts or {})
+    return candidate_codemap_dirs(entries, counts, max_dirs=SUBDIR_HARNESS_MAX_DIRS)
+
+
+def refresh_subdir_harness_blocks(
+    codemap_text: str,
+    new_counts: dict[str, int] | None = None,
+    expected_branch: str | None = None,
+    job_id=None,
+):
+    script = None
+    for candidate in [
+        SUBDIR_HARNESS_SCRIPT,
+        Path(__file__).resolve().parent / "generate_subdir_harness.py",
+    ]:
+        if candidate.exists():
+            script = candidate
+            break
+    if script is None:
+        return "missing_script"
+    dirs = _subdir_harness_candidate_dirs(codemap_text, new_counts)
+    if not dirs:
+        return "no_dirs"
+    cmd = [
+        sys.executable,
+        str(script),
+        ".",
+        "--refresh-facts",
+        "--platform",
+        "claude",
+        "--dirs",
+        *dirs,
+        "--max-dirs",
+        str(SUBDIR_HARNESS_MAX_DIRS),
+    ]
+    if expected_branch:
+        cmd.extend(["--expected-branch", expected_branch])
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=SUBDIR_HARNESS_TIMEOUT)
+    except (subprocess.TimeoutExpired, OSError):
+        return "failed"
+    return "updated" if result.returncode == 0 else "failed"
+
+
 # ══════════════════════════════════════════════════════════
 # CLAUDE.md ↔ AGENTS.md sync (root CODE_MAP block, subdir block-only)
 # ══════════════════════════════════════════════════════════
@@ -637,6 +687,9 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
                 merge_codemap_count_baseline(old_counts, new_counts, [], seed_missing=True),
             )
         update_root_codemap_docs_checked(".", job_id)
+        if _branch_ok(require_main, expected_branch):
+            branch_pin = expected_branch if expected_branch is not None else _current_branch()
+            refresh_subdir_harness_blocks(new_content, new_counts, branch_pin, job_id)
         return
 
     # Re-check before mutating: the reindex + structure prelude above can run for a while, and we
@@ -706,6 +759,9 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
             ),
         )
     update_root_codemap_docs_checked(".", job_id)
+    if _branch_ok(require_main, expected_branch):
+        branch_pin = expected_branch if expected_branch is not None else _current_branch()
+        refresh_subdir_harness_blocks(new_content, new_counts, branch_pin, job_id)
 
 
 def _spawn_bg_worker(project_id, project_dir, bg_flag, extra_args=()) -> str:
