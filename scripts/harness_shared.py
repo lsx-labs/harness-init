@@ -27,9 +27,13 @@ MANUAL_MARKER = "📌"
 LOW_CONFIDENCE_MARKER = "⚠️"
 CODEMAP_FILENAME = "CODE_MAP.md"
 CODEMAP_COUNTS_FILENAME = "CODE_MAP.counts.json"
+SUBDIR_HARNESS_STATE_FILENAME = "SUBDIR_HARNESS.state.json"
 CODEMAP_CACHE_ROOT = Path.home() / ".local" / "share" / "harness-hooks" / "codemaps"
 CODEMAP_BLOCK_START = "<!-- codemap:start -->"
 CODEMAP_BLOCK_END = "<!-- codemap:end -->"
+HARNESS_BLOCK_START = "<!-- harness:start -->"
+HARNESS_BLOCK_END = "<!-- harness:end -->"
+HARNESS_FACT_HEADING = "## GitNexus 事实"
 ROOT_PLATFORM_DOCS = ("CLAUDE.md", "AGENTS.md")
 
 SOURCE_EXTS = {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".kt",
@@ -121,6 +125,13 @@ def codemap_counts_cache_path(project_dir: str | Path = ".") -> Path:
     return CODEMAP_CACHE_ROOT / cache_key / CODEMAP_COUNTS_FILENAME
 
 
+def subdir_harness_state_cache_path(project_dir: str | Path = ".") -> Path:
+    """Shared subdirectory harness state path for a repo."""
+    common = _git_common_dir(project_dir)
+    cache_key = path_key(common if common is not None else project_dir)
+    return CODEMAP_CACHE_ROOT / cache_key / SUBDIR_HARNESS_STATE_FILENAME
+
+
 def _atomic_write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
@@ -192,6 +203,59 @@ def write_codemap_counts(project_dir: str | Path = ".", counts: dict[str, int] |
     except OSError:
         return False
     return True
+
+
+def read_subdir_harness_state(project_dir: str | Path = ".") -> dict:
+    """Read cached subdirectory harness state."""
+    path = subdir_harness_state_cache_path(project_dir)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"schema_version": 1, "dirs": {}}
+    if not isinstance(data, dict):
+        return {"schema_version": 1, "dirs": {}}
+    dirs = data.get("dirs", {})
+    if not isinstance(dirs, dict):
+        dirs = {}
+    return {"schema_version": 1, "dirs": dirs}
+
+
+def write_subdir_harness_state(project_dir: str | Path = ".", state: dict | None = None) -> bool:
+    """Persist subdirectory harness state into the shared harness cache."""
+    payload = state if isinstance(state, dict) else {"schema_version": 1, "dirs": {}}
+    payload = {
+        "schema_version": 1,
+        "dirs": payload.get("dirs", {}) if isinstance(payload.get("dirs", {}), dict) else {},
+    }
+    try:
+        _atomic_write_text(
+            subdir_harness_state_cache_path(project_dir),
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        )
+    except OSError:
+        return False
+    return True
+
+
+def candidate_codemap_dirs(entries: list[dict], counts: dict[str, int] | None = None, *, max_dirs: int | None = None) -> list[str]:
+    """Return CODE_MAP directories whose symbol counts meet the shared complexity threshold."""
+    selected: list[str] = []
+    counts = counts or {}
+    for entry in entries:
+        dir_path = str(entry.get("dir", "")).strip("/")
+        if not dir_path:
+            continue
+        symbols = counts.get(dir_path, entry.get("symbols"))
+        if symbols is None:
+            continue
+        try:
+            symbol_count = int(symbols)
+        except (TypeError, ValueError):
+            continue
+        if symbol_count >= SYMBOL_THRESHOLD:
+            selected.append(dir_path)
+    deduped = list(dict.fromkeys(selected))
+    return deduped[:max_dirs] if max_dirs is not None else deduped
 
 
 def materialize_codemap_projection(project_dir: str | Path = ".") -> bool:

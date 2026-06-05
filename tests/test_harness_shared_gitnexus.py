@@ -211,6 +211,50 @@ class TestCodemapLocalProjection:
         assert harness_shared.write_codemap_counts(project, {"src": 10, "src/api": 3}) is True
         assert harness_shared.read_codemap_counts(project) == {"src": 10, "src/api": 3}
 
+    def test_subdir_harness_state_cache_path_shares_codemap_cache_key(self, tmp_path, monkeypatch) -> None:
+        project = tmp_path / "repo"
+        project.mkdir()
+        common = project / ".git"
+        common.mkdir()
+        monkeypatch.setattr(harness_shared, "CODEMAP_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(harness_shared, "_git_common_dir", lambda project_dir=".": common)
+
+        path = harness_shared.subdir_harness_state_cache_path(project)
+
+        assert path == tmp_path / "cache" / harness_shared.path_key(common) / "SUBDIR_HARNESS.state.json"
+
+    def test_read_write_subdir_harness_state_round_trip(self, tmp_path, monkeypatch) -> None:
+        project = tmp_path / "repo"
+        project.mkdir()
+        monkeypatch.setattr(harness_shared, "CODEMAP_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(harness_shared, "_git_common_dir", lambda project_dir=".": project / ".git")
+
+        payload = {
+            "schema_version": 1,
+            "dirs": {
+                "src": {
+                    "block_hash": "sha256:block",
+                    "fact_block": "## GitNexus 事实\n\n暂无已验证图谱事实。",
+                }
+            },
+        }
+
+        assert harness_shared.write_subdir_harness_state(project, payload) is True
+        assert harness_shared.read_subdir_harness_state(project) == payload
+
+    def test_candidate_codemap_dirs_uses_shared_symbol_threshold(self) -> None:
+        entries = [
+            {"dir": "src", "symbols": 50},
+            {"dir": "tests", "symbols": 99},
+            {"dir": "docs", "symbols": 100},
+            {"dir": "pkg", "symbols": None},
+        ]
+        counts = {"src": 120, "pkg": 140}
+
+        result = harness_shared.candidate_codemap_dirs(entries, counts, max_dirs=2)
+
+        assert result == ["src", "docs"]
+
     def test_read_codemap_counts_accepts_legacy_counts_key(self, tmp_path, monkeypatch) -> None:
         project = tmp_path / "repo"
         project.mkdir()
