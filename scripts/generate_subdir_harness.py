@@ -167,3 +167,106 @@ def plan_existing_block_action(existing_block: str, facts: dict, baseline: dict 
     if baseline is None:
         return {"action": "rebaseline", "reason": "structural_fact_block_current_missing_sidecar"}
     return {"action": "skip", "reason": "fresh"}
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _state_fingerprint_field(facts: dict, field: str) -> str:
+    value = str(facts.get(field, ""))
+    if value.startswith("sha256:"):
+        return value
+    fallback = json.dumps({"field": field, "facts": facts}, ensure_ascii=False, sort_keys=True)
+    return _sha256_text(fallback)
+
+
+def _state_entry_for(dir_path: str, facts: dict, fact_block: str, rendered_files: dict | None = None) -> dict:
+    current_fp = gitnexus_fingerprint(facts)
+    return {
+        "symbol_count": int(facts.get("symbol_count", 0) or 0),
+        "repo_source_fingerprint": _state_fingerprint_field(facts, "repo_source_fingerprint"),
+        "source_fingerprint": _state_fingerprint_field(facts, "source_fingerprint"),
+        "known_caller_source_fingerprint": _state_fingerprint_field(facts, "known_caller_source_fingerprint"),
+        "gitnexus_fingerprint": current_fp,
+        "block_hash": _sha256_text(fact_block),
+        "fact_block": fact_block,
+        "accepted_at": _utc_now(),
+        "rendered": rendered_files or {},
+    }
+
+
+def _read_state(project_dir: str | Path) -> dict:
+    return read_subdir_harness_state(project_dir)
+
+
+def _write_state(project_dir: str | Path, state: dict) -> bool:
+    return write_subdir_harness_state(project_dir, state)
+
+
+def current_branch(project_dir: str | Path) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(Path(project_dir)), "branch", "--show-current"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def branch_matches(project_dir: str | Path, expected_branch: str | None) -> bool:
+    return not expected_branch or current_branch(project_dir) == expected_branch
+
+
+def write_rebaseline_state(project_dir: str | Path, dir_path: str, facts: dict, platform_files: list[str]) -> dict:
+    fact_block = render_fact_block(facts)
+    state = _read_state(project_dir)
+    dirs = state.setdefault("dirs", {})
+    rendered = {
+        name: {"status": "rebaselined", "block_hash": _sha256_text(fact_block)}
+        for name in platform_files
+    }
+    dirs[_clean_rel_dir(dir_path)] = _state_entry_for(dir_path, facts, fact_block, rendered)
+    if not _write_state(project_dir, state):
+        return {"action": "rebaseline", "status": "cache_write_failed", "dir": _clean_rel_dir(dir_path)}
+    return {"action": "rebaseline", "status": "updated", "dir": _clean_rel_dir(dir_path)}
+
+
+def _ensure_manual_section(doc_text: str) -> str:
+    marker = "## 补充约束（手动维护）"
+    if marker in doc_text:
+        return doc_text
+    suffix = "" if doc_text.endswith("\n") else "\n"
+    return f"{doc_text}{suffix}\n{marker}\n"
+
+
+def migrate_legacy_doc_to_facts(
+    path: Path,
+    fact_block: str,
+    *,
+    project_dir: str | Path = ".",
+    expected_branch: str | None = None,
+) -> str:
+    try:
+        old = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "read_failed"
+    legacy_body = extract_harness_block_body(old)
+    managed = render_managed_block(fact_block)
+    without_old_block = replace_or_insert_harness_block(old, managed)
+    text = _ensure_manual_section(without_old_block)
+    migrated = "### 从旧 harness 块迁移\n\n" + legacy_body.strip() + "\n"
+    if legacy_body.strip() and legacy_body.strip() not in text:
+        text = text.rstrip() + "\n\n" + migrated
+    if text == old:
+        return "unchanged"
+    if not branch_matches(project_dir, expected_branch):
+        return "branch_changed"
+    try:
+        _atomic_write_text(path, text)
+    except OSError:
+        return "write_failed"
+    return "updated"

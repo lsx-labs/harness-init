@@ -118,3 +118,51 @@ def test_current_structural_block_without_baseline_routes_to_rebaseline() -> Non
 
     assert action["action"] == "rebaseline"
     assert action["reason"] == "structural_fact_block_current_missing_sidecar"
+
+
+def test_write_rebaseline_state_does_not_change_doc(tmp_path, monkeypatch) -> None:
+    project = tmp_path / "repo"
+    project.mkdir()
+    (project / ".git").mkdir()
+    written: dict = {}
+    monkeypatch.setattr(gsh, "read_subdir_harness_state", lambda project_dir=".": {"schema_version": 1, "dirs": {}})
+    monkeypatch.setattr(gsh, "write_subdir_harness_state", lambda project_dir, payload: written.update(payload) or True)
+    doc = project / "src" / "CLAUDE.md"
+    doc.parent.mkdir()
+    facts = {
+        "caller_counts": [{"target": "Parser", "count": 40}],
+        "affected_modules": [],
+        "processes": [],
+        "symbol_count": 40,
+    }
+    original = gsh.render_managed_block(gsh.render_fact_block(facts))
+    doc.write_text(original, encoding="utf-8")
+
+    result = gsh.write_rebaseline_state(project, "src", facts, ["CLAUDE.md"])
+
+    assert result["action"] == "rebaseline"
+    assert doc.read_text(encoding="utf-8") == original
+    assert written["dirs"]["src"]["gitnexus_fingerprint"].startswith("sha256:")
+
+
+def test_manual_migration_preserves_legacy_body_outside_block(tmp_path) -> None:
+    doc_path = tmp_path / "src" / "CLAUDE.md"
+    doc_path.parent.mkdir()
+    doc_path.write_text(
+        "# src\n\n"
+        "<!-- harness:start -->\n"
+        "## 约束（基于 GitNexus 事实）\n"
+        "- Parser 被多个调用方使用，应谨慎修改。\n"
+        "<!-- harness:end -->\n",
+        encoding="utf-8",
+    )
+    fact_block = gsh.render_fact_block({"caller_counts": [], "affected_modules": [], "processes": [], "symbol_count": 0})
+
+    result = gsh.migrate_legacy_doc_to_facts(doc_path, fact_block)
+
+    text = doc_path.read_text(encoding="utf-8")
+    assert result == "updated"
+    assert "## GitNexus 事实" in text
+    assert "### 从旧 harness 块迁移" in text
+    assert "Parser 被多个调用方使用" in text
+    assert text.index("## GitNexus 事实") < text.index("### 从旧 harness 块迁移")
