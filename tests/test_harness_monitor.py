@@ -893,7 +893,8 @@ class TestDoMainBranchUpdate:
 
     def test_no_changes_is_a_noop(self, tmp_path, monkeypatch):
         # byte-identical structure, no stale dirs, all descriptions acceptable → early return.
-        # The CODE_MAP file is untouched, but root docs are still refreshed after the write guard.
+        # The CODE_MAP file is untouched, but root docs and subdir facts are still refreshed
+        # after the write guard with a final branch re-check before the child process.
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
         communities = {"scripts": {"symbols": 100, "clusters": 2}}
@@ -910,7 +911,7 @@ class TestDoMainBranchUpdate:
             hm.do_main_branch_update("test_project")
 
         assert (tmp_path / "CODE_MAP.md").read_text() == content  # untouched
-        assert main_mock.call_count == 3
+        assert main_mock.call_count == 4
         root_docs.assert_called_once_with(".")
         sync.assert_not_called()
 
