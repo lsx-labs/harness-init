@@ -4,35 +4,35 @@
 
 The v3.4.6 CODE_MAP redesign made root platform docs stable by rendering the same number-free `CODE_MAP.md` into managed `<!-- codemap:start/end -->` blocks in both `CLAUDE.md` and `AGENTS.md`. It also moved symbol-count baselines into cache-side machine state.
 
-Subdirectory platform docs have not received the same treatment yet. Current behavior still uses mtime-based whole-file copy between `CLAUDE.md` and `AGENTS.md` for subdirectories. That can overwrite platform-specific or hand-authored text, creates unnecessary churn, and does not make subdirectory constraints refresh when code facts change.
+Subdirectory platform docs have not received the same treatment yet. Current behavior still uses mtime-based whole-file copy between `CLAUDE.md` and `AGENTS.md` for subdirectories. That can overwrite platform-specific or hand-authored text, creates unnecessary churn, and does not make subdirectory GitNexus facts refresh when code facts change.
 
-This design extends the same projection model to subdirectory harness content, with one important difference from root CODE_MAP: subdirectory content can become operating instructions for future agents, so background automation may only persist deterministic facts. AI-written interpretation is allowed only through a manual, reviewable path.
+This design extends the same projection model to subdirectory harness content, with one important difference from root CODE_MAP: subdirectory content can become operating instructions for future agents, so v1 uses the smallest safe scope. The managed subdirectory block contains only deterministic Layer 1 GitNexus facts. It contains no AI prose, no generated constraints, and no generated dangerous-operation guidance.
 
 - `CLAUDE.md` and `AGENTS.md` are independent platform docs.
 - The only shared automatic content is a managed `<!-- harness:start/end -->` block.
-- The background-managed portion of that block is deterministic GitNexus fact output, not AI prose.
-- AI-written interpretation is separated from the background fact layer and may be produced only by manual `/harness-init` flows that surface the result for review.
+- That block is deterministic GitNexus fact output, not prose interpretation.
+- Human-authored prose belongs outside the managed block, for example under `## 补充约束（手动维护）`.
 - Sidecar state records when each directory's harness block was last accepted, so code changes can trigger refresh without whole-file copying.
 
 ## Goals
 
 - Remove subdirectory `CLAUDE.md` <-> `AGENTS.md` whole-file copying.
 - Preserve all text outside `<!-- harness:start/end -->` exactly.
-- Render the same accepted deterministic fact block into both platform docs when both files exist.
+- Render the same accepted deterministic Layer 1 fact block into both platform docs when both files exist.
 - Create a missing platform doc only in manual `/harness-init`, by bootstrapping a minimal shell plus the accepted harness block, not by copying the other platform doc wholesale.
 - Refresh subdirectory harness blocks when code facts change enough to cross a stale threshold.
 - Keep refresh state out of Git, in the existing harness cache area.
-- Require AI-written interpretive constraints to stay out of the unattended background path.
+- Keep all prose interpretation and constraints out of the generated block.
 
 ## Non-Goals
 
 - Do not auto-refresh root doc prose such as project positioning, build commands, concepts, or danger notes.
 - Do not change root `CODE_MAP` block semantics.
-- Do not make SessionStart run heavy GitNexus or AI work.
+- Do not make SessionStart run heavy GitNexus work.
 - Do not rewrite manual sections outside managed markers.
 - Do not treat symbol count as the only stale signal.
 - Do not make platform-specific docs byte-identical.
-- Do not let unattended background jobs persist AI-generated prose instructions.
+- Do not generate or persist AI-written subdirectory prose instructions.
 - Do not create new tracked subdirectory platform-doc files from unattended background jobs.
 
 ## Terminology
@@ -41,8 +41,8 @@ This design extends the same projection model to subdirectory harness content, w
 - Root CODE_MAP block: `<!-- codemap:start/end -->` in root platform docs.
 - Subdirectory harness block: `<!-- harness:start/end -->` in subdirectory platform docs.
 - Deterministic fact block: a generated Markdown fragment rendered directly from GitNexus CLI/Cypher output with no AI interpretation.
-- AI review block: optional prose interpretation created by manual `/harness-init`, never by unattended background jobs.
-- Harness block source: the accepted deterministic fact block, plus any optional reviewed AI block, stored in cache for one directory.
+- Manual prose: human-authored text outside `<!-- harness:start/end -->`; harness never edits it.
+- Harness block source: the accepted deterministic fact block stored in cache for one directory.
 - Refresh baseline: cache-side metadata describing the GitNexus/code facts that were true when the current harness block was accepted.
 
 ## Current Behavior To Replace
@@ -57,24 +57,19 @@ This means existing subdirectory docs rarely regenerate, and cross-platform cons
 
 ## Proposed Architecture
 
-Introduce a subdirectory harness block pipeline with four parts:
+Introduce a subdirectory harness block pipeline with three parts:
 
 1. Plan:
    - Determine complex directories from CODE_MAP/GitNexus counts as today.
    - For each complex directory, classify platform docs as missing, present-with-block, or present-without-block.
    - Determine stale status from sidecar state plus live GitNexus/code fingerprints.
 
-2. Extract facts:
+2. Extract and render facts:
    - Use a single shared script to query GitNexus and build deterministic fact records.
    - Render caller counts, blast radius, affected modules, and process participation directly from those records.
    - No AI is involved in this path, so numeric facts can be verified against the extracted records.
 
-3. Optional manual interpretation:
-   - Manual `/harness-init` may ask an AI to summarize the deterministic facts into prose constraints.
-   - The AI result must be stored as a review candidate, not silently promoted by PostToolUse.
-   - A reviewed/accepted AI block can be rendered alongside the deterministic fact block.
-
-4. Render:
+3. Render:
    - Insert or replace only `<!-- harness:start/end -->` in each platform doc.
    - Leave every byte outside the managed block unchanged.
    - If a platform doc is missing, create a minimal platform-specific shell only in the manual `/harness-init` path and insert the accepted block.
@@ -93,17 +88,15 @@ Responsibilities:
 - manage `SUBDIR_HARNESS.state.json`;
 - render accepted blocks into existing platform docs;
 - bootstrap missing docs only when invoked in manual mode;
-- validate any optional AI review block before it can be accepted.
+- validate rendered fact blocks against the structured GitNexus records.
 
 Invocation modes:
 
 - `--plan`: report stale directories and reasons without writing.
 - `--refresh-facts`: refresh deterministic fact blocks and render to existing docs.
 - `--bootstrap`: manual-only mode that may create missing platform docs.
-- `--review-ai`: manual-only mode that records an AI interpretation candidate.
-- `--accept-ai`: manual-only mode that promotes a reviewed AI candidate into the rendered harness block.
 
-Both `/harness-init` and PostToolUse workers must use this script. They may pass different modes, but not different generation logic.
+Both `/harness-init` and PostToolUse workers must use this script. They may pass different modes, but not different generation logic. There is no generator mode that asks a model to produce prose.
 
 ## Cache State
 
@@ -127,11 +120,6 @@ Schema:
       "gitnexus_fingerprint": "sha256:...",
       "block_hash": "sha256:...",
       "fact_block": "## GitNexus 事实\n...",
-      "ai_block": "",
-      "ai_review": {
-        "status": "none",
-        "candidate_hash": ""
-      },
       "accepted_at": "2026-06-05T00:00:00Z",
       "rendered": {
         "CLAUDE.md": {"status": "updated", "block_hash": "sha256:..."},
@@ -198,15 +186,11 @@ Add a renderer for subdirectory harness blocks:
 
 ```md
 <!-- harness:start -->
-## GitNexus 事实
+## Layer 1 GitNexus 事实
 
 - 被调用: ...
 - 影响面: ...
 - 相关流程: ...
-
-## 已审核约束
-
-暂无已审核约束。
 <!-- harness:end -->
 ```
 
@@ -243,42 +227,27 @@ The unattended background path should generate only deterministic fact-backed it
 
 These rows must be rendered from structured data produced by `npx gitnexus cypher` or another non-AI GitNexus CLI output. The validator must compare rendered values against that structured data, not just check for citation strings.
 
-The optional AI review path has stricter limits:
+The generated block must not contain prose interpretation, normative constraints, or dangerous-operation recommendations. Those belong only in hand-authored text outside `<!-- harness:start/end -->`.
 
-- Constraints must cite `gitnexus_context`, `gitnexus_impact`, or `gitnexus_query`.
-- Dangerous operations must cite `gitnexus_impact`.
-- AI-written text is never accepted by PostToolUse.
-- Manual `/harness-init` must present the candidate block and require explicit user acceptance before promotion.
-- If GitNexus is unavailable or stale and cannot be refreshed, do not generate fact-bearing constraints. Render an empty but explicit managed block only if needed:
+If GitNexus is unavailable or stale and cannot be refreshed, do not invent facts. Render an empty but explicit managed block only if needed:
 
 ```md
-## GitNexus 事实
+## Layer 1 GitNexus 事实
 
 暂无已验证图谱事实。
-
-## 已审核约束
-
-暂无已审核约束。
 ```
 
-The generator may inspect the source for a cited high-risk symbol only after GitNexus identifies that symbol. It must not read an entire directory and infer constraints without graph evidence.
+The generator may inspect source file paths only to compute fingerprints and to anchor facts already identified by GitNexus. It must not read an entire directory and infer constraints.
 
 ## Validation
 
-Add two validators:
+Add one deterministic fact validator:
 
-1. Deterministic fact validator:
-   - Rendered caller, impact, module, and process values must match the structured GitNexus rows used to build the block.
-   - No AI prose may appear in the deterministic fact section.
-   - Empty-state output is valid only when the structured facts are empty or unavailable.
+- Rendered caller, impact, module, and process values must match the structured GitNexus rows used to build the block.
+- The managed block must not contain generated constraint prose, imperative guidance, or placeholders such as `TODO`, `{符号名}`, or template braces.
+- Empty-state output is valid only when the structured facts are empty or unavailable.
 
-2. AI review validator:
-   - Every non-empty constraint line must contain a source marker such as `gitnexus_context:`, `gitnexus_impact:`, or `gitnexus_query:`.
-   - Every dangerous-operation line must contain `gitnexus_impact:` and a risk or caller count.
-   - Placeholder text such as `TODO`, `{符号名}`, or template braces is rejected.
-   - Passing validation is not enough for promotion; manual acceptance is still required.
-
-Validation is not a replacement for human review of AI prose. The deterministic validator is the only validator allowed in unattended background refreshes.
+Validation is data verification, not prose review. If the block cannot be verified against extracted facts, keep the existing block and baseline.
 
 ## Plan Changes
 
@@ -287,7 +256,6 @@ Change `plan_subdirs()` from copy/generate/skip to block-oriented actions:
 ```json
 {
   "refresh_facts": [{"dir": "src/core", "reason": "gitnexus_fingerprint_changed"}],
-  "review_ai": [{"dir": "src/core", "reason": "manual_request"}],
   "render": [{"dir": "src/core", "files": ["CLAUDE.md", "AGENTS.md"]}],
   "bootstrap": [{"dir": "src/core", "files": ["AGENTS.md"]}],
   "skip": [{"dir": "src/api", "reason": "fresh"}]
@@ -300,7 +268,7 @@ There should be no subdirectory whole-file `copy` action. If the other platform 
 
 ## Trigger Model
 
-Manual `/harness-init` remains the only path that can bootstrap missing subdirectory platform docs or promote AI-written review content.
+Manual `/harness-init` remains the only path that can bootstrap missing subdirectory platform docs.
 
 PostToolUse background refresh is in scope for main/master. It should extend the existing branch-guarded background worker after GitNexus freshness and CODE_MAP refresh. The worker should compute stale subdirectory harness blocks and refresh only those that cross the stale rules.
 
@@ -313,19 +281,17 @@ PostToolUse rules:
 - refresh deterministic fact sections only;
 - render only to existing platform docs that already contain `<!-- harness:start/end -->`;
 - never bootstrap missing subdirectory docs;
-- never promote AI-written review content;
 - no writes outside `<!-- harness:start/end -->`.
 
 Manual `/harness-init` remains branch-pinned and may refresh subdirectory harness blocks on the branch from which it was dispatched.
 
-SessionStart should stay lightweight. It may warn that subdirectory harness blocks are stale, but it should not run GitNexus/AI refresh work.
+SessionStart should stay lightweight. It may warn that subdirectory harness blocks are stale, but it should not run GitNexus refresh work.
 
 ## Error Handling
 
 - Missing GitNexus index: report refresh skipped or render explicit empty state only in manual bootstrap.
 - Stale GitNexus index: plan `gitnexus.analyze` first, then compute fingerprints.
 - Fact extraction timeout: keep existing block and do not advance baseline.
-- AI review timeout: discard candidate and do not affect deterministic facts or baselines.
 - Validation failure: keep existing block and do not advance baseline.
 - One platform file write fails: record file-level `write_failed`; do not mark that platform file current.
 - Cache write fails: do not render a newly generated block, because the source of truth was not persisted.
@@ -344,11 +310,11 @@ Existing subdirectory docs should be migrated in place:
 Update both skill files and README to state:
 
 - Root docs use `<!-- codemap:start/end -->` for CODE_MAP.
-- Subdirectory docs use `<!-- harness:start/end -->` for generated constraints.
+- Subdirectory docs use `<!-- harness:start/end -->` for generated Layer 1 facts.
 - Platform docs are not synchronized by copying.
 - Only managed blocks are automatically refreshed.
 - Subdirectory block refresh is driven by GitNexus/code fact baselines, not by mtime.
-- Background refresh writes deterministic facts only; AI prose requires manual review and acceptance.
+- Prose interpretation and constraints are hand-authored outside the managed block.
 
 ## Context Budget
 
@@ -359,11 +325,10 @@ Budget rules:
 - Keep the deterministic fact block compact: top caller counts, top affected modules, and top processes only.
 - Add a per-block byte budget, configurable but defaulting conservatively enough for nested Codex `AGENTS.md` loading.
 - Before rendering, estimate root `CODE_MAP` bytes plus the nested platform-doc stack: root doc, ancestor subdirectory docs, and the candidate subdirectory block. If the combined platform-doc payload would exceed the budget, render a truncated deterministic fact block with an explicit "truncated" line rather than overflowing.
-- AI review blocks should be even smaller than fact blocks and are manual-only.
 
 ## Churn Tradeoff
 
-This feature intentionally introduces a new tracked-doc churn source: subdirectory `CLAUDE.md` and `AGENTS.md` managed blocks may change when GitNexus/code facts change. That is the cost of keeping executable agent constraints current.
+This feature intentionally introduces a new tracked-doc churn source: subdirectory `CLAUDE.md` and `AGENTS.md` managed blocks may change when GitNexus/code facts change. That is the cost of keeping agent-facing facts current.
 
 The design limits churn by:
 
@@ -371,8 +336,7 @@ The design limits churn by:
 - preserving manual text outside markers;
 - using cheap-first stale checks;
 - refreshing only existing blocks in unattended background jobs;
-- using deterministic fact rendering for background writes;
-- requiring manual acceptance for AI prose.
+- using deterministic fact rendering for all managed-block writes.
 
 ## Test Strategy
 
@@ -390,7 +354,6 @@ Unit tests should cover:
 - Unchanged repository source fingerprint skips expensive GitNexus fingerprinting.
 - Changed repository source fingerprint plus unchanged directory source fingerprint does not mark a directory fresh without graph checking or `stale_pending_graph_check`.
 - Failed fact extraction does not advance baseline.
-- AI review generation never mutates docs without explicit acceptance.
 - Failed validation does not advance baseline.
 - File write failure records retryable state.
 - `plan_subdirs()` emits block-oriented actions and no `copy` action.
@@ -403,7 +366,7 @@ Integration tests should cover:
 - Manual text before and after the block remains unchanged.
 - Re-running with unchanged fingerprints is a no-op.
 - Changing a mocked GitNexus impact result refreshes the block.
-- PostToolUse refresh on main updates deterministic facts in an existing block but does not create new files or write AI prose.
+- PostToolUse refresh on main updates deterministic facts in an existing block but does not create new files or write prose.
 
 ## Acceptance Criteria
 
@@ -414,7 +377,7 @@ Integration tests should cover:
 - Stale decisions use sidecar baselines and at least one semantic fingerprint beyond symbol count.
 - Baselines advance only after accepted deterministic fact extraction, validation, and persisted state.
 - Background-generated fact entries are rendered from structured GitNexus output and validated against those records.
-- AI-written prose never lands through unattended background refresh.
+- AI-written prose is never generated or persisted by the subdirectory harness pipeline.
 - Missing tracked subdirectory docs are created only through manual `/harness-init`.
 - Existing root CODE_MAP behavior and tests continue to pass.
 
@@ -424,3 +387,4 @@ Integration tests should cover:
 - Compute `gitnexus_fingerprint` from the canonical graph inputs listed in this spec.
 - Add non-blocking PostToolUse refresh on main/master for deterministic facts in stale existing subdirectory harness blocks only.
 - Insert a missing block after `## 测试` when present; otherwise before `## 补充约束（手动维护）` when present; otherwise append it to the file.
+- Scope v1 is A: only Layer 1 deterministic facts, no AI prose path, implemented as one GitNexus/Cypher-to-Markdown renderer.
