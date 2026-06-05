@@ -1054,6 +1054,37 @@ def test_plan_directory_skips_graph_when_repo_source_fingerprint_unchanged(tmp_p
     assert result["reason"] == "repo_source_fingerprint_unchanged"
 
 
+def test_refresh_directory_skip_returns_before_graph_extraction(tmp_path, monkeypatch) -> None:
+    project = tmp_path / "repo"
+    doc_dir = project / "src"
+    doc_dir.mkdir(parents=True)
+    facts = {"caller_counts": [{"target": "Parser", "count": 40}], "affected_modules": [], "processes": [], "symbol_count": 40}
+    fact_block = gsh.render_fact_block(facts)
+    (doc_dir / "CLAUDE.md").write_text(gsh.render_managed_block(fact_block), encoding="utf-8")
+    monkeypatch.setattr(gsh, "source_fingerprint", lambda project_dir, paths=None: "sha256:same")
+    monkeypatch.setattr(
+        gsh,
+        "read_subdir_harness_state",
+        lambda project_dir=".": {
+            "schema_version": 1,
+            "dirs": {
+                "src": {
+                    "repo_source_fingerprint": "sha256:same",
+                    "gitnexus_fingerprint": gsh.gitnexus_fingerprint(facts),
+                    "block_hash": gsh._sha256_text(fact_block),
+                    "fact_block": fact_block,
+                }
+            },
+        },
+    )
+    monkeypatch.setattr(gsh, "extract_dir_facts", lambda project_dir, dir_path, source_snapshot=None: (_ for _ in ()).throw(AssertionError("graph should be skipped")))
+
+    result = gsh.refresh_directory(project, "src", ["CLAUDE.md"], mode="background")
+
+    assert result["action"] == "skip"
+    assert result["reason"] == "repo_source_fingerprint_unchanged"
+
+
 def test_main_builds_source_snapshot_once_for_multiple_dirs(tmp_path, monkeypatch, capsys) -> None:
     project = tmp_path / "repo"
     project.mkdir()
@@ -1095,7 +1126,7 @@ def test_refresh_directory_refuses_tracked_doc_write_after_branch_change(tmp_pat
 Run:
 
 ```bash
-pytest -q tests/test_subdir_harness.py::test_plan_directory_reports_refresh_for_stale_structural_block tests/test_subdir_harness.py::test_plan_directory_does_not_overwrite_mixed_legacy_doc tests/test_subdir_harness.py::test_refresh_directory_updates_only_managed_block tests/test_subdir_harness.py::test_manual_bootstrap_creates_missing_platform_doc tests/test_subdir_harness.py::test_manual_migrate_routes_legacy_doc_through_migration tests/test_subdir_harness.py::test_extract_dir_facts_uses_schema_tolerant_gitnexus_rows tests/test_subdir_harness.py::test_source_fingerprint_changes_when_source_file_changes tests/test_subdir_harness.py::test_plan_directory_skips_graph_when_repo_source_fingerprint_unchanged tests/test_subdir_harness.py::test_main_builds_source_snapshot_once_for_multiple_dirs tests/test_subdir_harness.py::test_refresh_directory_refuses_tracked_doc_write_after_branch_change
+pytest -q tests/test_subdir_harness.py::test_plan_directory_reports_refresh_for_stale_structural_block tests/test_subdir_harness.py::test_plan_directory_does_not_overwrite_mixed_legacy_doc tests/test_subdir_harness.py::test_refresh_directory_updates_only_managed_block tests/test_subdir_harness.py::test_manual_bootstrap_creates_missing_platform_doc tests/test_subdir_harness.py::test_manual_migrate_routes_legacy_doc_through_migration tests/test_subdir_harness.py::test_extract_dir_facts_uses_schema_tolerant_gitnexus_rows tests/test_subdir_harness.py::test_source_fingerprint_changes_when_source_file_changes tests/test_subdir_harness.py::test_plan_directory_skips_graph_when_repo_source_fingerprint_unchanged tests/test_subdir_harness.py::test_refresh_directory_skip_returns_before_graph_extraction tests/test_subdir_harness.py::test_main_builds_source_snapshot_once_for_multiple_dirs tests/test_subdir_harness.py::test_refresh_directory_refuses_tracked_doc_write_after_branch_change
 ```
 
 Expected: tests fail because directory orchestration helpers do not exist.
@@ -1364,6 +1395,8 @@ def refresh_directory(
     if plan["action"] == "manual_migration" and not (mode == "manual" and migrate):
         return plan
     if plan["action"] == "bootstrap" and not (mode == "manual" and bootstrap):
+        return plan
+    if plan["action"] == "skip":
         return plan
     facts = plan.get("facts") or extract_dir_facts(project_dir, dir_path, source_snapshot=source_snapshot)
     fact_block = render_fact_block(facts)
