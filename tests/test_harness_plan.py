@@ -283,30 +283,68 @@ class TestPlanSubdirs:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "src").mkdir()
         (tmp_path / "src" / "CLAUDE.md").write_text("existing")
+        monkeypatch.setattr(hp, "_plan_subdir_with_generator", lambda d, files, source_snapshot=None: {"action": "skip", "files": [], "reason": "fresh"})
         result = hp.plan_subdirs(["src"], "CLAUDE.md", "AGENTS.md")
-        assert result["skip"] == ["src"]
+        assert result["skip"] == [{"dir": "src", "files": [], "reason": "fresh"}]
         assert result["copy"] == []
         assert result["generate"] == []
 
-    def test_copy_from_other(self, tmp_path, monkeypatch):
+    def test_existing_other_doc_needs_manual_bootstrap_not_copy(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "src").mkdir()
-        (tmp_path / "src" / "AGENTS.md").write_text("existing")
+        (tmp_path / "src" / "AGENTS.md").write_text("existing", encoding="utf-8")
+        monkeypatch.setattr(hp, "_plan_subdir_with_generator", lambda d, files, source_snapshot=None: {"action": "bootstrap", "files": ["CLAUDE.md"], "manual_only": True})
+
         result = hp.plan_subdirs(["src"], "CLAUDE.md", "AGENTS.md")
-        assert len(result["copy"]) == 1
-        assert result["copy"][0]["from"] == "AGENTS.md"
+
+        assert result["copy"] == []
+        assert result["bootstrap"] == [{"dir": "src", "files": ["CLAUDE.md"], "manual_only": True}]
+
+    def test_existing_facts_doc_refresh_is_reported(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "CLAUDE.md").write_text("facts", encoding="utf-8")
+        monkeypatch.setattr(hp, "_plan_subdir_with_generator", lambda d, files, source_snapshot=None: {"action": "refresh_facts", "files": ["CLAUDE.md"], "reason": "freshness_changed"})
+
+        result = hp.plan_subdirs(["src"], "CLAUDE.md", "AGENTS.md")
+
+        assert result["refresh_facts"] == [{"dir": "src", "files": ["CLAUDE.md"], "reason": "freshness_changed"}]
+        assert result["copy"] == []
+
+    def test_existing_facts_doc_rebaseline_is_reported(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "CLAUDE.md").write_text("facts", encoding="utf-8")
+        monkeypatch.setattr(hp, "_plan_subdir_with_generator", lambda d, files, source_snapshot=None: {"action": "rebaseline", "files": ["CLAUDE.md"], "reason": "structural_fact_block_current_missing_sidecar"})
+
+        result = hp.plan_subdirs(["src"], "CLAUDE.md", "AGENTS.md")
+
+        assert result["rebaseline"] == [{"dir": "src", "files": ["CLAUDE.md"], "reason": "structural_fact_block_current_missing_sidecar"}]
+
+    def test_legacy_doc_manual_migration_is_reported_not_rendered(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "AGENTS.md").write_text("legacy", encoding="utf-8")
+        monkeypatch.setattr(hp, "_plan_subdir_with_generator", lambda d, files, source_snapshot=None: {"action": "manual_migration", "files": ["AGENTS.md"], "reason": "legacy_prose"})
+
+        result = hp.plan_subdirs(["src"], "CLAUDE.md", "AGENTS.md")
+
+        assert result["manual_migration"] == [{"dir": "src", "files": ["AGENTS.md"], "reason": "legacy_prose"}]
+        assert result["refresh_facts"] == []
 
     def test_generate_new(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "src").mkdir()
+        monkeypatch.setattr(hp, "_plan_subdir_with_generator", lambda d, files, source_snapshot=None: {"action": "bootstrap", "files": ["CLAUDE.md"], "manual_only": True})
         result = hp.plan_subdirs(["src"], "CLAUDE.md", "AGENTS.md")
-        assert len(result["generate"]) == 1
-        assert result["generate"][0]["dir"] == "src"
+        assert len(result["bootstrap"]) == 1
+        assert result["bootstrap"][0]["dir"] == "src"
 
     def test_layers_grouping(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         for d in ["src", "src/core", "src/core/engine"]:
             (tmp_path / d).mkdir(exist_ok=True)
+        monkeypatch.setattr(hp, "_plan_subdir_with_generator", lambda d, files, source_snapshot=None: {"action": "bootstrap", "files": ["CLAUDE.md"], "manual_only": True})
         result = hp.plan_subdirs(
             ["src", "src/core", "src/core/engine"],
             "CLAUDE.md", "AGENTS.md"
@@ -411,12 +449,13 @@ class TestMain:
         monkeypatch.setattr(hp, "plan_gitnexus", lambda diagnostic: {"action": "skip"})
         monkeypatch.setattr(hp, "plan_lsp", lambda diagnostic: [])
         monkeypatch.setattr(hp, "plan_codex_gitnexus_wrapper", lambda diagnostic, platform: {"action": "skip"})
+        monkeypatch.setattr(hp, "_plan_subdir_with_generator", lambda d, files, source_snapshot=None: {"action": "bootstrap", "files": ["CLAUDE.md"], "manual_only": True})
         monkeypatch.setattr("sys.argv", ["hp", str(tmp_path), "--platform", "claude"])
 
         hp.main()
 
         out = json.loads(capsys.readouterr().out)
-        assert out["subdirs"]["generate"] == [{"dir": "src", "depth": 1}]
+        assert out["subdirs"]["bootstrap"] == [{"dir": "src", "files": ["CLAUDE.md"], "manual_only": True}]
 
     def test_main_default_platform(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)

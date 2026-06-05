@@ -20,8 +20,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-from harness_shared import (MANUAL_MARKER, STALE_THRESHOLD, SYMBOL_THRESHOLD,
+try:
+    import generate_subdir_harness as subdir_harness
+except ImportError:
+    subdir_harness = None
+
+from harness_shared import (MANUAL_MARKER, STALE_THRESHOLD,
                     CODEMAP_BG_DIRS_THRESHOLD,
+                    candidate_codemap_dirs,
                     codemap_cache_path, codemap_is_ignored, codemap_is_tracked,
                     gitnexus_markdown_rows, map_areas_to_dirs, needs_description_refresh,
                     parse_codemap, parse_gitnexus_markdown, platform_files,
@@ -127,37 +133,50 @@ def plan_gitnexus(diagnostic: dict) -> dict:
 
 
 def find_complex_dirs(entries: list[dict]) -> list[str]:
-    return [e["dir"] for e in entries
-            if e["symbols"] is not None and e["symbols"] >= SYMBOL_THRESHOLD]
+    return candidate_codemap_dirs(entries)
+
+
+def _plan_subdir_with_generator(dir_path: str, files: list[str], source_snapshot: dict | None = None) -> dict:
+    if subdir_harness is None:
+        return {"action": "bootstrap", "files": files[:1], "manual_only": True, "reason": "generator_unavailable"}
+    return subdir_harness.plan_directory(".", dir_path, files, mode="background", source_snapshot=source_snapshot)
+
+
+def _append_action(result: dict, action: str, item: dict) -> None:
+    result.setdefault(action, []).append(item)
 
 
 def plan_subdirs(complex_dirs: list[str], own_file: str, other_file: str) -> dict:
-    copy_list = []
-    generate_list = []
-    skip_list = []
+    source_snapshot = subdir_harness.build_source_snapshot(".") if subdir_harness is not None else None
+    result = {
+        "refresh_facts": [],
+        "rebaseline": [],
+        "bootstrap": [],
+        "manual_migration": [],
+        "skip": [],
+        "copy": [],
+        "generate": [],
+        "layers": [],
+    }
 
     for d in complex_dirs:
-        own = Path(d) / own_file
-        other = Path(d) / other_file
-        if own.exists():
-            skip_list.append(d)
-        elif other.exists():
-            copy_list.append({"dir": d, "from": other_file})
+        plan = _plan_subdir_with_generator(d, [own_file, other_file], source_snapshot=source_snapshot)
+        action = plan.get("action", "skip")
+        item = {"dir": d, "files": plan.get("files", [])}
+        if plan.get("reason"):
+            item["reason"] = plan["reason"]
+        if action == "bootstrap":
+            item["manual_only"] = True
+        if action in {"refresh_facts", "rebaseline", "bootstrap", "manual_migration", "skip"}:
+            _append_action(result, action, item)
         else:
-            depth = len(d.split("/"))
-            generate_list.append({"dir": d, "depth": depth})
+            result["skip"].append({"dir": d, "files": [], "reason": f"unknown_action:{action}"})
 
     layers = {}
-    for item in generate_list:
-        layers.setdefault(item["depth"], []).append(item["dir"])
-    sorted_layers = [[depth, dirs] for depth, dirs in sorted(layers.items(), reverse=True)]
-
-    return {
-        "copy": copy_list,
-        "generate": generate_list,
-        "skip": skip_list,
-        "layers": sorted_layers,
-    }
+    for item in result["bootstrap"]:
+        layers.setdefault(len(item["dir"].split("/")), []).append(item["dir"])
+    result["layers"] = [[depth, dirs] for depth, dirs in sorted(layers.items(), reverse=True)]
+    return result
 
 
 def _gitnexus_markdown_query(cypher: str) -> str:
