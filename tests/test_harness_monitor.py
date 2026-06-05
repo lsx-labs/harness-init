@@ -1151,7 +1151,10 @@ class TestDoMainBranchUpdate:
                     "# Code Map\n\n### src/ — Stable desc\n### docs/ — Documentation\n",
                     encoding="utf-8",
                 )
-                return MagicMock(returncode=0)
+                return MagicMock(
+                    returncode=0,
+                    stdout=json.dumps({"status": "updated", "changes": [{"dir": "docs"}]}),
+                )
 
             run.side_effect = refresh_desc
             hm._do_main_branch_update_inner(require_main=False)
@@ -1175,10 +1178,41 @@ class TestDoMainBranchUpdate:
              patch.object(hm, "cache_codemap_projection"), \
              patch.object(hm, "write_codemap_counts") as write_counts, \
              patch.object(hm, "update_root_codemap_docs"), \
-             patch.object(hm.subprocess, "run", return_value=MagicMock(returncode=0)):
+             patch.object(hm.subprocess, "run", return_value=MagicMock(
+                 returncode=0,
+                 stdout=json.dumps({"status": "ai_failed", "changes": [], "pending_dirs": ["src"]}),
+             )):
             hm._do_main_branch_update_inner(require_main=False)
 
         write_counts.assert_not_called()
+
+    def test_main_update_advances_stale_baseline_when_successful_refresh_keeps_same_description(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".gitnexus").mkdir()
+        content = "# Code Map\n\n### tests/ — Regression test suite\n"
+        (tmp_path / "CODE_MAP.md").write_text(content, encoding="utf-8")
+
+        with patch.object(hm, "ensure_gitnexus_fresh"), \
+             patch.object(hm, "materialize_codemap_projection"), \
+             patch.object(hm, "parse_existing_codemap", return_value=({"tests": "Regression test suite"}, {})), \
+             patch.object(hm, "read_codemap_counts", return_value={"tests": 100}), \
+             patch.object(hm, "get_gitnexus_communities", return_value={"tests": {"symbols": 140, "clusters": 1}}), \
+             patch.object(hm, "build_codemap_structure", return_value=(content, ["tests"], {"tests": 140})), \
+             patch.object(hm, "ensure_codemap_gitignore"), \
+             patch.object(hm, "cache_codemap_projection"), \
+             patch.object(hm, "write_codemap_counts") as write_counts, \
+             patch.object(hm, "update_root_codemap_docs"), \
+             patch.object(hm.subprocess, "run", return_value=MagicMock(
+                 returncode=0,
+                 stdout=json.dumps({
+                     "status": "updated",
+                     "changes": [{"dir": "tests", "desc": "Regression test suite"}],
+                 }),
+             )):
+            hm._do_main_branch_update_inner(require_main=False)
+
+        write_counts.assert_called_once_with(".", {"tests": 140})
 
     def test_main_update_does_not_seed_missing_sidecar_when_forced_description_refresh_fails(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -1306,7 +1340,10 @@ class TestDoMainBranchUpdate:
                     "# Code Map\n\n### src/ — New desc\n### tests/ — Stable tests\n",
                     encoding="utf-8",
                 )
-                return MagicMock(returncode=0)
+                return MagicMock(
+                    returncode=0,
+                    stdout=json.dumps({"status": "updated", "changes": [{"dir": "src"}]}),
+                )
 
             run.side_effect = refresh_desc
             hm._do_main_branch_update_inner(require_main=False)

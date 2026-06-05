@@ -354,17 +354,40 @@ def changed_acceptable_description_dirs(
     before_content: str,
     after_content: str,
     candidate_dirs: list[str],
+    reported_dirs: list[str],
 ) -> list[str]:
-    """Return candidate dirs whose CODE_MAP description was actually refreshed."""
-    before = {e["dir"]: e.get("desc") or "" for e in parse_codemap_text(before_content)}
+    """Return reported candidate dirs whose final CODE_MAP description is acceptable."""
     after = {e["dir"]: e.get("desc") or "" for e in parse_codemap_text(after_content)}
+    reported = {dir_path.strip("/") for dir_path in reported_dirs if dir_path.strip("/")}
     changed = []
     for dir_path in candidate_dirs:
-        before_desc = before.get(dir_path, "")
+        if dir_path not in reported:
+            continue
         after_desc = after.get(dir_path, "")
-        if after_desc != before_desc and not needs_description_refresh(after_desc):
+        if after_desc and not needs_description_refresh(after_desc):
             changed.append(dir_path)
     return changed
+
+
+def parse_description_refresh_reported_dirs(stdout: str) -> list[str]:
+    """Extract dirs that generate_descriptions reports as written."""
+    if not isinstance(stdout, (str, bytes, bytearray)):
+        return []
+    try:
+        payload = json.loads(stdout or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return []
+    changes = payload.get("changes", []) if isinstance(payload, dict) else []
+    if not isinstance(changes, list):
+        return []
+    dirs = []
+    for change in changes:
+        if not isinstance(change, dict):
+            continue
+        dir_path = str(change.get("dir") or "").strip("/")
+        if dir_path:
+            dirs.append(dir_path)
+    return dirs
 
 
 # ══════════════════════════════════════════════════════════
@@ -656,6 +679,7 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
             desc_script = candidate
             break
     refresh_returncode_ok = False
+    refresh_reported_dirs = []
     if desc_script:
         try:
             cmd = [sys.executable, str(desc_script), ".", "--generate", "--use-fingerprints",
@@ -664,6 +688,8 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
                 cmd.extend(["--refresh-dir", dir_path])
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=CODEMAP_REFRESH_TIMEOUT)
             refresh_returncode_ok = result.returncode == 0
+            if refresh_returncode_ok:
+                refresh_reported_dirs = parse_description_refresh_reported_dirs(result.stdout)
         except (subprocess.TimeoutExpired, OSError):
             refresh_returncode_ok = False
     if not _branch_ok(require_main, expected_branch):
@@ -681,6 +707,7 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
             new_content,
             after_content,
             refresh_candidate_dirs,
+            refresh_reported_dirs,
         )
     seed_missing_counts = seed_counts and not refresh_attempted and not legacy_counts
     should_write_counts = seed_missing_counts or bool(refreshed_count_dirs)
