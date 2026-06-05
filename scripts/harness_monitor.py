@@ -572,6 +572,8 @@ def do_main_branch_update(project_id, job_id=None, *, require_main=True, expecte
 def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_branch=None):
     # Step 0: Ensure GitNexus index is fresh before reading community data
     ensure_gitnexus_fresh(job_id)
+    if not _branch_ok(require_main, expected_branch):
+        return
     ensure_codemap_gitignore(".")
     materialize_codemap_projection(".")
 
@@ -592,13 +594,17 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
     # Self-heal: even if structure is byte-identical and nothing is stale, a CODE_MAP entry
     # with an empty/low-quality description must still trigger a description run (otherwise a
     # single failed first pass strands that entry's description permanently).
-    entries_need_refresh = any(needs_description_refresh(e.get("desc") or "")
-                               for e in parse_codemap_text(new_content))
+    entries_needing_refresh = [
+        e["dir"]
+        for e in parse_codemap_text(new_content)
+        if e.get("dir") and needs_description_refresh(e.get("desc") or "")
+    ]
+    entries_need_refresh = bool(entries_needing_refresh)
     refresh_attempted = bool(stale_dirs) or entries_need_refresh
     if new_content == old_content and not stale_dirs and not entries_need_refresh:
-        cache_codemap_projection(".")
         if not _branch_ok(require_main, expected_branch):
             return
+        cache_codemap_projection(".")
         if seed_counts:
             write_codemap_counts(
                 ".",
@@ -616,7 +622,6 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
 
     if new_content != old_content:
         atomic_write_text(codemap_file, new_content)
-        cache_codemap_projection(".", new_content)
 
     # Step 2: Generate/refresh descriptions
     desc_script = None
@@ -638,11 +643,16 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
             description_refresh_succeeded = result.returncode == 0
         except (subprocess.TimeoutExpired, OSError):
             description_refresh_succeeded = False
+    if not _branch_ok(require_main, expected_branch):
+        return
     cache_codemap_projection(".")
 
+    refreshed_count_dirs = []
+    if description_refresh_succeeded:
+        refreshed_count_dirs = list(dict.fromkeys([*stale_dirs, *entries_needing_refresh]))
     should_write_counts = (
         (seed_counts and (not refresh_attempted or description_refresh_succeeded))
-        or (stale_dirs and description_refresh_succeeded)
+        or bool(refreshed_count_dirs)
     )
     if should_write_counts:
         write_codemap_counts(
@@ -650,7 +660,7 @@ def _do_main_branch_update_inner(job_id=None, *, require_main=True, expected_bra
             merge_codemap_count_baseline(
                 old_counts,
                 new_counts,
-                stale_dirs if description_refresh_succeeded else [],
+                refreshed_count_dirs,
                 seed_missing=seed_counts,
             ),
         )

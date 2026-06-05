@@ -155,6 +155,40 @@ class TestWriteDescriptions:
         cache = harness_shared.codemap_cache_path(tmp_path)
         assert "Core business logic" in cache.read_text(encoding="utf-8")
 
+    def test_write_seeds_count_sidecar_before_removing_legacy_counts(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(harness_shared, "CODEMAP_CACHE_ROOT", tmp_path / "cache")
+        (tmp_path / "CODE_MAP.md").write_text(
+            "### src/ (100 symbols)\n"
+            "- **api/** (50 symbols)\n",
+            encoding="utf-8",
+        )
+
+        write_descriptions({"src": "Core business logic", "src/api": "REST endpoints"})
+
+        content = (tmp_path / "CODE_MAP.md").read_text(encoding="utf-8")
+        assert "(100 symbols)" not in content
+        assert "(50 symbols)" not in content
+        assert harness_shared.read_codemap_counts(tmp_path) == {"src": 100, "src/api": 50}
+
+    def test_write_keeps_legacy_counts_when_count_sidecar_write_fails(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(harness_shared, "CODEMAP_CACHE_ROOT", tmp_path / "cache")
+        original = "### src/ (100 symbols)\n"
+        (tmp_path / "CODE_MAP.md").write_text(original, encoding="utf-8")
+
+        with patch.object(gd, "write_codemap_counts", return_value=False):
+            try:
+                write_descriptions({"src": "Core business logic"})
+            except RuntimeError as exc:
+                error = str(exc)
+            else:
+                error = ""
+
+        assert "count sidecar" in error
+        assert (tmp_path / "CODE_MAP.md").read_text(encoding="utf-8") == original
+        assert harness_shared.read_codemap_counts(tmp_path) == {}
+
     def test_write_descriptions_does_not_update_platform_docs(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(harness_shared, "CODEMAP_CACHE_ROOT", tmp_path / "cache")

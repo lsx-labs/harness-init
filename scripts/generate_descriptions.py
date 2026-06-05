@@ -36,7 +36,9 @@ from harness_shared import (
     parse_codemap as _parse_codemap,
     parse_gitnexus_markdown,
     read_dir_docstring,
+    read_codemap_counts,
     cache_codemap_projection,
+    write_codemap_counts,
 )
 
 # GitNexus cypher queries run inside the background generator (not a hook response), so a
@@ -744,9 +746,18 @@ def _truncate_desc(text: str, limit: int = 60) -> str:
     return head.rstrip("".join(_TRUNC_BOUNDARY))  # don't end on a separator (avoids a double space)
 
 
+def _legacy_codemap_counts(codemap: Path) -> dict[str, int]:
+    return {
+        entry["dir"]: entry["symbols"]
+        for entry in _parse_codemap(codemap)
+        if isinstance(entry.get("symbols"), int)
+    }
+
+
 def write_descriptions(descriptions: dict[str, str]) -> list[dict]:
     """Write descriptions to CODE_MAP.md, return list of changes."""
     codemap = Path("CODE_MAP.md")
+    legacy_counts = _legacy_codemap_counts(codemap)
     lines = codemap.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
     changes = []
     normalized = {}
@@ -792,6 +803,14 @@ def write_descriptions(descriptions: dict[str, str]) -> list[dict]:
 
     if changes:
         content = "".join(updated_lines)
+        if legacy_counts:
+            current_counts = read_codemap_counts(".")
+            merged_counts = dict(current_counts)
+            for dir_path, count in legacy_counts.items():
+                merged_counts.setdefault(dir_path, count)
+            if merged_counts != current_counts:
+                if not write_codemap_counts(".", merged_counts):
+                    raise RuntimeError("failed to write CODE_MAP count sidecar")
         tmp = codemap.with_suffix(codemap.suffix + ".tmp")
         tmp.write_text(content, encoding="utf-8")
         os.replace(tmp, codemap)

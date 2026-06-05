@@ -753,6 +753,26 @@ class TestDoMainBranchUpdate:
         root_docs.assert_not_called()
         sync.assert_not_called()
 
+    def test_skips_gitignore_and_projection_when_branch_changes_after_analyze(self, tmp_path, monkeypatch):
+        # GitNexus analysis can take long enough for the checkout to change. Branch-sensitive
+        # local projection writes must be guarded immediately after that subprocess returns.
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(hm, 'LOCK_DIR', tmp_path / "locks")
+        monkeypatch.setattr(hm, 'JOB_DIR', tmp_path / "jobs")
+        (tmp_path / "CODE_MAP.md").write_text("# Old\n", encoding="utf-8")
+
+        with patch.object(hm, 'is_on_main_branch', side_effect=[True, False]), \
+             patch.object(hm, 'ensure_gitnexus_fresh'), \
+             patch.object(hm, 'ensure_codemap_gitignore') as ensure_gitignore, \
+             patch.object(hm, 'materialize_codemap_projection') as materialize, \
+             patch.object(hm, 'get_gitnexus_communities') as communities:
+            hm.do_main_branch_update("test_project", job_id="j_drift")
+
+        ensure_gitignore.assert_not_called()
+        materialize.assert_not_called()
+        communities.assert_not_called()
+        assert (tmp_path / "CODE_MAP.md").read_text(encoding="utf-8") == "# Old\n"
+
     def test_skill_path_refreshes_on_dispatch_branch(self, tmp_path, monkeypatch):
         # the skill path refreshes on the branch the user dispatched from (a feature branch),
         # not just main — and writes when the branch hasn't drifted.
@@ -851,7 +871,7 @@ class TestDoMainBranchUpdate:
             hm.do_main_branch_update("test_project")
 
         assert (tmp_path / "CODE_MAP.md").read_text() == content  # untouched
-        assert main_mock.call_count == 2
+        assert main_mock.call_count == 3
         root_docs.assert_called_once_with(".")
         sync.assert_not_called()
 
@@ -875,6 +895,29 @@ class TestDoMainBranchUpdate:
 
         assert events == ["cache", "counts", "root_docs"]
         root_docs.assert_called_once_with(".")
+
+    def test_no_changes_skips_cache_when_branch_drifts_before_noop_writes(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".gitnexus").mkdir()
+        content = "# Code Map\n\n### src/ — Stable desc\n"
+        (tmp_path / "CODE_MAP.md").write_text(content, encoding="utf-8")
+
+        with patch.object(hm, "_current_branch", side_effect=["feature/x", "feature/y"]), \
+             patch.object(hm, "ensure_gitnexus_fresh"), \
+             patch.object(hm, "materialize_codemap_projection"), \
+             patch.object(hm, "parse_existing_codemap", return_value=({"src": "Stable desc"}, {})), \
+             patch.object(hm, "read_codemap_counts", return_value={"src": 100}), \
+             patch.object(hm, "get_gitnexus_communities", return_value={"src": {"symbols": 100, "clusters": 1}}), \
+             patch.object(hm, "build_codemap_structure", return_value=(content, [], {"src": 100})), \
+             patch.object(hm, "cache_codemap_projection") as cache, \
+             patch.object(hm, "write_codemap_counts") as write_counts, \
+             patch.object(hm, "update_root_codemap_docs") as root_docs:
+            hm._do_main_branch_update_inner(require_main=False, expected_branch="feature/x")
+
+        cache.assert_not_called()
+        write_counts.assert_not_called()
+        root_docs.assert_not_called()
 
     def test_root_doc_write_failed_marks_job_failed(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -972,6 +1015,34 @@ class TestDoMainBranchUpdate:
         assert harness_shared.codemap_cache_path(tmp_path).read_text(encoding="utf-8") == new_content
         root_docs.assert_called_once_with(".")
 
+    def test_skips_final_cache_counts_and_root_docs_when_branch_drifts_after_descriptions(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".gitnexus").mkdir()
+        (tmp_path / "CODE_MAP.md").write_text("# Old\n", encoding="utf-8")
+        new_content = "# Code Map\n\n### src/\n"
+        desc_script = tmp_path / "generate_descriptions.py"
+        desc_script.write_text("pass", encoding="utf-8")
+
+        with patch.object(hm, "_current_branch", side_effect=["feature/x", "feature/x", "feature/y"]), \
+             patch.object(hm, "ensure_gitnexus_fresh"), \
+             patch.object(hm, "materialize_codemap_projection"), \
+             patch.object(hm, "parse_existing_codemap", return_value=({}, {})), \
+             patch.object(hm, "read_codemap_counts", return_value={}), \
+             patch.object(hm, "get_gitnexus_communities", return_value={"src": {"symbols": 100, "clusters": 1}}), \
+             patch.object(hm, "build_codemap_structure", return_value=(new_content, ["src"], {"src": 100})), \
+             patch.object(hm, "ensure_codemap_gitignore"), \
+             patch.object(hm, "cache_codemap_projection") as cache, \
+             patch.object(hm, "write_codemap_counts") as write_counts, \
+             patch.object(hm, "update_root_codemap_docs") as root_docs, \
+             patch.object(hm, "DESC_SCRIPT", desc_script), \
+             patch.object(hm.subprocess, "run", return_value=MagicMock(returncode=0)):
+            hm._do_main_branch_update_inner(require_main=False, expected_branch="feature/x")
+
+        cache.assert_not_called()
+        write_counts.assert_not_called()
+        root_docs.assert_not_called()
+
     def test_desc_subprocess_timeout_accommodates_ai_timeout(self, tmp_path, monkeypatch):
         """The refresh subprocess cap must exceed the AI per-call budget it requests,
         otherwise generate_descriptions is killed before it can write AI descriptions."""
@@ -1055,6 +1126,34 @@ class TestDoMainBranchUpdate:
             hm._do_main_branch_update_inner(require_main=False)
 
         write_counts.assert_called_once_with(".", {"src": 105})
+
+    def test_main_update_records_existing_sidecar_counts_for_entries_refreshed_by_empty_description(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".gitnexus").mkdir()
+        content = "# Code Map\n\n### src/ — Stable desc\n### docs/\n"
+        (tmp_path / "CODE_MAP.md").write_text(content, encoding="utf-8")
+        desc_script = tmp_path / "generate_descriptions.py"
+        desc_script.write_text("pass", encoding="utf-8")
+
+        with patch.object(hm, "ensure_gitnexus_fresh"), \
+             patch.object(hm, "materialize_codemap_projection"), \
+             patch.object(hm, "parse_existing_codemap", return_value=({"src": "Stable desc", "docs": ""}, {})), \
+             patch.object(hm, "read_codemap_counts", return_value={"src": 100}), \
+             patch.object(hm, "get_gitnexus_communities", return_value={
+                 "src": {"symbols": 100, "clusters": 1},
+                 "docs": {"symbols": 10, "clusters": 1},
+             }), \
+             patch.object(hm, "build_codemap_structure", return_value=(content, [], {"src": 100, "docs": 10})), \
+             patch.object(hm, "ensure_codemap_gitignore"), \
+             patch.object(hm, "cache_codemap_projection"), \
+             patch.object(hm, "write_codemap_counts") as write_counts, \
+             patch.object(hm, "update_root_codemap_docs"), \
+             patch.object(hm, "DESC_SCRIPT", desc_script), \
+             patch.object(hm.subprocess, "run", return_value=MagicMock(returncode=0)):
+            hm._do_main_branch_update_inner(require_main=False)
+
+        write_counts.assert_called_once_with(".", {"src": 100, "docs": 10})
 
     def test_main_update_does_not_seed_missing_sidecar_when_forced_description_refresh_fails(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
