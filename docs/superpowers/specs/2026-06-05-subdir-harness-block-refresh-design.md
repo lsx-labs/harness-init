@@ -41,6 +41,8 @@ This design extends the same projection model to subdirectory harness content, w
 - Root CODE_MAP block: `<!-- codemap:start/end -->` in root platform docs.
 - Subdirectory harness block: `<!-- harness:start/end -->` in subdirectory platform docs.
 - Deterministic fact block: a generated Markdown fragment rendered directly from GitNexus CLI/Cypher output with no AI interpretation.
+- Fact-baselined block: a deterministic fact block that has a matching `SUBDIR_HARNESS.state.json` baseline and passes validation.
+- Legacy prose block: an existing `<!-- harness:start/end -->` block that has no sidecar baseline, fails deterministic fact validation, or contains old generated prose such as `## 约束（基于 GitNexus 事实）` / `## 危险操作（基于 GitNexus impact 分析）`.
 - Manual prose: human-authored text outside `<!-- harness:start/end -->`; harness never edits it.
 - Harness block source: the accepted deterministic fact block stored in cache for one directory.
 - Refresh baseline: cache-side metadata describing the GitNexus/code facts that were true when the current harness block was accepted.
@@ -130,7 +132,7 @@ Schema:
 }
 ```
 
-State is machine/cache data. It should not be committed. Losing it should cause extra refresh work, not incorrect docs.
+State is machine/cache data. It should not be committed. Losing it should cause extra refresh or manual rebaseline work, not incorrect docs.
 
 ## Fingerprints And Stale Rules
 
@@ -150,11 +152,15 @@ Use cheap-first stale checks, without allowing cheap checks to hide cross-direct
   - affected modules;
   - participating execution flows.
 
+Missing sidecar baseline and invalid deterministic fact block are not automatically writable states for existing subdirectory docs. In background mode, an existing block with either signal must be classified as `manual_migration_required`, not `refresh_facts`. This prevents a main-branch hook from silently replacing an old prose block with a new facts-only block.
+
 The repository source fingerprint is the first global gate. If it is unchanged, the background path can skip all subdirectory graph work. If the repository source fingerprint changed, directory and known-caller source fingerprints are used only to prioritize and cap work; they do not prove freshness by themselves, because new incoming callers can originate outside the directory and outside the previous caller set.
 
 When the repository source fingerprint changed, the worker must either compute the GitNexus fingerprint for candidate directories or record that the directory remains `stale_pending_graph_check`. It must not mark a directory fresh solely because its own source fingerprint and symbol count are unchanged.
 
 The GitNexus fingerprint should be compact and deterministic. It does not need to store the full tool output, but it must include enough stable facts to detect semantic changes where symbol count does not move.
+
+Every fact list used for fingerprints, validation, and rendering must be normalized with a stable total ordering before hashing or Markdown generation. Use count or risk descending for ranked facts, then symbol/file/process name ascending, then stable path or id ascending as a final tie-breaker. Never rely on Cypher row order.
 
 Use these canonical fingerprint inputs:
 
@@ -186,7 +192,7 @@ Add a renderer for subdirectory harness blocks:
 
 ```md
 <!-- harness:start -->
-## Layer 1 GitNexus 事实
+## GitNexus 事实
 
 - 被调用: ...
 - 影响面: ...
@@ -232,7 +238,7 @@ The generated block must not contain prose interpretation, normative constraints
 If GitNexus is unavailable or stale and cannot be refreshed, do not invent facts. Render an empty but explicit managed block only if needed:
 
 ```md
-## Layer 1 GitNexus 事实
+## GitNexus 事实
 
 暂无已验证图谱事实。
 ```
@@ -258,6 +264,7 @@ Change `plan_subdirs()` from copy/generate/skip to block-oriented actions:
   "refresh_facts": [{"dir": "src/core", "reason": "gitnexus_fingerprint_changed"}],
   "render": [{"dir": "src/core", "files": ["CLAUDE.md", "AGENTS.md"]}],
   "bootstrap": [{"dir": "src/core", "files": ["AGENTS.md"]}],
+  "manual_migration": [{"dir": "src/legacy", "reason": "legacy_prose_block_without_baseline"}],
   "skip": [{"dir": "src/api", "reason": "fresh"}]
 }
 ```
@@ -265,6 +272,8 @@ Change `plan_subdirs()` from copy/generate/skip to block-oriented actions:
 There should be no subdirectory whole-file `copy` action. If the other platform doc exists, it may provide placement hints, but it must not be copied as the authoritative source.
 
 `bootstrap` must be marked manual-only. Background plans may render to existing files with existing blocks, but they must not create missing tracked docs.
+
+`manual_migration` must also be marked manual-only. Background plans may report it, but must not rewrite the block or advance the baseline.
 
 ## Trigger Model
 
@@ -279,8 +288,9 @@ PostToolUse rules:
 - non-blocking;
 - bounded by stale checks;
 - refresh deterministic fact sections only;
-- render only to existing platform docs that already contain `<!-- harness:start/end -->`;
+- render only to existing platform docs that contain a fact-baselined `<!-- harness:start/end -->` block;
 - never bootstrap missing subdirectory docs;
+- never convert legacy prose blocks;
 - no writes outside `<!-- harness:start/end -->`.
 
 Manual `/harness-init` remains branch-pinned and may refresh subdirectory harness blocks on the branch from which it was dispatched.
@@ -300,7 +310,10 @@ SessionStart should stay lightweight. It may warn that subdirectory harness bloc
 
 Existing subdirectory docs should be migrated in place:
 
-- If a doc has a `<!-- harness:start/end -->` block, keep all surrounding content and replace the block on refresh.
+- If a doc has a fact-baselined `<!-- harness:start/end -->` block, keep all surrounding content and replace the block on refresh.
+- If a doc has a legacy prose block, background refresh must leave the file unchanged and report `manual_migration_required`.
+- Manual migration from legacy prose to facts-only must preserve the old prose verbatim outside the managed block. Move the old block body under `## 补充约束（手动维护）`, preferably under a subheading such as `### 从旧 harness 块迁移`, then render the new `## GitNexus 事实` block. If the same migrated text is already present outside the block, do not duplicate it.
+- If a block passes deterministic fact validation but only lacks sidecar state, manual migration may rebaseline the existing fact block without moving any text. Background mode still must not do this, because it cannot distinguish cache loss from unreviewed migration intent without human visibility.
 - If only one platform doc exists, do not copy it wholesale. Manual `/harness-init` may create the missing platform doc with the minimal shell and accepted block. Background workers must leave the missing file absent.
 - If old copied platform docs are byte-identical, leave them as-is outside the managed block.
 - If platform docs have diverged, preserve both documents' manual text.
@@ -310,7 +323,7 @@ Existing subdirectory docs should be migrated in place:
 Update both skill files and README to state:
 
 - Root docs use `<!-- codemap:start/end -->` for CODE_MAP.
-- Subdirectory docs use `<!-- harness:start/end -->` for generated Layer 1 facts.
+- Subdirectory docs use `<!-- harness:start/end -->` for generated GitNexus facts.
 - Platform docs are not synchronized by copying.
 - Only managed blocks are automatically refreshed.
 - Subdirectory block refresh is driven by GitNexus/code fact baselines, not by mtime.
@@ -329,6 +342,8 @@ Budget rules:
 ## Churn Tradeoff
 
 This feature intentionally introduces a new tracked-doc churn source: subdirectory `CLAUDE.md` and `AGENTS.md` managed blocks may change when GitNexus/code facts change. That is the cost of keeping agent-facing facts current.
+
+The product value is passive visibility: agents can see important call graph and process facts without issuing a fresh query first. These facts are still snapshots. They do not replace the root requirement to run GitNexus impact/context queries before risky edits, and they may be briefly stale until the next bounded refresh.
 
 The design limits churn by:
 
@@ -353,6 +368,9 @@ Unit tests should cover:
 - GitNexus fingerprint change triggers stale even when symbol count is unchanged.
 - Unchanged repository source fingerprint skips expensive GitNexus fingerprinting.
 - Changed repository source fingerprint plus unchanged directory source fingerprint does not mark a directory fresh without graph checking or `stale_pending_graph_check`.
+- Cypher rows in different orders render the same block and hash after stable sorting.
+- A legacy prose block without sidecar baseline plans `manual_migration`, and background mode leaves the file unchanged.
+- Manual migration moves the old block body under `## 补充约束（手动维护）` without duplicating existing migrated text.
 - Failed fact extraction does not advance baseline.
 - Failed validation does not advance baseline.
 - File write failure records retryable state.
@@ -364,6 +382,8 @@ Integration tests should cover:
 
 - Running `/harness-init` on a project with one existing subdirectory platform doc creates the missing platform doc only in manual mode and updates only managed blocks.
 - Manual text before and after the block remains unchanged.
+- Running background refresh against an old prose-style `<!-- harness:start/end -->` block reports manual migration and does not rewrite the doc.
+- Running manual migration against an old prose-style block preserves the old prose outside the marker and writes a facts-only managed block.
 - Re-running with unchanged fingerprints is a no-op.
 - Changing a mocked GitNexus impact result refreshes the block.
 - PostToolUse refresh on main updates deterministic facts in an existing block but does not create new files or write prose.
@@ -377,6 +397,9 @@ Integration tests should cover:
 - Stale decisions use sidecar baselines and at least one semantic fingerprint beyond symbol count.
 - Baselines advance only after accepted deterministic fact extraction, validation, and persisted state.
 - Background-generated fact entries are rendered from structured GitNexus output and validated against those records.
+- Background refresh never replaces a legacy prose block or a block missing its sidecar baseline.
+- Manual legacy migration preserves old prose outside the managed block before writing facts.
+- Rendered fact entries have a stable total ordering, so equivalent GitNexus rows do not cause block-hash churn.
 - AI-written prose is never generated or persisted by the subdirectory harness pipeline.
 - Missing tracked subdirectory docs are created only through manual `/harness-init`.
 - Existing root CODE_MAP behavior and tests continue to pass.
@@ -384,6 +407,7 @@ Integration tests should cover:
 ## Fixed Design Decisions
 
 - Store canonical block text and baseline metadata in `SUBDIR_HARNESS.state.json`.
+- Render the user-visible managed-block title as `## GitNexus 事实`; keep `Layer 1` as a design-scope term, not an emitted heading.
 - Compute `gitnexus_fingerprint` from the canonical graph inputs listed in this spec.
 - Add non-blocking PostToolUse refresh on main/master for deterministic facts in stale existing subdirectory harness blocks only.
 - Insert a missing block after `## 测试` when present; otherwise before `## 补充约束（手动维护）` when present; otherwise append it to the file.
