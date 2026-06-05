@@ -101,3 +101,69 @@ def replace_or_insert_harness_block(doc_text: str, managed_block: str) -> str:
         return doc_text.replace(marker, f"{managed_block}\n\n{marker}", 1)
     suffix = "" if doc_text.endswith("\n") else "\n"
     return f"{doc_text}{suffix}\n{managed_block}\n"
+
+
+def structural_fact_block_check(block_body: str) -> dict:
+    text = block_body.strip()
+    if any(heading in text for heading in LEGACY_PROSE_HEADINGS):
+        return {"ok": False, "reason": "legacy_prose"}
+    if "{" in text or "}" in text:
+        return {"ok": False, "reason": "template_braces"}
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines or lines[0] != HARNESS_FACT_HEADING:
+        return {"ok": False, "reason": "missing_fact_heading"}
+    for line in lines[1:]:
+        if line == EMPTY_FACT_LINE:
+            continue
+        if not line.startswith(SUPPORTED_FACT_PREFIXES):
+            return {"ok": False, "reason": "unsupported_fact_row"}
+    return {"ok": True, "reason": "structural_fact_block"}
+
+
+def extract_harness_block_body(doc_text: str) -> str:
+    pattern = re.compile(
+        rf"{re.escape(HARNESS_BLOCK_START)}\n?(.*?){re.escape(HARNESS_BLOCK_END)}",
+        re.DOTALL | re.MULTILINE,
+    )
+    match = pattern.search(doc_text)
+    return match.group(1).strip() if match else ""
+
+
+def render_consistency_check(rendered_block: str, facts: dict) -> dict:
+    expected = render_fact_block(facts)
+    if rendered_block.strip() != expected.strip():
+        return {"ok": False, "reason": "render_mismatch"}
+    return {"ok": True, "reason": "render_consistent"}
+
+
+def gitnexus_fingerprint(facts: dict) -> str:
+    stable = {
+        "caller_counts": _ranked(list(facts.get("caller_counts", [])), "target"),
+        "affected_modules": _ranked(list(facts.get("affected_modules", [])), "module"),
+        "processes": _ranked(list(facts.get("processes", [])), "process"),
+        "symbol_count": int(facts.get("symbol_count", 0) or 0),
+    }
+    return _sha256_text(json.dumps(stable, ensure_ascii=False, sort_keys=True))
+
+
+def freshness_check(existing_block: str, facts: dict, baseline: dict | None) -> dict:
+    expected = render_fact_block(facts)
+    current_fp = gitnexus_fingerprint(facts)
+    baseline_fp = (baseline or {}).get("gitnexus_fingerprint", "")
+    if existing_block.strip() != expected.strip():
+        return {"ok": False, "reason": "freshness_changed", "gitnexus_fingerprint": current_fp}
+    if baseline is not None and baseline_fp != current_fp:
+        return {"ok": False, "reason": "fingerprint_changed", "gitnexus_fingerprint": current_fp}
+    return {"ok": True, "reason": "fresh", "gitnexus_fingerprint": current_fp}
+
+
+def plan_existing_block_action(existing_block: str, facts: dict, baseline: dict | None) -> dict:
+    structural = structural_fact_block_check(existing_block)
+    if not structural["ok"]:
+        return {"action": "manual_migration", "reason": structural["reason"]}
+    fresh = freshness_check(existing_block, facts, baseline)
+    if not fresh["ok"]:
+        return {"action": "refresh_facts", "reason": fresh["reason"]}
+    if baseline is None:
+        return {"action": "rebaseline", "reason": "structural_fact_block_current_missing_sidecar"}
+    return {"action": "skip", "reason": "fresh"}
