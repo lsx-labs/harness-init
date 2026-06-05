@@ -473,13 +473,11 @@ class TestSyncPlatformDocs:
 
         result = hm.sync_platform_docs(tmp_path)
 
-        assert result == "conflict"
+        assert result == "subdir_block_only"
         assert claude.read_text(encoding="utf-8") == "claude content"
         assert agents.read_text(encoding="utf-8") == "agent content"
 
     def test_newer_claude_overwrites_agents(self, tmp_path):
-        # This production path overwrites real files; the newer file's content must win.
-        # A swapped copy direction (silent data loss) fails this assertion.
         claude = tmp_path / "CLAUDE.md"
         agents = tmp_path / "AGENTS.md"
         claude.write_text("NEW from claude", encoding="utf-8")
@@ -487,8 +485,8 @@ class TestSyncPlatformDocs:
         os.utime(agents, (1_700_000_000, 1_700_000_000))
         os.utime(claude, (1_700_000_500, 1_700_000_500))  # claude is newer
 
-        assert hm.sync_platform_docs(tmp_path) == "claude_to_agents"
-        assert agents.read_text(encoding="utf-8") == "NEW from claude"
+        assert hm.sync_platform_docs(tmp_path) == "subdir_block_only"
+        assert agents.read_text(encoding="utf-8") == "OLD agents"
         assert claude.read_text(encoding="utf-8") == "NEW from claude"
 
     def test_newer_agents_overwrites_claude(self, tmp_path):
@@ -499,35 +497,37 @@ class TestSyncPlatformDocs:
         os.utime(claude, (1_700_000_000, 1_700_000_000))
         os.utime(agents, (1_700_000_500, 1_700_000_500))  # agents is newer
 
-        assert hm.sync_platform_docs(tmp_path) == "agents_to_claude"
-        assert claude.read_text(encoding="utf-8") == "NEW from agents"
+        assert hm.sync_platform_docs(tmp_path) == "subdir_block_only"
+        assert claude.read_text(encoding="utf-8") == "OLD claude"
         assert agents.read_text(encoding="utf-8") == "NEW from agents"
 
-    def test_subdir_sync_uses_subdir_mtime_even_when_root_has_codemap(self, tmp_path, monkeypatch):
+    def test_sync_platform_docs_does_not_copy_subdir_docs(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        (tmp_path / "CODE_MAP.md").write_text("# Code Map\n", encoding="utf-8")
-        subdir = tmp_path / "pkg"
+        subdir = tmp_path / "src"
         subdir.mkdir()
         claude = subdir / "CLAUDE.md"
         agents = subdir / "AGENTS.md"
-        claude.write_text("OLD claude", encoding="utf-8")
-        agents.write_text("NEW from agents", encoding="utf-8")
+        claude.write_text("claude manual text", encoding="utf-8")
+        agents.write_text("agents manual text", encoding="utf-8")
         os.utime(claude, (1_700_000_000, 1_700_000_000))
         os.utime(agents, (1_700_000_500, 1_700_000_500))
 
-        assert hm.sync_platform_docs(subdir) == "agents_to_claude"
-        assert claude.read_text(encoding="utf-8") == "NEW from agents"
+        result = hm.sync_platform_docs(str(subdir))
+
+        assert result == "subdir_block_only"
+        assert claude.read_text(encoding="utf-8") == "claude manual text"
+        assert agents.read_text(encoding="utf-8") == "agents manual text"
 
     def test_identical_content_is_noop(self, tmp_path):
         claude = tmp_path / "CLAUDE.md"
         agents = tmp_path / "AGENTS.md"
         claude.write_text("same", encoding="utf-8")
         agents.write_text("same", encoding="utf-8")
-        assert hm.sync_platform_docs(tmp_path) is None
+        assert hm.sync_platform_docs(tmp_path) == "subdir_block_only"
 
     def test_missing_file_is_noop(self, tmp_path):
         (tmp_path / "CLAUDE.md").write_text("only claude", encoding="utf-8")
-        assert hm.sync_platform_docs(tmp_path) is None
+        assert hm.sync_platform_docs(tmp_path) == "subdir_block_only"
 
 
 class TestBackgroundDispatch:

@@ -21,28 +21,34 @@ class TestPlatformFiles:
 
 class TestSyncOne:
     def test_own_missing_other_exists(self, tmp_path):
-        (tmp_path / "AGENTS.md").write_text("content from codex", encoding="utf-8")
+        other = tmp_path / "AGENTS.md"
+        other.write_text("content from codex", encoding="utf-8")
         result = sd.sync_one(str(tmp_path), "CLAUDE.md", "AGENTS.md")
-        assert result["action"] == "copy"
-        assert (tmp_path / "CLAUDE.md").read_text(encoding="utf-8") == "content from codex"
+        assert result["action"] == "subdir_block_only"
+        assert not (tmp_path / "CLAUDE.md").exists()
+        assert other.read_text(encoding="utf-8") == "content from codex"
 
     def test_both_exist_own_newer(self, tmp_path):
-        (tmp_path / "AGENTS.md").write_text("old", encoding="utf-8")
+        other = tmp_path / "AGENTS.md"
+        own = tmp_path / "CLAUDE.md"
+        other.write_text("old", encoding="utf-8")
         time.sleep(0.05)
-        (tmp_path / "CLAUDE.md").write_text("new", encoding="utf-8")
+        own.write_text("new", encoding="utf-8")
         result = sd.sync_one(str(tmp_path), "CLAUDE.md", "AGENTS.md")
-        assert result["action"] == "sync"
-        assert result["from"] == "CLAUDE.md"
-        assert (tmp_path / "AGENTS.md").read_text(encoding="utf-8") == "new"
+        assert result["action"] == "subdir_block_only"
+        assert own.read_text(encoding="utf-8") == "new"
+        assert other.read_text(encoding="utf-8") == "old"
 
     def test_both_exist_other_newer(self, tmp_path):
-        (tmp_path / "CLAUDE.md").write_text("old", encoding="utf-8")
+        own = tmp_path / "CLAUDE.md"
+        other = tmp_path / "AGENTS.md"
+        own.write_text("old", encoding="utf-8")
         time.sleep(0.05)
-        (tmp_path / "AGENTS.md").write_text("new", encoding="utf-8")
+        other.write_text("new", encoding="utf-8")
         result = sd.sync_one(str(tmp_path), "CLAUDE.md", "AGENTS.md")
-        assert result["action"] == "sync"
-        assert result["from"] == "AGENTS.md"
-        assert (tmp_path / "CLAUDE.md").read_text(encoding="utf-8") == "new"
+        assert result["action"] == "subdir_block_only"
+        assert own.read_text(encoding="utf-8") == "old"
+        assert other.read_text(encoding="utf-8") == "new"
 
     def test_equal_mtime_content_conflict_does_not_overwrite(self, tmp_path):
         own = tmp_path / "CLAUDE.md"
@@ -55,7 +61,7 @@ class TestSyncOne:
 
         result = sd.sync_one(str(tmp_path), "CLAUDE.md", "AGENTS.md")
 
-        assert result["action"] == "conflict"
+        assert result["action"] == "subdir_block_only"
         assert own.read_text(encoding="utf-8") == "claude content"
         assert other.read_text(encoding="utf-8") == "codex content"
 
@@ -64,7 +70,8 @@ class TestSyncOne:
 
     def test_only_own_exists(self, tmp_path):
         (tmp_path / "CLAUDE.md").write_text("content", encoding="utf-8")
-        assert sd.sync_one(str(tmp_path), "CLAUDE.md", "AGENTS.md") is None
+        result = sd.sync_one(str(tmp_path), "CLAUDE.md", "AGENTS.md")
+        assert result["action"] == "subdir_block_only"
 
     def test_root_sync_updates_codemap_block_without_copying_whole_file(self, tmp_path):
         (tmp_path / "CODE_MAP.md").write_text("# Code Map\n\n### scripts/ - Shared map\n", encoding="utf-8")
@@ -137,23 +144,23 @@ class TestSyncOne:
             "files": {"CLAUDE.md": "write_failed"},
         }
 
-    def test_subdir_with_own_codemap_under_project_root_still_uses_mtime_sync(self, tmp_path, monkeypatch):
+    def test_subdir_docs_are_not_whole_file_synced(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "CODE_MAP.md").write_text("# Root Code Map\n", encoding="utf-8")
         subdir = tmp_path / "pkg"
         subdir.mkdir()
-        (subdir / "CODE_MAP.md").write_text("# Package Code Map\n", encoding="utf-8")
         claude = subdir / "CLAUDE.md"
         agents = subdir / "AGENTS.md"
-        claude.write_text("old claude", encoding="utf-8")
-        agents.write_text("new agents", encoding="utf-8")
+        claude.write_text("claude manual text", encoding="utf-8")
+        agents.write_text("agents manual text", encoding="utf-8")
         os.utime(claude, (1_700_000_000, 1_700_000_000))
         os.utime(agents, (1_700_000_500, 1_700_000_500))
 
         result = sd.sync_one(str(subdir), "CLAUDE.md", "AGENTS.md")
 
-        assert result == {"dir": str(subdir), "action": "sync", "from": "AGENTS.md", "to": "CLAUDE.md"}
-        assert claude.read_text(encoding="utf-8") == "new agents"
+        assert result == {"dir": str(subdir), "action": "subdir_block_only", "reason": "whole_file_sync_disabled"}
+        assert claude.read_text(encoding="utf-8") == "claude manual text"
+        assert agents.read_text(encoding="utf-8") == "agents manual text"
 
 
 class TestFindDocDirs:
@@ -186,8 +193,9 @@ class TestMain:
         monkeypatch.setattr('sys.argv', ['sd', str(tmp_path), '--platform', 'claude'])
         sd.main()
         out = json.loads(capsys.readouterr().out)
-        assert out["synced"] == 1
-        assert (tmp_path / "CLAUDE.md").exists()
+        assert out["synced"] == 0
+        assert out["actions"][0]["action"] == "subdir_block_only"
+        assert not (tmp_path / "CLAUDE.md").exists()
 
     def test_main_nothing_to_sync(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
@@ -264,8 +272,9 @@ class TestMain:
         monkeypatch.setattr('sys.argv', ['sd', str(tmp_path), '--platform', 'claude', '--dirs', 'src'])
         sd.main()
         out = json.loads(capsys.readouterr().out)
-        assert out["synced"] >= 1
-        assert (sub / "CLAUDE.md").exists()
+        assert out["synced"] == 0
+        assert out["actions"][0]["action"] == "subdir_block_only"
+        assert not (sub / "CLAUDE.md").exists()
 
     def test_main_codex_platform(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
@@ -273,5 +282,6 @@ class TestMain:
         monkeypatch.setattr('sys.argv', ['sd', str(tmp_path), '--platform', 'codex'])
         sd.main()
         out = json.loads(capsys.readouterr().out)
-        assert out["synced"] == 1
-        assert (tmp_path / "AGENTS.md").exists()
+        assert out["synced"] == 0
+        assert out["actions"][0]["action"] == "subdir_block_only"
+        assert not (tmp_path / "AGENTS.md").exists()

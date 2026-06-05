@@ -391,11 +391,11 @@ def parse_description_refresh_reported_dirs(stdout: str) -> list[str]:
 
 
 # ══════════════════════════════════════════════════════════
-# CLAUDE.md ↔ AGENTS.md sync (root CODE_MAP block, subdir mtime copy)
+# CLAUDE.md ↔ AGENTS.md sync (root CODE_MAP block, subdir block-only)
 # ══════════════════════════════════════════════════════════
 
 def sync_platform_docs(dir_path):
-    """Update root CODE_MAP blocks, or copy the newer subdirectory doc to the other."""
+    """Update root CODE_MAP blocks; never whole-file copy subdirectory docs."""
     root = Path(dir_path)
     if (root / "CODE_MAP.md").exists():
         result = update_root_codemap_docs(root)
@@ -407,25 +407,9 @@ def sync_platform_docs(dir_path):
 
     claude = root / "CLAUDE.md"
     agents = root / "AGENTS.md"
-    if not claude.exists() or not agents.exists():
-        return None
-    try:
-        claude_text = claude.read_text(encoding="utf-8", errors="replace")
-        agents_text = agents.read_text(encoding="utf-8", errors="replace")
-        if claude_text == agents_text:
-            return None
-        claude_mtime = claude.stat().st_mtime_ns
-        agents_mtime = agents.stat().st_mtime_ns
-        if claude_mtime == agents_mtime:
-            return "conflict"
-        if claude_mtime > agents_mtime:
-            atomic_write_text(agents, claude_text)  # atomic: never truncate a user-authored doc
-            return "claude_to_agents"
-        else:
-            atomic_write_text(claude, agents_text)
-            return "agents_to_claude"
-    except OSError:
-        return None
+    if claude.exists() or agents.exists():
+        return "subdir_block_only"
+    return None
 
 
 def update_root_codemap_docs_checked(dir_path, job_id=None):

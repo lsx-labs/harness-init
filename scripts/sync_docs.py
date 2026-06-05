@@ -20,7 +20,7 @@ from harness_shared import should_skip, platform_files, update_root_codemap_docs
 
 
 def is_root_codemap_dir(root: Path) -> bool:
-    """Treat CODE_MAP block rendering as root-only; subdirs keep mtime sync semantics."""
+    """Treat CODE_MAP block rendering as root-only."""
     codemap = root / "CODE_MAP.md"
     if not codemap.exists():
         return False
@@ -59,33 +59,12 @@ def sync_one(dir_path: str, own_file: str, other_file: str) -> dict | None:
             return {"dir": dir_path, "action": "codemap_block", "files": result}
         return None
 
-    if own.exists() and other.exists():
-        try:
-            own_text = own.read_text(encoding="utf-8", errors="replace")
-            other_text = other.read_text(encoding="utf-8", errors="replace")
-            if own_text == other_text:
-                return None
-            own_mtime = own.stat().st_mtime_ns
-            other_mtime = other.stat().st_mtime_ns
-            if own_mtime == other_mtime:
-                return {"dir": dir_path, "action": "conflict",
-                        "reason": "equal_mtime_content_differs",
-                        "files": [own_file, other_file]}
-            if own_mtime > other_mtime:
-                other.write_text(own_text, encoding="utf-8")
-                return {"dir": dir_path, "action": "sync", "from": own_file, "to": other_file}
-            else:
-                own.write_text(other_text, encoding="utf-8")
-                return {"dir": dir_path, "action": "sync", "from": other_file, "to": own_file}
-        except OSError:
-            return None
-
-    if not own.exists() and other.exists():
-        try:
-            own.write_text(other.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
-            return {"dir": dir_path, "action": "copy", "from": other_file, "to": own_file}
-        except OSError:
-            return None
+    if own.exists() or other.exists():
+        return {
+            "dir": dir_path,
+            "action": "subdir_block_only",
+            "reason": "whole_file_sync_disabled",
+        }
 
     return None
 
