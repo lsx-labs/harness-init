@@ -512,12 +512,23 @@ def _platform_doc_paths(project_dir: str | Path, dir_path: str, files: list[str]
     return [root / rel / name for name in files]
 
 
-def bootstrap_doc_shell(dir_path: str, managed_block: str) -> str:
+def _test_command_for_dir(project_dir: str | Path, dir_path: str) -> str:
+    root = Path(project_dir)
+    tests_dir = root / "tests"
+    if tests_dir.is_dir() and (
+        any(tests_dir.rglob("test_*.py")) or any(tests_dir.rglob("*_test.py"))
+    ):
+        return "`python3 -m pytest -q`"
+    return "未识别专用测试命令"
+
+
+def bootstrap_doc_shell(project_dir: str | Path, dir_path: str, managed_block: str) -> str:
     rel = _clean_rel_dir(dir_path)
+    test_command = _test_command_for_dir(project_dir, rel)
     return (
         f"# {rel}/ — GitNexus 事实\n\n"
         "## 测试\n\n"
-        "- 未识别专用测试命令\n\n"
+        f"- {test_command}\n\n"
         f"{managed_block.strip()}\n\n"
         "## 补充约束（手动维护）\n"
     )
@@ -694,7 +705,7 @@ def refresh_directory(
                 rendered_status[path.name] = {"status": status, "block_hash": _sha256_text(fact_block)}
                 continue
             if plan["action"] == "bootstrap" and not path.exists():
-                _atomic_write_text(path, bootstrap_doc_shell(dir_path, managed))
+                _atomic_write_text(path, bootstrap_doc_shell(project_dir, dir_path, managed))
                 status = "created"
             else:
                 old = path.read_text(encoding="utf-8", errors="replace")

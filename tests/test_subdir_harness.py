@@ -266,6 +266,24 @@ def test_manual_bootstrap_creates_missing_platform_doc(tmp_path, monkeypatch) ->
     assert written["dirs"]["src"]["rendered"]["CLAUDE.md"]["status"] == "created"
 
 
+def test_manual_bootstrap_uses_pytest_command_when_project_has_tests(tmp_path, monkeypatch) -> None:
+    project = tmp_path / "repo"
+    (project / "scripts").mkdir(parents=True)
+    (project / "tests").mkdir()
+    (project / "tests" / "test_harness.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    (project / ".git").mkdir()
+    facts = {"caller_counts": [], "affected_modules": [], "processes": [], "symbol_count": 0}
+    _patch_state(monkeypatch)
+    monkeypatch.setattr(gsh, "extract_dir_facts", lambda project_dir, dir_path, source_snapshot=None: facts)
+
+    result = gsh.refresh_directory(project, "scripts", ["AGENTS.md"], mode="manual", bootstrap=True)
+
+    text = (project / "scripts" / "AGENTS.md").read_text(encoding="utf-8")
+    assert result["action"] == "bootstrap"
+    assert "- `python3 -m pytest -q`" in text
+    assert "未识别专用测试命令" not in text
+
+
 def test_manual_migrate_routes_legacy_doc_through_migration(tmp_path, monkeypatch) -> None:
     project = tmp_path / "repo"
     doc_dir = project / "src"
