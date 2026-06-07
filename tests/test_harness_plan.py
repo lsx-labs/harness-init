@@ -2,6 +2,7 @@
 
 import json
 import os
+import subprocess
 from unittest.mock import patch, MagicMock, PropertyMock
 from pathlib import Path
 import sys
@@ -279,6 +280,59 @@ class TestFindComplexDirs:
 
 
 class TestPlanSubdirs:
+    def test_installed_plan_loads_subdir_generator_from_share_dir(self, tmp_path):
+        home = tmp_path / "home"
+        bin_dir = home / ".local" / "bin"
+        share_dir = home / ".local" / "share" / "harness-hooks"
+        project = tmp_path / "project"
+        bin_dir.mkdir(parents=True)
+        share_dir.mkdir(parents=True)
+        project.mkdir()
+        (project / "src").mkdir()
+        (project / "CODE_MAP.md").write_text("### src/ (200 symbols) — Core\n", encoding="utf-8")
+
+        (bin_dir / "harness-plan.py").write_text(Path(hp.__file__).read_text(encoding="utf-8"), encoding="utf-8")
+        (bin_dir / "harness_shared.py").write_text(Path(harness_shared.__file__).read_text(encoding="utf-8"), encoding="utf-8")
+        (bin_dir / "harness-init.py").write_text(
+            "#!/usr/bin/env python3\n"
+            "import json\n"
+            "print(json.dumps({'existing': {'gitnexus': {'indexed': True, 'up_to_date': True}}}))\n",
+            encoding="utf-8",
+        )
+        (share_dir / "generate_subdir_harness.py").write_text(
+            "def build_source_snapshot(project_dir):\n"
+            "    return {'source': 'share-dir'}\n"
+            "\n"
+            "def plan_directory(project_dir, dir_path, files, **kwargs):\n"
+            "    return {'action': 'bootstrap', 'files': files, 'reason': 'loaded_from_share'}\n",
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            [sys.executable, str(bin_dir / "harness-plan.py"), str(project), "--platform", "codex"],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "HOME": str(home)},
+            timeout=30,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plan = json.loads(result.stdout)
+        assert plan["subdirs"]["bootstrap"] == [
+            {"dir": "src", "files": ["AGENTS.md", "CLAUDE.md"], "reason": "loaded_from_share", "manual_only": True}
+        ]
+
+    def test_generator_unavailable_reports_both_platform_docs(self):
+        with patch.object(hp, "subdir_harness", None):
+            result = hp._plan_subdir_with_generator("src", ["AGENTS.md", "CLAUDE.md"])
+
+        assert result == {
+            "action": "bootstrap",
+            "files": ["AGENTS.md", "CLAUDE.md"],
+            "manual_only": True,
+            "reason": "generator_unavailable",
+        }
+
     def test_skip_existing(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "src").mkdir()

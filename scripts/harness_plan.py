@@ -14,16 +14,35 @@ Usage:
 """
 
 import json
+import importlib.util
 import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 
-try:
-    import generate_subdir_harness as subdir_harness
-except ImportError:
-    subdir_harness = None
+def _load_subdir_harness():
+    try:
+        import generate_subdir_harness as module
+        return module
+    except ImportError:
+        pass
+
+    installed_path = Path.home() / ".local" / "share" / "harness-hooks" / "generate_subdir_harness.py"
+    if not installed_path.exists():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("generate_subdir_harness", installed_path)
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except (ImportError, OSError, AttributeError):
+        return None
+
+
+subdir_harness = _load_subdir_harness()
 
 from harness_shared import (MANUAL_MARKER, STALE_THRESHOLD,
                     CODEMAP_BG_DIRS_THRESHOLD,
@@ -138,7 +157,7 @@ def find_complex_dirs(entries: list[dict]) -> list[str]:
 
 def _plan_subdir_with_generator(dir_path: str, files: list[str], source_snapshot: dict | None = None) -> dict:
     if subdir_harness is None:
-        return {"action": "bootstrap", "files": files[:1], "manual_only": True, "reason": "generator_unavailable"}
+        return {"action": "bootstrap", "files": files, "manual_only": True, "reason": "generator_unavailable"}
     return subdir_harness.plan_directory(
         ".",
         dir_path,

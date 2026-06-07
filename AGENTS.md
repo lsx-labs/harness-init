@@ -41,3 +41,24 @@ This project is indexed by GitNexus as **harness-init** (1817 symbols, 3990 rela
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
+
+## CODE_MAP
+
+<!-- codemap:start -->
+# Code Map
+
+> Auto-generated from GitNexus. Descriptions maintained by AI + GitNexus or 📌 manual.
+
+### hooks/ — 核心职责：GitNexus钩子、Codex兼容、输出规范化
+
+### scripts/ — 核心职责：初始化、CODE_MAP生成、钩子维护
+
+### tests/ — 测试套件：行为校验、边界条件与回归覆盖
+
+### docs/ — 项目文档：门禁
+- **superpowers/** — 项目文档：门禁
+
+### skills/ — 核心职责：生命周期管理、执行流程、文档模板
+- **claude/** — 项目驾具生命周期管理：Claude 计划执行、模板生成、GitNexus 工具选择
+- **codex/** — 项目驾具生命周期管理：Codex 计划执行、AGENTS 模板、GitNexus 工具选择
+<!-- codemap:end -->
